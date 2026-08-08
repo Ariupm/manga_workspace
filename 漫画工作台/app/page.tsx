@@ -5,6 +5,7 @@ import { toPng } from "html-to-image";
 import { jsPDF } from "jspdf";
 import {
   Archive,
+  CircleAlert,
   BookOpen,
   Check,
   ChevronRight,
@@ -156,6 +157,7 @@ export default function Studio() {
     etaSeconds: number;
   } | null>(null);
   const [toast, setToast] = useState("");
+  const [toastError, setToastError] = useState(false);
   const pageRef = useRef<HTMLDivElement>(null);
   const saveTimers = useRef(new Map<string, number>());
   const pendingSaves = useRef(new Map<string, Record<string, unknown>>());
@@ -181,6 +183,7 @@ export default function Studio() {
   );
   const activeShot = shots.find((s) => s.id === activeShotId) ?? shots[0];
   const flash = (message: string) => {
+    setToastError(/失败|错误|冲突|阻断|不能|无法|未通过/.test(message));
     setToast(message);
     setTimeout(() => setToast(""), 2200);
   };
@@ -785,8 +788,8 @@ export default function Studio() {
         </main>
       </div>
       {toast && (
-        <div className="toast">
-          <Check size={16} />
+        <div className={`toast ${toastError ? "toast-error" : ""}`}>
+          {toastError ? <CircleAlert size={16} /> : <Check size={16} />}
           {toast}
         </div>
       )}

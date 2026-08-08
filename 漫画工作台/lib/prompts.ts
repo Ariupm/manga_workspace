@@ -202,11 +202,12 @@ type InteractionPromptPolicy = {
 
 // Keep action-specific repair rules in one registry so new prop/action
 // contracts can be added without spreading special cases through API routes.
+const phoneCallPattern = /\b(?:(?:phone|smartphone|device)\s+)?call(?:ing)?\b|\b(?:making|taking|answering|on)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)\b[^;,.]*\b(?:beside|against|to|at)\s+(?:her|his|their|the)?\s*ear\b/gi;
 const interactionPromptPolicies: InteractionPromptPolicy[] = [{
   matches: (interaction) => interaction.object === "smartphone" && interaction.purpose === "read",
   canonical: "required smartphone clearly visible, held in portrait orientation with both visible hands in front of the torso, both hands physically contacting and supporting the smartphone, reading the notification on the smartphone screen",
   rewrites: [
-    { pattern: /\b(?:making|taking|answering)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)?\s*call(?:ing)?\b/gi, replacement: "reading a smartphone notification", label: "call → read" },
+    { pattern: phoneCallPattern, replacement: "reading a smartphone notification", label: "call → read" },
     { pattern: /\b(?:held\s+)?(?:beside|against|to|at)\s+(?:the\s+)?(?:her|his|their)?\s*ear\b|\bphone\s+to\s+(?:the\s+)?ear\b/gi, replacement: "held in front of the torso", label: "ear pose → front-of-torso pose" },
     { pattern: /\b(?:one|single)\s+hand(?:ed)?\b/gi, replacement: "both hands", label: "one hand → both hands" },
     { pattern: /\bthe other hand (?:is )?free\b/gi, replacement: "both hands support the smartphone", label: "free hand → supporting hand" },
@@ -240,8 +241,11 @@ export function validateFinalPrompt(prompt: string, interaction?: InteractionCon
   const value = clean(prompt).toLowerCase();
   const errors: string[] = [];
   if (interaction?.object === "smartphone" && interaction.purpose === "read") {
-    if (/(?:phone|smartphone|device)?\s*call(?:ing)?|making\s+(?:a\s+)?phone\s+call/.test(value))
+    if (phoneCallPattern.test(value)) {
+      phoneCallPattern.lastIndex = 0;
       errors.push("read 场景最终 prompt 不得包含 call");
+    }
+    phoneCallPattern.lastIndex = 0;
     if (/(?:beside|against|to|at)\s+(?:the\s+)?(?:her|his|their)?\s*ear|phone\s+to\s+ear/.test(value))
       errors.push("read 场景最终 prompt 不得包含 beside ear");
     if (/(?:one|single)\s+hand|one-handed|one hand/.test(value))
