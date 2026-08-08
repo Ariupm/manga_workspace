@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "1.0",
+  "character": {
+    "id": "character_xiaofen",
+    "name": "小粉",
+    "aliases": ["小粉"],
+    "canonicalReferences": {
+      "original": "00-原始参考图.png",
+      "turnaround": "01-标准三视图.png",
+      "expressions": "02-表情设定.png",
+      "baseWardrobe": "03-常用服装设定.png"
+    },
+    "invariants": [
+      "成年女性",
+      "腰部长粉发",
+      "空气感斜刘海",
+      "暖粉棕色眼睛",
+      "柔和椭圆脸",
+      "纤细健康比例",
+      "温柔安静但有内在力量"
+    ]
+  },
+  "wardrobe": {
+    "summerSleepwear": [
+      {
+        "id": "XF-SLEEP-01",
+        "name": "夏花睡裙",
+        "source": "夏季衣橱/01-夏季睡衣-2套.png",
+        "position": 1,
+        "defaultShoes": ["XF-SHOE-01"]
+      },
+      {
+        "id": "XF-SLEEP-02",
+        "name": "兔子短袖七分裤睡衣",
+        "source": "夏季衣橱/01-夏季睡衣-2套.png",
+        "position": 2,
+        "defaultShoes": ["XF-SHOE-02"]
+      }
+    ],
+    "summerWork": [
+      {
+        "id": "XF-WORK-01",
+        "name": "粉色长裙经典通勤装",
+        "source": "夏季衣橱/02-夏季工作装-4套.png",
+        "position": 1,
+        "defaultShoes": ["XF-SHOE-05"]
+      },
+      {
+        "id": "XF-WORK-02",
+        "name": "浅灰西装阔腿裤套装",
+        "source": "夏季衣橱/02-夏季工作装-4套.png",
+        "position": 2,
+        "defaultShoes": ["XF-SHOE-06"]
+      },
+      {
+        "id": "XF-WORK-03",
+        "name": "灰蓝衬衫裙",
+        "source": "夏季衣橱/02-夏季工作装-4套.png",
+        "position": 3,
+        "defaultShoes": ["XF-SHOE-07"]
+      },
+      {
+        "id": "XF-WORK-04",
+        "name": "米白针织衫藏蓝长裙",
+        "source": "夏季衣橱/02-夏季工作装-4套.png",
+        "position": 4,
+        "defaultShoes": ["XF-SHOE-08"]
+      }
+    ],
+    "summerCasual": [
+      {
+        "id": "XF-CASUAL-01",
+        "name": "奶黄上衣粉色半身裙",
+        "source": "夏季衣橱/03-夏季休闲装-3套.png",
+        "position": 1,
+        "defaultShoes": ["XF-SHOE-10"]
+      },
+      {
+        "id": "XF-CASUAL-02",
+        "name": "薄荷针织衫米白阔腿裤",
+        "source": "夏季衣橱/03-夏季休闲装-3套.png",
+        "position": 2,
+        "defaultShoes": ["XF-SHOE-03"]
+      },
+      {
+        "id": "XF-CASUAL-03",
+        "name": "粉白碎花连衣裙",
+        "source": "夏季衣橱/03-夏季休闲装-3套.png",
+        "position": 3,
+        "defaultShoes": ["XF-SHOE-09"]
+      }
+    ]
+  },
+  "footwear": [
+    {"id": "XF-SHOE-01", "name": "蝴蝶结居家拖鞋", "category": "home_slippers", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 1},
+    {"id": "XF-SHOE-02", "name": "粉色交叉居家拖鞋", "category": "home_slippers", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 2},
+    {"id": "XF-SHOE-03", "name": "藕粉平底凉鞋", "category": "summer_sandals", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 3},
+    {"id": "XF-SHOE-04", "name": "奶油色坡跟凉鞋", "category": "summer_sandals", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 4},
+    {"id": "XF-SHOE-05", "name": "裸粉低粗跟单鞋", "category": "work_heels", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 5},
+    {"id": "XF-SHOE-06", "name": "粉色露跟猫跟鞋", "category": "work_heels", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 6},
+    {"id": "XF-SHOE-07", "name": "奶油粉玛丽珍鞋", "category": "work_heels", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 7},
+    {"id": "XF-SHOE-08", "name": "暖棕乐福鞋", "category": "work_flats", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 8},
+    {"id": "XF-SHOE-09", "name": "玫瑰米色芭蕾鞋", "category": "casual_flats", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 9},
+    {"id": "XF-SHOE-10", "name": "米白粉边休闲鞋", "category": "sneakers", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 10},
+    {"id": "XF-SHOE-11", "name": "浅蓝帆布鞋", "category": "sneakers", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 11},
+    {"id": "XF-SHOE-12", "name": "暖灰编织平底鞋", "category": "summer_flats", "source": "夏季衣橱/04-夏季鞋履-12双.png", "position": 12}
+  ],
+  "defaults": {
+    "summerWork": {"outfit": "XF-WORK-01", "shoes": "XF-SHOE-05"},
+    "summerCasual": {"outfit": "XF-CASUAL-01", "shoes": "XF-SHOE-10"},
+    "summerSleep": {"outfit": "XF-SLEEP-02", "shoes": "XF-SHOE-02"}
+  },
+  "continuityRules": [
+    "同一天室外剧情保持服装、鞋、包和发型不变，除非脚本明确换装",
+    "进入家中后脱掉室外鞋",
+    "睡衣仅用于家中晚间和睡眠场景",
+    "重新生成单格时继续使用该页已锁定的服装与鞋履编号"
+  ]
+}

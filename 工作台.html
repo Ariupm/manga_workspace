@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>小粉漫画制作台</title>
+  <meta name="description" content="小粉系列漫画的项目进度、角色资产、衣橱与成稿工作台">
+  <link rel="stylesheet" href="工作台.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="回到工作台首页">
+      <span class="brand-mark">粉</span>
+      <span><b>小粉漫画制作台</b><small>COMIC STUDIO</small></span>
+    </a>
+    <nav aria-label="工作台导航">
+      <a href="#overview">总览</a>
+      <a href="#pages">成稿</a>
+      <a href="#character">角色资产</a>
+      <a href="#production">制作看板</a>
+    </nav>
+    <div class="save-state"><i></i><span>本机自动保存</span></div>
+  </header>
+
+  <main>
+    <section class="hero" id="overview">
+      <div>
+        <p class="eyebrow">当前连载 · 求职日常篇</p>
+        <h1>把每一格，<br><em>稳稳地画出来。</em></h1>
+        <p class="intro">角色资产、镜头进度和成稿预览集中在一个地方。今天从第 6 页开始，继续小粉的求职日常。</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#production">继续制作第 6 页</a>
+          <a class="button secondary" href="项目规划/生成计划-求职日常.md">查看提示词库</a>
+        </div>
+      </div>
+      <div class="hero-art">
+        <img src="角色资产/小粉/00-原始参考图.png" alt="小粉角色参考图">
+        <span class="art-label">CHARACTER 01 · 小粉</span>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="项目统计">
+      <article><span>已完成成稿</span><strong>6</strong><small>页</small></article>
+      <article><span>角色资产</span><strong>4</strong><small>张核心设定</small></article>
+      <article><span>夏季衣橱</span><strong>21</strong><small>套装与鞋履</small></article>
+      <article><span>下一目标</span><strong>5</strong><small>格 · 第 6 页</small></article>
+    </section>
+
+    <section class="section" id="pages">
+      <div class="section-heading">
+        <div><p class="eyebrow">FINISHED PAGES</p><h2>最近成稿</h2></div>
+        <p>点击图片可查看原尺寸。根目录中的原稿保持原位，避免打断现有工作流。</p>
+      </div>
+      <div class="page-grid">
+        <a class="page-card featured" href="小粉的美好早晨.png">
+          <img src="小粉的美好早晨.png" alt="小粉的美好早晨第一页">
+          <span><b>第 1 页</b><small>美好早晨 · 开篇</small></span>
+        </a>
+        <a class="page-card" href="小粉的美好早晨-第二页.png">
+          <img src="小粉的美好早晨-第二页.png" alt="小粉的美好早晨第二页">
+          <span><b>第 2 页</b><small>美好早晨</small></span>
+        </a>
+        <a class="page-card" href="小粉的美好早晨-第2页-拆分版.png">
+          <img src="小粉的美好早晨-第2页-拆分版.png" alt="小粉的美好早晨第二页拆分版">
+          <span><b>第 2 页</b><small>拆分修订版</small></span>
+        </a>
+        <a class="page-card" href="小粉的美好早晨-第3页.png">
+          <img src="小粉的美好早晨-第3页.png" alt="小粉的美好早晨第三页">
+          <span><b>第 3 页</b><small>美好早晨</small></span>
+        </a>
+        <a class="page-card" href="小粉的美好早晨-第4页.png">
+          <img src="小粉的美好早晨-第4页.png" alt="小粉的美好早晨第四页">
+          <span><b>第 4 页</b><small>美好早晨</small></span>
+        </a>
+        <a class="page-card" href="小粉的美好早晨-第5页.png">
+          <img src="小粉的美好早晨-第5页.png" alt="小粉的美好早晨第五页">
+          <span><b>第 5 页</b><small>晨间日常</small></span>
+        </a>
+      </div>
+    </section>
+
+    <section class="section character-section" id="character">
+      <div class="section-heading">
+        <div><p class="eyebrow">CHARACTER BIBLE</p><h2>小粉资产库</h2></div>
+        <p>所有新镜头以最新角色档案为准：成年女性、腰部长粉发、暖粉棕眼睛。</p>
+      </div>
+      <div class="asset-layout">
+        <div class="asset-tabs" role="tablist" aria-label="角色资产类别">
+          <button class="active" data-asset="角色资产/小粉/01-标准三视图.png" data-label="标准三视图" role="tab">标准三视图</button>
+          <button data-asset="角色资产/小粉/02-表情设定.png" data-label="表情设定" role="tab">表情设定</button>
+          <button data-asset="角色资产/小粉/03-常用服装设定.png" data-label="常用服装" role="tab">常用服装</button>
+          <button data-asset="角色资产/小粉/夏季衣橱/01-夏季睡衣-2套.png" data-label="夏季睡衣" role="tab">夏季睡衣</button>
+          <button data-asset="角色资产/小粉/夏季衣橱/02-夏季工作装-4套.png" data-label="夏季工作装" role="tab">夏季工作装</button>
+          <button data-asset="角色资产/小粉/夏季衣橱/03-夏季休闲装-3套.png" data-label="夏季休闲装" role="tab">夏季休闲装</button>
+          <button data-asset="角色资产/小粉/夏季衣橱/04-夏季鞋履-12双.png" data-label="夏季鞋履" role="tab">夏季鞋履</button>
+        </div>
+        <a class="asset-preview" id="asset-link" href="角色资产/小粉/01-标准三视图.png">
+          <img id="asset-image" src="角色资产/小粉/01-标准三视图.png" alt="小粉标准三视图">
+          <span id="asset-label">标准三视图 · 点击查看原图</span>
+        </a>
+        <aside class="continuity">
+          <p class="eyebrow">连续性检查</p>
+          <h3>生成前确认</h3>
+          <label><input type="checkbox" data-check="reference"> 已引用标准模型图</label>
+          <label><input type="checkbox" data-check="wardrobe"> 已引用本次衣橱图</label>
+          <label><input type="checkbox" data-check="outfit"> 同场服装与鞋履一致</label>
+          <label><input type="checkbox" data-check="text"> 画面内不直接生成对白</label>
+          <div class="quick-preset">
+            <span>当前推荐预设</span>
+            <b>XF-SLEEP-02</b>
+            <small>兔子睡衣 + XF-SHOE-02</small>
+          </div>
+          <a href="角色资产/小粉/角色档案.md">打开完整角色档案 →</a>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="production">
+      <div class="section-heading">
+        <div><p class="eyebrow">PRODUCTION BOARD</p><h2>第 6 页 · 求职循环</h2></div>
+        <p>在卡片上切换状态并写备注，内容会自动保存在当前浏览器。</p>
+      </div>
+      <div class="progress-row">
+        <div><span id="progress-label">0 / 5 格完成</span><b id="progress-percent">0%</b></div>
+        <progress id="page-progress" max="5" value="0">0%</progress>
+      </div>
+      <div class="shot-grid" id="shot-grid">
+        <article class="shot" data-shot="p6-1">
+          <header><span>01</span><select aria-label="吃包子状态"><option>待制作</option><option>生成中</option><option>待修订</option><option>已完成</option></select></header>
+          <h3>吃包子</h3><p>餐桌前吃早餐，手持包子，清晨室内光。</p>
+          <div class="tags"><span>512 × 512</span><span>近景</span></div>
+          <textarea aria-label="吃包子制作备注" placeholder="记录种子、修改点或构图想法…"></textarea>
+        </article>
+        <article class="shot" data-shot="p6-2">
+          <header><span>02</span><select aria-label="上午刷招聘状态"><option>待制作</option><option>生成中</option><option>待修订</option><option>已完成</option></select></header>
+          <h3>上午刷招聘</h3><p>坐在桌边查看手机招聘应用，神情期待。</p>
+          <div class="tags"><span>512 × 512</span><span>中景</span></div>
+          <textarea aria-label="上午刷招聘制作备注" placeholder="记录种子、修改点或构图想法…"></textarea>
+        </article>
+        <article class="shot" data-shot="p6-3">
+          <header><span>03</span><select aria-label="准备午餐状态"><option>待制作</option><option>生成中</option><option>待修订</option><option>已完成</option></select></header>
+          <h3>准备午餐</h3><p>厨房切菜或持锅铲，强调自然动作与手部。</p>
+          <div class="tags"><span>512 × 512</span><span>动作</span></div>
+          <textarea aria-label="准备午餐制作备注" placeholder="记录种子、修改点或构图想法…"></textarea>
+        </article>
+        <article class="shot" data-shot="p6-4">
+          <header><span>04</span><select aria-label="午餐状态"><option>待制作</option><option>生成中</option><option>待修订</option><option>已完成</option></select></header>
+          <h3>独自午餐</h3><p>碗筷与手机支架入画，表现一个人的日常感。</p>
+          <div class="tags"><span>512 × 512</span><span>中景</span></div>
+          <textarea aria-label="午餐制作备注" placeholder="记录种子、修改点或构图想法…"></textarea>
+        </article>
+        <article class="shot" data-shot="p6-5">
+          <header><span>05</span><select aria-label="午睡状态"><option>待制作</option><option>生成中</option><option>待修订</option><option>已完成</option></select></header>
+          <h3>午睡</h3><p>伏在桌面休息，午后阳光，安静收尾。</p>
+          <div class="tags"><span>512 × 512</span><span>氛围</span></div>
+          <textarea aria-label="午睡制作备注" placeholder="记录种子、修改点或构图想法…"></textarea>
+        </article>
+      </div>
+    </section>
+
+    <section class="section links">
+      <a href="项目规划/故事板.md"><span>01</span><b>完整故事板</b><small>查看章节与对白 →</small></a>
+      <a href="项目规划/角色设定.md"><span>02</span><b>角色种子记录</b><small>查看固定种子 →</small></a>
+      <a href="角色资产/小粉/夏季衣橱/衣橱索引.md"><span>03</span><b>衣橱编号索引</b><small>查看全部搭配 →</small></a>
+      <a href="项目规划/生成计划-求职日常.md"><span>04</span><b>镜头提示词库</b><small>复制完整提示词 →</small></a>
+    </section>
+  </main>
+
+  <footer><span>小粉漫画制作台</span><span>本地工作区 · 所有进度仅保存在这台设备</span></footer>
+  <script src="工作台.js"></script>
+</body>
+</html>

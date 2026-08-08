@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "visibleFacts", "scene", "characters", "interaction", "interactions", "camera", "stateChanges", "warnings"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "visibleFacts": { "type": "array", "items": { "type": "string" } },
+    "scene": { "type": "object", "required": ["sceneId", "location", "timeOfDay", "weather", "anchors", "lighting"], "additionalProperties": false, "properties": { "sceneId": { "type": "string", "minLength": 1 }, "location": { "type": "string", "minLength": 1 }, "timeOfDay": { "type": "string" }, "weather": { "type": "string" }, "anchors": { "type": "array", "items": { "type": "string" } }, "lighting": { "type": "string" } } },
+    "characters": { "type": "array", "items": { "$ref": "#/$defs/character" } },
+    "interaction": { "type": ["object", "null"] },
+    "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" } },
+    "camera": { "type": "object", "required": ["shotSize", "angle", "axis", "focus", "composition"] },
+    "stateChanges": { "type": "array", "items": { "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/stateChange" }] } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "character": { "type": "object", "required": ["characterId", "region", "action", "actionTarget", "gazeTarget", "hands", "occlusion", "appearanceState"], "properties": { "characterId": { "type": "string", "minLength": 1 }, "region": { "type": "object", "required": ["xStart", "xEnd"], "properties": { "xStart": { "type": "number", "minimum": 0, "maximum": 1 }, "xEnd": { "type": "number", "minimum": 0, "maximum": 1 } } }, "action": { "type": "string", "minLength": 1 }, "actionTarget": { "type": "string", "minLength": 1 }, "gazeTarget": { "type": "string", "minLength": 1 }, "hands": { "type": "string", "minLength": 1 }, "occlusion": { "type": "string", "minLength": 1 }, "appearanceState": { "type": "object" } } },
+    "interaction": { "type": "object", "required": ["type", "actorCharacterId", "targetCharacterId", "propId", "action", "phase", "contactPoints", "gazeTarget", "ownershipBefore", "ownershipAfter"], "properties": { "type": { "type": "string" }, "actorCharacterId": { "type": "string" }, "targetCharacterId": { "type": "string" }, "propId": { "type": "string" }, "action": { "type": "string" }, "phase": { "type": "string" }, "contactPoints": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "gazeTarget": { "type": "string" }, "ownershipBefore": { "type": ["string", "null"] }, "ownershipAfter": { "type": ["string", "null"] } } },
+    "stateChange": { "type": "object", "required": ["note"], "properties": { "characterId": { "type": "string" }, "propId": { "type": "string" }, "ownerCharacterId": { "type": ["string", "null"] }, "position": { "type": "string" }, "direction": { "type": "string" }, "actionPhase": { "type": "string" }, "outfitId": { "type": "string" }, "note": { "type": "string", "minLength": 1 } } }
+  }
+}

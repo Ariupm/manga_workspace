@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "imagePaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "maxItems": 2
+    },
+    "summary": { "type": "string" }
+  },
+  "required": ["imagePaths", "summary"],
+  "additionalProperties": false
+}

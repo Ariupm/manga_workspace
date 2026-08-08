@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenes", "timeline", "warnings"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "scenes": { "type": "array", "items": { "type": "object", "required": ["id", "location", "timeOfDay", "weather", "anchors", "lighting"], "properties": { "id": {"type":"string"}, "location": {"type":"string"}, "timeOfDay": {"type":"string"}, "weather": {"type":"string"}, "anchors": {"type":"array","items":{"type":"string"}}, "lighting": {"type":"string"} }, "additionalProperties": false } },
+    "timeline": { "type": "array", "items": { "type": "object", "required": ["order", "sceneId", "summary", "characterStates", "propStates", "continuityNotes"], "properties": { "order":{"type":"integer","minimum":1}, "sceneId":{"type":"string","minLength":1}, "summary":{"type":"string"}, "characterStates":{"type":"array","items":{"$ref":"#/$defs/characterState"}}, "propStates":{"type":"array","items":{"$ref":"#/$defs/propState"}}, "continuityNotes":{"type":"array","items":{"type":"string"}} }, "additionalProperties": false } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "characterState": { "type":"object", "additionalProperties":false, "required":["characterId","hair","outfitId","shoeId","bag","accessories","glasses","outerwearState","condition","position","lastAction"], "properties": { "characterId":{"type":"string","minLength":1}, "hair":{"type":"string"}, "outfitId":{"type":"string"}, "shoeId":{"type":"string"}, "bag":{"type":"string"}, "accessories":{"type":"array","items":{"type":"string"}}, "glasses":{"type":"string"}, "outerwearState":{"type":"string"}, "condition":{"type":"array","items":{"type":"string"}}, "position":{"type":"string"}, "lastAction":{"type":"string"} } },
+    "propState": { "type":"object", "additionalProperties":false, "required":["id","name","ownerCharacterId","location","state"], "properties": { "id":{"type":"string","minLength":1}, "name":{"type":"string"}, "ownerCharacterId":{"type":["string","null"]}, "location":{"type":"string"}, "state":{"type":"string"} } }
+  }
+}

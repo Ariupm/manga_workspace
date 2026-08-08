@@ -1,0 +1,7 @@
+.next/
+node_modules/
+.env.local
+data/*.db
+data/deepseek-config.json
+exports/*
+!exports/.gitkeep

@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["descriptionCn", "appearanceEn", "hairColorEn", "hairStyleEn", "eyeColorEn", "invariantsEn", "profile"],
+  "properties": {
+    "descriptionCn": { "type": "string" },
+    "appearanceEn": { "type": "string" },
+    "hairColorEn": { "type": "string" },
+    "hairStyleEn": { "type": "string" },
+    "eyeColorEn": { "type": "string" },
+    "invariantsEn": { "type": "array", "items": { "type": "string" }, "minItems": 3 },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agePresentationEn", "faceShapeEn", "bodyTypeEn", "skinToneEn", "distinguishingFeaturesEn", "temperamentEn", "baseOutfitEn", "baseShoesEn"],
+      "properties": {
+        "agePresentationEn": { "type": "string" }, "faceShapeEn": { "type": "string" },
+        "bodyTypeEn": { "type": "string" }, "skinToneEn": { "type": "string" },
+        "distinguishingFeaturesEn": { "type": "string" }, "temperamentEn": { "type": "string" },
+        "baseOutfitEn": { "type": "string" }, "baseShoesEn": { "type": "string" }
+      }
+    }
+  }
+}

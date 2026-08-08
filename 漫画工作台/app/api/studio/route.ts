@@ -1,0 +1,769 @@
+import { NextRequest, NextResponse } from "next/server";
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import {
+  addCandidate,
+  addPageToEpisode,
+  addShotToPage,
+  addTextLayer,
+  approveSdDraft,
+  clearGeneratedReferenceCandidates,
+  createPersistentGenerationJob,
+  deletePage,
+  deleteShot,
+  deleteTextLayer,
+  duplicateTextLayer,
+  getAssets,
+  getCharacters,
+  getShotGenerationInput,
+  getStudioData,
+  moveShot,
+  queueCodexPage,
+  recordBelongsToProject,
+  rejectSdDraft,
+  retryFailedCodexJob,
+  selectCandidate,
+  separateRecentStoriesIntoProjects,
+  updateEpisodeContent,
+  updatePageLayout,
+  updateSeriesMemory,
+  updateShot,
+  updateTextLayer,
+  upgradeLatestStoryStructure,
+} from "@/lib/db";
+import {
+  buildGenerationPrompt,
+  buildRegionalPrompt,
+  containsCjk,
+  deriveInteractionContract,
+  validateFinalPrompt,
+  resolveCharacterAssetDescription,
+  sanitizeEnglishPrompt,
+} from "@/lib/prompts";
+import {
+  createGenerationJob,
+  updateGenerationJob,
+} from "@/lib/generation-jobs";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function launchSdWorker(jobId: number) {
+  const logDir = path.join(process.cwd(), "workspace", "sd-jobs");
+  fs.mkdirSync(logDir, { recursive: true });
+  const log = fs.openSync(path.join(logDir, `job-${jobId}.log`), "a");
+  const worker = spawn(
+    process.execPath,
+    [path.join(process.cwd(), "scripts", "sd-worker.mjs"), String(jobId)],
+    {
+      cwd: process.cwd(),
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", log, log],
+    },
+  );
+  fs.closeSync(log);
+  worker.unref();
+}
+
+function postJsonLong(url: string, payload: unknown) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const target = new URL(url);
+    const body = JSON.stringify(payload);
+    const request = http.request(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 500,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }),
+        );
+      },
+    );
+    request.setTimeout(4 * 60 * 60 * 1000, () =>
+      request.destroy(new Error("SD生成超过4小时，连接已终止")),
+    );
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
+export async function GET(request: NextRequest) {
+  const projectId = Number(request.nextUrl.searchParams.get("projectId"));
+  const episodeId = Number(request.nextUrl.searchParams.get("episodeId"));
+  return NextResponse.json(
+    getStudioData(
+      Number.isFinite(projectId) && projectId > 0 ? projectId : undefined,
+      Number.isFinite(episodeId) && episodeId > 0 ? episodeId : undefined,
+    ),
+  );
+}
+
+export async function PATCH(request: Request) {
+  const body = await request.json();
+  const actions = new Set([
+    "updateShot",
+    "updateEpisode",
+    "addShot",
+    "deleteShot",
+    "moveShot",
+    "addPage",
+    "deletePage",
+    "selectCandidate",
+    "clearEpisodeCandidates",
+    "separateRecentStories",
+    "upgradeLatestStory",
+    "updatePageLayout",
+    "addTextLayer",
+    "updateTextLayer",
+    "deleteTextLayer",
+    "duplicateTextLayer",
+    "queueCodexPage",
+    "retryCodexJob",
+    "updateSeriesMemory",
+  ]);
+  if (!actions.has(body.action))
+    return NextResponse.json({ error: "未知操作" }, { status: 400 });
+  const projectId = Number(body.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0)
+    return NextResponse.json({ error: "无效作品 ID" }, { status: 400 });
+  const ownership: Array<
+    [string, "shot" | "page" | "episode" | "layer" | "candidate" | "job"]
+  > = [
+    ["shotId", "shot"],
+    ["pageId", "page"],
+    ["episodeId", "episode"],
+    ["layerId", "layer"],
+    ["candidateId", "candidate"],
+    ["jobId", "job"],
+  ];
+  for (const [field, kind] of ownership)
+    if (
+      body[field] !== undefined &&
+      (!Number.isInteger(Number(body[field])) ||
+        !recordBelongsToProject(kind, Number(body[field]), projectId))
+    )
+      return NextResponse.json(
+        { error: `目标 ${field} 不存在或不属于当前作品` },
+        { status: 404 },
+      );
+  if (
+    body.action === "updateShot" &&
+    body.patch?.characterIds &&
+    (!Array.isArray(body.patch.characterIds) ||
+      body.patch.characterIds.length < 1 ||
+      body.patch.characterIds.some((id: unknown) => typeof id !== "string"))
+  )
+    return NextResponse.json({ error: "人物绑定结构无效" }, { status: 422 });
+  if (body.action === "updateShot")
+    updateShot(Number(body.shotId), body.patch ?? {});
+  if (body.action === "updateEpisode")
+    updateEpisodeContent(Number(body.episodeId), body.patch ?? {});
+  if (body.action === "addShot") addShotToPage(Number(body.pageId));
+  if (body.action === "deleteShot") deleteShot(Number(body.shotId));
+  if (body.action === "moveShot")
+    moveShot(Number(body.shotId), body.direction === -1 ? -1 : 1);
+  if (body.action === "addPage") addPageToEpisode(Number(body.episodeId));
+  if (body.action === "deletePage") deletePage(Number(body.pageId));
+  if (body.action === "selectCandidate")
+    selectCandidate(Number(body.shotId), Number(body.candidateId));
+  if (body.action === "clearEpisodeCandidates")
+    clearGeneratedReferenceCandidates(Number(body.episodeId));
+  if (body.action === "separateRecentStories")
+    separateRecentStoriesIntoProjects();
+  if (body.action === "upgradeLatestStory") upgradeLatestStoryStructure();
+  if (body.action === "updatePageLayout")
+    updatePageLayout(Number(body.pageId), body.patch ?? {});
+  if (body.action === "addTextLayer")
+    addTextLayer(
+      Number(body.pageId),
+      body.type,
+      Number(body.shotId) || undefined,
+    );
+  if (body.action === "updateTextLayer")
+    updateTextLayer(Number(body.layerId), body.patch ?? {});
+  if (body.action === "deleteTextLayer") deleteTextLayer(Number(body.layerId));
+  if (body.action === "duplicateTextLayer")
+    duplicateTextLayer(Number(body.layerId));
+  if (body.action === "queueCodexPage") queueCodexPage(Number(body.pageId));
+  if (
+    body.action === "retryCodexJob" &&
+    !retryFailedCodexJob(Number(body.projectId), Number(body.jobId))
+  )
+    return NextResponse.json({ error: "该失败任务不能重试" }, { status: 409 });
+  if (
+    body.action === "updateSeriesMemory" &&
+    !updateSeriesMemory(Number(body.projectId), Number(body.episodeId))
+  )
+    return NextResponse.json({ error: "章节不属于当前作品" }, { status: 404 });
+  return NextResponse.json(
+    getStudioData(
+      Number(body.projectId) || undefined,
+      Number(body.episodeId) || undefined,
+    ),
+  );
+}
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  if (
+    !["generate", "generateDraft", "approveDraft", "rejectDraft"].includes(
+      body.action,
+    )
+  )
+    return NextResponse.json({ error: "unknown action" }, { status: 400 });
+  const projectId = Number(body.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0)
+    return NextResponse.json({ error: "无效作品 ID" }, { status: 400 });
+  if (body.action === "approveDraft" || body.action === "rejectDraft") {
+    const jobId = Number(body.jobId);
+    if (
+      !Number.isInteger(jobId) ||
+      !recordBelongsToProject("job", jobId, projectId)
+    )
+      return NextResponse.json(
+        { error: "草稿任务不存在或不属于当前作品" },
+        { status: 404 },
+      );
+    if (body.action === "rejectDraft") {
+      if (!rejectSdDraft(projectId, jobId))
+        return NextResponse.json(
+          { error: "该任务不在等待草稿确认状态" },
+          { status: 409 },
+        );
+      return NextResponse.json({ ok: true, data: getStudioData(projectId) });
+    }
+    const approved = approveSdDraft(projectId, jobId);
+    if (!approved)
+      return NextResponse.json(
+        { error: "草稿尚未完成或缺少草稿图片" },
+        { status: 409 },
+      );
+    launchSdWorker(jobId);
+    return NextResponse.json({ jobId, status: "queued" }, { status: 202 });
+  }
+  const provider = process.env.IMAGE_PROVIDER;
+  if (provider !== "sd-webui")
+    return NextResponse.json(
+      {
+        error:
+          "尚未配置图片生成服务。请在 .env.local 设置 IMAGE_PROVIDER=sd-webui 和 SD_WEBUI_URL；也可以先复制提示词到其他生成工具。",
+        code: "IMAGE_PROVIDER_REQUIRED",
+      },
+      { status: 409 },
+    );
+  const shot = getShotGenerationInput(Number(body.shotId));
+  if (shot.locked)
+    return NextResponse.json(
+      { error: "该分格已锁定，请先解锁后再生成。", code: "SHOT_LOCKED" },
+      { status: 409 },
+    );
+  const assets = getAssets();
+  const characters = getCharacters();
+  const compiled = buildGenerationPrompt(shot, assets, characters);
+  let targetWidth = Number(body.width || shot.generationWidth || 512);
+  let targetHeight = Number(body.height || shot.generationHeight || 512);
+  if (shot.characterIds.length === 1 && targetWidth === 512 && targetHeight === 512 && /远景|全景/.test(shot.camera)) targetHeight = 768;
+  const ratio = targetWidth / targetHeight;
+  if (
+    !Number.isInteger(targetWidth) ||
+    !Number.isInteger(targetHeight) ||
+    targetWidth < 384 ||
+    targetWidth > 1024 ||
+    targetHeight < 384 ||
+    targetHeight > 1024 ||
+    targetWidth % 64 !== 0 ||
+    targetHeight % 64 !== 0 ||
+    ratio < 2 / 3 ||
+    ratio > 3 / 2
+  )
+    return NextResponse.json(
+      {
+        error: "生成尺寸必须为 384–1024 之间的 64 倍数，宽高比限于 2:3–3:2",
+        code: "INVALID_IMAGE_SIZE",
+      },
+      { status: 422 },
+    );
+  // 384px drafts leave only ~35-50px for a face in full-body shots. Keep all
+  // character drafts at 512 so the approval image is useful for identity QA.
+  const draftLongEdge = 512;
+  const draftScale = draftLongEdge / Math.max(targetWidth, targetHeight);
+  const draftWidth = Math.max(
+    256,
+    Math.round((targetWidth * draftScale) / 64) * 64,
+  );
+  const draftHeight = Math.max(
+    256,
+    Math.round((targetHeight * draftScale) / 64) * 64,
+  );
+  const expectedFaceWidth = Math.round(
+    Math.min(targetWidth, targetHeight) *
+      (shot.characterIds.length > 1 ? 0.13 : /特写|近景/.test(shot.camera) ? 0.24 : /中景/.test(shot.camera) ? 0.18 : 0.11),
+  );
+  if (expectedFaceWidth < 48 && body.force !== true)
+    return NextResponse.json(
+      {
+        error: `当前尺寸和景别预计人脸宽度仅约 ${expectedFaceWidth}px，低于可用下限 48px。请提高输出尺寸或拉近景别；纯环境镜头可选择忽略风险继续。`,
+        code: "FACE_RESOLUTION_TOO_LOW",
+        quality: { expectedFaceWidthPx: expectedFaceWidth, minimumFaceWidthPx: 48 },
+      },
+      { status: 422 },
+    );
+  const prompt =
+    typeof body.promptOverride === "string" && body.promptOverride.trim()
+      ? body.promptOverride.trim()
+      : compiled.prompt;
+  const negative =
+    typeof body.negativePromptOverride === "string" &&
+    body.negativePromptOverride.trim()
+      ? body.negativePromptOverride.trim()
+      : compiled.negativePrompt;
+  const quality = compiled.quality;
+  const readContracts = shot.characterIds
+    .map((id) => deriveInteractionContract(shot, id))
+    .filter((contract) => contract.object === "smartphone" && contract.purpose === "read");
+  const promptContractErrors = readContracts.flatMap((contract) =>
+    validateFinalPrompt(prompt, contract).errors,
+  );
+  if (promptContractErrors.length)
+    return NextResponse.json(
+      {
+        error: `最终提示词与结构化动作契约冲突：${[...new Set(promptContractErrors)].join("；")}`,
+        code: "PROMPT_ACTION_CONTRACT_CONFLICT",
+        validation: { valid: false, errors: [...new Set(promptContractErrors)] },
+      },
+      { status: 422 },
+    );
+  if (quality.blockingErrors.length)
+    return NextResponse.json(
+      {
+        error: `人物绑定检查失败：${quality.blockingErrors.join("；")}。请先在“人物造型”中补齐出场人物。`,
+        code: "CHARACTER_BINDING_REQUIRED",
+        quality,
+      },
+      { status: 422 },
+    );
+  if (!quality.valid && body.force !== true)
+    return NextResponse.json(
+      {
+        error: `提示词质量检查发现风险：${quality.errors.join("；")}。可自动修正、编辑后生成，或明确忽略建议。`,
+        code: "PROMPT_QUALITY_FAILED",
+        quality,
+      },
+      { status: 422 },
+    );
+  if (containsCjk(prompt) || containsCjk(negative))
+    return NextResponse.json(
+      {
+        error:
+          "英文提示词校验失败：生成字段中仍包含中文，请先完成英文视觉描述。",
+        code: "PROMPT_NOT_ENGLISH",
+      },
+      { status: 422 },
+    );
+  try {
+    const base = (process.env.SD_WEBUI_URL || "http://127.0.0.1:7860").replace(
+      /\/$/,
+      "",
+    );
+    const progress = (await fetch(
+      `${base}/sdapi/v1/progress?skip_current_image=true`,
+      { cache: "no-store", signal: AbortSignal.timeout(3000) },
+    ).then((r) => (r.ok ? r.json() : null))) as {
+      state?: { job?: string };
+    } | null;
+    if (progress?.state?.job)
+      return NextResponse.json(
+        {
+          error: "SD WebUI 正在处理其他任务，请等待当前任务完成后再生成。",
+          code: "SD_BUSY",
+        },
+        { status: 409 },
+      );
+    const options = (await fetch(`${base}/sdapi/v1/options`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    }).then((r) => (r.ok ? r.json() : {}))) as Record<string, unknown>;
+    const sdScripts = (await fetch(`${base}/sdapi/v1/scripts`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    })
+      .then((r) => (r.ok ? r.json() : {}))
+      .catch(() => ({}))) as { txt2img?: string[]; img2img?: string[] };
+    const regionalPrompterAvailable = [
+      ...(sdScripts.txt2img || []),
+      ...(sdScripts.img2img || []),
+    ].some((name) => name.toLowerCase() === "regional prompter");
+    const controlModels = (await fetch(`${base}/controlnet/model_list`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)) as { model_list?: string[] } | null;
+    const modelDirectory =
+      process.env.SD_CONTROLNET_MODEL_DIR ||
+      "D:\\stable-diffusion-webui-master\\extensions\\sd-webui-controlnet\\models";
+    const clipVisionPath = path.resolve(
+      modelDirectory,
+      "..",
+      "annotator",
+      "downloads",
+      "clip_vision",
+      "clip_h.pth",
+    );
+    const clipVisionHealthy =
+      fs.existsSync(clipVisionPath) && fs.statSync(clipVisionPath).size > 2_000_000_000;
+    if (!clipVisionHealthy)
+      return NextResponse.json(
+        {
+          error: "IP-Adapter 的 CLIP-H 视觉编码器缺失或下载不完整。请完成 clip_h.pth 下载并重启 SD WebUI 后再生成，避免角色资产控制被静默跳过。",
+          code: "CLIP_VISION_INVALID",
+        },
+        { status: 503 },
+      );
+    const resolveAdapter = (filename: string, modelPrefix: string) => {
+      const localPath = path.join(modelDirectory, filename);
+      const validFile =
+        fs.existsSync(localPath) && fs.statSync(localPath).size > 1024 * 1024;
+      const model = controlModels?.model_list?.find((name) =>
+        name.startsWith(modelPrefix),
+      );
+      return validFile && model
+        ? { module: "ip-adapter_clip_h", model, validFile: true }
+        : { module: "reference_only", model: "None", validFile: false };
+    };
+    const faceAdapter = resolveAdapter(
+      "ip-adapter-plus-face_sd15.safetensors",
+      "ip-adapter-plus-face_sd15",
+    );
+    const outfitAdapter = resolveAdapter(
+      "ip-adapter-plus_sd15.safetensors",
+      "ip-adapter-plus_sd15",
+    );
+    const openPosePath = path.join(modelDirectory, "control_sd15_openpose.pth");
+    const openPoseModel = controlModels?.model_list?.find((name) =>
+      name.startsWith("control_sd15_openpose"),
+    );
+    const cannyModel = controlModels?.model_list?.find((name) =>
+      name.startsWith("control_sd15_canny"),
+    );
+    const openPoseAvailable =
+      fs.existsSync(openPosePath) &&
+      fs.statSync(openPosePath).size > 1024 * 1024 &&
+      Boolean(openPoseModel);
+    const regionalSpec = buildRegionalPrompt(shot, assets, characters);
+    const steps = 16;
+    const cfgScale = Number(process.env.SD_CFG_SCALE || 6.5);
+    const seed = Number(body.seed ?? process.env.SD_SEED ?? -1);
+    const identities = shot.characterIds.map((characterId, index) => {
+      const character = characters.find((item) => item.id === characterId);
+      const face = character?.references.find(
+        (reference) => reference.type === "face" && reference.confirmed,
+      );
+      return face && character
+        ? {
+            role: "identity",
+            characterId: character.id,
+            assetId: character.id,
+            name: `${character.name} SD正脸`,
+            path: face.path,
+            module: faceAdapter.module,
+            model: faceAdapter.model,
+            weight: shot.characterIds.length > 1 ? 0.9 : 0.8,
+            region:
+              shot.characterIds.length > 1
+                ? {
+                    xStart: index / shot.characterIds.length,
+                    xEnd: (index + 1) / shot.characterIds.length,
+                  }
+                : null,
+            characterPrompt: [
+              "masterpiece, best quality, anime illustration",
+              "1girl, solo, one adult woman",
+              character.appearanceEn,
+              character.profile?.faceShapeEn,
+              character.profile?.skinToneEn,
+              character.profile?.bodyTypeEn,
+              character.profile?.distinguishingFeaturesEn,
+              compiled.characterLooks[character.id]?.hairStyleEn,
+              compiled.characterLooks[character.id]?.hairColorEn,
+              compiled.characterLooks[character.id]?.eyeColorEn,
+              resolveCharacterAssetDescription(assets.find(
+                (asset) =>
+                  asset.id === compiled.characterLooks[character.id]?.outfitId &&
+                  asset.characterId === character.id,
+              ), character.profile?.baseOutfitEn),
+              resolveCharacterAssetDescription(assets.find(
+                (asset) =>
+                  asset.id === compiled.characterLooks[character.id]?.shoeId &&
+                  asset.characterId === character.id,
+              ), character.profile?.baseShoesEn),
+              compiled.characterLooks[character.id]?.actionEn,
+              compiled.characterLooks[character.id]?.expressionEn,
+              compiled.characterLooks[character.id]?.gazeEn,
+              "same established facial identity, symmetrical readable eyes, defined nose and lips",
+              "soft frontal fill light on the face, both eyes fully visible, face unobstructed by hair or props",
+            ]
+              .filter(Boolean)
+              .join(", "),
+          }
+        : null;
+    });
+    if (identities.some((identity) => !identity))
+      return NextResponse.json(
+        {
+          error:
+            "出场人物缺少已确认的 SD 正脸身份参考，请先在角色资产中上传标准正脸。",
+          code: "FACE_REFERENCE_REQUIRED",
+        },
+        { status: 422 },
+      );
+    const outfits = Object.entries(compiled.characterLooks)
+      .map(([characterId, look], index) => {
+        const asset = assets.find(
+          (asset) =>
+            asset.id === look.outfitId &&
+            asset.characterId === characterId &&
+            asset.confirmed,
+        );
+        return asset
+          ? {
+              asset,
+              characterId,
+              region:
+                shot.characterIds.length > 1
+                  ? {
+                      xStart: index / shot.characterIds.length,
+                      xEnd: (index + 1) / shot.characterIds.length,
+                    }
+                  : null,
+            }
+          : null;
+      })
+      .filter(Boolean);
+    const framingUsesOutfitReference = /远景|全景/.test(shot.camera) || /wide shot|full shot/i.test(shot.cameraEn);
+    const outfitReferences = outfits
+      .filter((entry) =>
+        framingUsesOutfitReference &&
+        entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag)),
+      )
+      .map((entry) => ({
+      role: "outfit",
+      characterId: entry!.characterId,
+      assetId: entry!.asset.id,
+      name: entry!.asset.name,
+      path: entry!.asset.path,
+      module: outfitAdapter.module,
+      model: outfitAdapter.model,
+      weight: shot.characterIds.length > 1 ? 0.48 : 0.42,
+      region: entry!.region,
+    }));
+    const identityReferences = identities.filter(Boolean);
+    const references = [...identityReferences, ...outfitReferences];
+    const finalReferences = [
+      ...identityReferences.map((reference) => ({
+        ...reference,
+        weight: shot.characterIds.length > 1 ? 0.92 : 0.85,
+      })),
+      ...outfitReferences.map((reference) => ({
+        ...reference,
+        weight: shot.characterIds.length > 1 ? 0.52 : 0.46,
+      })),
+    ].filter(Boolean);
+    const regionalOverride = body.regionalPromptOverride as
+      | { commonPrompt?: string; characterPrompts?: string[] }
+      | undefined;
+    const regionalCommonPrompt = sanitizeEnglishPrompt(regionalOverride?.commonPrompt?.trim() || regionalSpec.commonPrompt);
+    const regionalCharacterPrompts =
+      Array.isArray(regionalOverride?.characterPrompts) &&
+      regionalOverride!.characterPrompts!.length === regionalSpec.regionPrompts.length
+        ? regionalOverride!.characterPrompts!.map((value) => sanitizeEnglishPrompt(String(value).trim()))
+        : regionalSpec.regionPrompts;
+    const regionalCombinedPrompt = [regionalCommonPrompt, ...regionalCharacterPrompts].join(" BREAK ");
+    const regionalContractErrors = readContracts.flatMap((contract) =>
+      validateFinalPrompt(regionalCombinedPrompt, contract).errors,
+    );
+    if (regionalContractErrors.length)
+      return NextResponse.json(
+        {
+          error: `Regional 最终提示词与结构化动作契约冲突：${[...new Set(regionalContractErrors)].join("；")}`,
+          code: "REGIONAL_PROMPT_ACTION_CONTRACT_CONFLICT",
+          validation: { valid: false, errors: [...new Set(regionalContractErrors)] },
+        },
+        { status: 422 },
+      );
+    if (containsCjk(regionalCombinedPrompt))
+      return NextResponse.json(
+        { error: "Regional 分区提示词必须全部为英文。", code: "REGIONAL_PROMPT_NOT_ENGLISH" },
+        { status: 422 },
+      );
+    const regionalPrompter =
+      shot.characterIds.length > 1 && regionalPrompterAvailable
+        ? {
+            enabled: true,
+            mode: "Matrix",
+            orientation: "Horizontal",
+            ratios: regionalSpec.characterRegions.map((region) => Math.max(0.05, region.region.xEnd-region.region.xStart).toFixed(2)).join(","),
+            baseRatio: "0.35",
+            useCommon: true,
+            commonPrompt: regionalCommonPrompt,
+            characterPrompts: regionalCharacterPrompts,
+            prompt: regionalCombinedPrompt,
+          }
+        : null;
+    const effectiveNegativePrompt =
+      typeof body.negativePromptOverride === "string" && body.negativePromptOverride.trim()
+        ? body.negativePromptOverride.trim()
+        : shot.characterIds.length > 1
+          ? regionalSpec.negativePrompt
+          : negative;
+    const poseOverride =
+      typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
+        ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")
+        : "";
+    const poseControl =
+      regionalSpec.poseControl && openPoseAvailable
+        ? {
+            ...regionalSpec.poseControl,
+            enabled: true,
+            model: openPoseModel,
+            module: "none",
+            weight: 0.9,
+            guidanceStart: 0,
+            guidanceEnd: 0.82,
+            source: poseOverride ? "user_override" : "automatic_template",
+            image: poseOverride || null,
+            cannyModel: cannyModel || null,
+          }
+        : null;
+    const recipe = {
+      provider: "sd-webui",
+      phase: "draft",
+      endpoint: `${base}/sdapi/v1/txt2img`,
+      model: String(options.sd_model_checkpoint || "未知"),
+      vae: String(options.sd_vae || "Automatic"),
+      clipSkip: Number(options.CLIP_stop_at_last_layers || 1),
+      sampler: "DPM++ 2M",
+      scheduler: "Karras",
+      steps: shot.characterIds.length > 1 ? 16 : 12,
+      cfgScale: 5.5,
+      width: draftWidth,
+      height: draftHeight,
+      targetWidth,
+      targetHeight,
+      seed,
+      batchSize: 1,
+      prompt: regionalPrompter?.prompt || prompt,
+      negativePrompt: effectiveNegativePrompt,
+      references,
+      regionalPrompter,
+      generationSpec: {
+        compilerVersion: "sd15-staged-identity-v2",
+        visualSpec: shot.visualSpecConfirmed ? shot.visualSpec : null,
+        visualSpecVersion: shot.visualSpecVersion,
+        commonPrompt: regionalCommonPrompt,
+        characterRegions: regionalSpec.characterRegions.map((region, index) => ({
+          ...region,
+          prompt: regionalCharacterPrompts[index],
+        })),
+        negativeBlocks: regionalSpec.negativeBlocks,
+        assetBindings: regionalSpec.assetBindings,
+        assetWarnings: regionalSpec.assetWarnings,
+        poseControl,
+        structureControl: { cannyModel: cannyModel || null },
+        repairPasses: regionalSpec.repairPasses,
+        riskProfile: regionalSpec.repairPasses?.risk || null,
+        qualityGate: {
+          expectedFaceWidthPx: expectedFaceWidth,
+          minimumReadableFaceWidthPx: 64,
+          preferredExpressionFaceWidthPx: 96,
+          requiresFaceRefinement: true,
+          warnings: [
+            ...regionalSpec.assetWarnings,
+            ...outfits
+              .filter((entry) => !entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag)))
+              .map((entry) => `${entry!.asset.name} 不是去人脸纯服装参考，本次仅使用其结构化文字，避免身份和构图污染`),
+            ...(/雨|rain|umbrella|伞/i.test(`${shot.scene} ${shot.description}`)
+              ? ["雨伞、刘海和逆光可能遮挡面部；已启用面部补光与局部身份精修"]
+              : []),
+          ],
+        },
+      },
+      poseControl,
+      identityRefinement: {
+        enabled: true,
+        scope: "face_only_high_resolution",
+        draftDenoisingStrength: 0.38,
+        finalDenoisingStrength: 0.32,
+        maskExpansion: 0.3,
+        inpaintPadding: 48,
+        processWidth: 512,
+        processHeight: 512,
+      },
+      promptSource:
+        typeof body.promptMode === "string"
+          ? body.promptMode
+          : body.promptOverride
+            ? "manual_override"
+            : "structured",
+      finalReferences,
+      characterCount: quality.characterCount,
+      promptQuality: quality,
+      environment: compiled.environment,
+      characterLooks: compiled.characterLooks,
+      adapterStatus: {
+        identity: faceAdapter.validFile
+          ? "ip-adapter-plus-face_sd15"
+          : "reference_only",
+        outfit: outfitAdapter.validFile
+          ? "ip-adapter-plus_sd15"
+          : "reference_only",
+        pose: openPoseAvailable ? "control_sd15_openpose" : "unavailable",
+        fallbackReason:
+          faceAdapter.validFile && outfitAdapter.validFile && (!regionalSpec.poseControl || openPoseAvailable)
+            ? null
+            : "IP-Adapter 或 OpenPose ControlNet 模型不可用",
+      },
+    };
+    const persistentJobId = createPersistentGenerationJob(
+      shot.id,
+      "sd-webui",
+      {
+        phase: "draft",
+        prompt: regionalPrompter?.prompt || prompt,
+        negativePrompt: effectiveNegativePrompt,
+        outputDirectory: "workspace/generated",
+        recipe,
+      },
+      "draft_queued",
+    );
+    launchSdWorker(persistentJobId);
+    return NextResponse.json(
+      { jobId: persistentJobId, status: "queued" },
+      { status: 202 },
+    );
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: `图片生成失败：${error instanceof Error ? error.message : "无法连接生成服务"}`,
+        code: "GENERATION_FAILED",
+      },
+      { status: 502 },
+    );
+  }
+}

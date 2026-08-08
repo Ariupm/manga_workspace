@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summaryCn", "baseOutfitEn", "baseShoesEn", "outfitNegativeEn"],
+  "properties": {
+    "summaryCn": { "type": "string" },
+    "baseOutfitEn": { "type": "string" },
+    "baseShoesEn": { "type": "string" },
+    "outfitNegativeEn": { "type": "string" }
+  }
+}

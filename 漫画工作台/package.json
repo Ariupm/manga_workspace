@@ -1,0 +1,32 @@
+{
+  "name": "xiaofen-comic-studio",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "cross-env STUDIO_DB_PATH=:memory: tsx --test tests/**/*.test.ts",
+    "memory:sync": "node scripts/project-memory-sync.mjs",
+    "memory:sync:apply": "node scripts/project-memory-sync.mjs --apply",
+    "seed": "node scripts/seed.mjs",
+    "assets:split": "node scripts/split-assets.mjs"
+  },
+  "dependencies": {
+    "html-to-image": "^1.11.13",
+    "jspdf": "^3.0.1",
+    "lucide-react": "^0.468.0",
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.20.3",
+    "typescript": "^5.7.0"
+  }
+}
