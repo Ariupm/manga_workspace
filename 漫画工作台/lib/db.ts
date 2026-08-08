@@ -1161,6 +1161,8 @@ export function approveSdDraft(projectId: number, jobId: number) {
   )
     return null;
   const payload = JSON.parse(row.payload);
+  if (payload.recipe?.postprocessWarnings?.length)
+    return null;
   if (
     !payload.draftImagePath ||
     !fs.existsSync(path.resolve(process.cwd(), payload.draftImagePath))

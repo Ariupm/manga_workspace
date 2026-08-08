@@ -18,6 +18,27 @@ const update = (next, progress = 0, error = "", stage = "") => {
   ).run(next, progress, error, stage, jobId);
 };
 
+function expressionCue(value = "") {
+  const source = String(value || "").trim();
+  if (/happy|joy|excited|delighted|期待|开心|高兴|惊喜/i.test(source))
+    return "genuine happy anticipation, warm open smile, raised cheeks, bright engaged eyes, clearly readable joyful expression";
+  if (/surpris|惊讶|震惊/i.test(source))
+    return "clearly readable surprised expression, raised brows, widened eyes, slightly parted lips";
+  if (/worried|concern|anxious|担心|焦虑/i.test(source))
+    return "clearly readable worried expression, gently knitted brows, tense attentive eyes";
+  if (/sad|悲伤|难过/i.test(source))
+    return "clearly readable sad expression, softened eyes, downturned mouth, restrained emotion";
+  return source ? `${source}, clearly readable facial expression` : "readable story-appropriate expression";
+}
+
+function expressionNegativeCue(value = "") {
+  const source = String(value || "");
+  if (/happy|joy|excited|delighted|期待|开心|高兴|惊喜/i.test(source))
+    return "blank expression, sad expression, worried expression, downturned mouth, dead eyes";
+  if (/surpris|惊讶|震惊/i.test(source)) return "flat neutral expression, sleepy eyes";
+  return "";
+}
+
 function postJson(url, payload) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -280,7 +301,8 @@ try {
       const width = recipe.width;
       const height = recipe.height;
       const region = reference.region || { xStart: 0, xEnd: 1 };
-      const regionCenter = ((region.xStart + region.xEnd) / 2) * width;
+      const poseNose = recipe.poseControl?.people?.[identityIndex]?.[0];
+      const regionCenter = (poseNose?.x ?? ((region.xStart + region.xEnd) / 2)) * width;
       const cameraText = `${recipe.generationSpec?.visualSpec?.camera?.shotSize || ""} ${recipe.prompt || ""}`;
       const close = /close-up|extreme close|特写|近景/i.test(cameraText);
       const medium = /medium shot|waist-up|中景/i.test(cameraText);
@@ -306,7 +328,7 @@ try {
       const allowsCameraGaze=!/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(gazeText)&&/(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(gazeText);
       const refinePayload = {
         prompt: `${reference.characterPrompt || recipe.prompt}, detailed facial features, symmetrical readable eyes, defined pupils, defined nose and lips, clean facial contour, preserve the specified head direction and eye target, soft frontal fill light, both eyes fully visible, unobstructed face`,
-        negative_prompt: `blurry face, featureless face, melted facial features, asymmetrical eyes, mismatched eyes, crossed eyes, malformed pupils, face hidden by hair, face covered by prop, deep shadow across eyes, wrong identity, wrong hair color, wrong eye color, duplicate face${allowsCameraGaze?"":", looking at viewer, eye contact with camera, front-facing portrait gaze"}`,
+        negative_prompt: `blurry face, featureless face, melted facial features, asymmetrical eyes, mismatched eyes, crossed eyes, malformed pupils, pointed ears, elf ears, animal ears, face hidden by hair, face covered by prop, deep shadow across eyes, wrong identity, wrong hair color, wrong eye color, duplicate face${allowsCameraGaze?"":", looking at viewer, eye contact with camera, front-facing portrait gaze"}`,
         init_images: [currentImage],
         mask,
         width,
@@ -434,9 +456,10 @@ try {
       const gazeMaskSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${centerX}" cy="${faceCenterY}" rx="${Math.max(36,faceRadiusX)}" ry="${Math.max(46,faceRadiusY)}" fill="white"/></svg>`);
       const gazeMask=(await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);
+      const expression = recipe.characterLooks?.[propInteraction.characterId]?.expressionEn || recipe.generationSpec?.visualSpec?.characters?.find((item) => item.characterId === propInteraction.characterId)?.expression || "";
       const gazePayload={
-        prompt:["masterpiece, best quality, anime illustration, consistent established face",propInteraction.gaze,propInteraction.gazeMode==="object"?`head, irises, and pupils visibly converge on the ${propInteraction.object}`:propInteraction.gazeMode==="work_point"?"head, irises, and pupils visibly converge on the tool contact point":"head, irises, and pupils visibly converge on the interaction target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
-        negative_prompt:[recipe.negativePrompt,"looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera, crossed eyes, mismatched pupils, malformed eyes"].join(", "),
+        prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,propInteraction.gazeMode==="object"?`head, irises, and pupils visibly converge on the ${propInteraction.object}`:propInteraction.gazeMode==="work_point"?"head, irises, and pupils visibly converge on the tool contact point":"head, irises, and pupils visibly converge on the interaction target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
+        negative_prompt:[recipe.negativePrompt,expressionNegativeCue(expression),"looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera, crossed eyes, mismatched pupils, malformed eyes"].filter(Boolean).join(", "),
         init_images:[response.images[0]],mask:gazeMask,width,height,
         steps:phase==="draft"?12:14,cfg_scale:6.4,denoising_strength:phase==="draft"?.36:.28,
         sampler_name:recipe.sampler,scheduler:recipe.scheduler,batch_size:1,n_iter:1,
@@ -574,10 +597,9 @@ try {
     db.prepare(
       "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
     ).run(JSON.stringify(payload), jobId);
-    db.prepare(
-      "UPDATE shots SET status='awaiting_draft_approval' WHERE id=?",
-    ).run(row.shot_id);
-    update("awaiting_draft_approval", 100, "", "构图草稿已完成，等待人工确认");
+    const draftStatus = postprocessWarnings.length ? "draft_blocked" : "awaiting_draft_approval";
+    db.prepare("UPDATE shots SET status=? WHERE id=?").run(draftStatus === "draft_blocked" ? "draft" : "awaiting_draft_approval", row.shot_id);
+    update(draftStatus, 100, postprocessWarnings.join("；"), draftStatus === "draft_blocked" ? "视觉后处理失败，草稿已阻断" : "图片已生成，等待人工视觉质检");
     process.exit(0);
   }
   db.prepare(

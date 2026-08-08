@@ -7,10 +7,43 @@ import {
   buildGenerationPrompt,
   buildRegionalPrompt,
   deriveInteractionContract,
+  expressionPrompt,
   compactPrompt,
   sanitizeEnglishPrompt,
   suggestPromptFixes,
 } from "../lib/prompts";
+
+test("期待表情会编译为可见的笑容与眼神特征", () => {
+  const cue = expressionPrompt("happy");
+  assert.match(cue, /genuine happy anticipation/);
+  assert.match(cue, /warm open smile/);
+  assert.match(cue, /bright engaged eyes/);
+});
+
+test("近景动作骨骼不再强制生成全身且遵守左右位置", () => {
+  const data = getStudioData(1);
+  const base = data.episode.pages[0].shots[0];
+  const shot = {
+    ...base,
+    camera: "近景",
+    cameraEn: "close shot",
+    visualSpecConfirmed: true,
+    visualSpec: {
+      ...(base.visualSpec || {}),
+      camera: { shotSize: "close shot" },
+      characters: [{ characterId: base.characterIds[0], position: "left side of the frame", region: { xStart: 0, xEnd: 1 }, action: "holding a smartphone", actionTarget: "phone notification", expression: "happy", gazeTarget: "phone screen", hands: "both hands holding the phone", occlusion: "none", appearanceState: { hair: "unchanged", bag: "none", accessories: [], glasses: "none", outerwearState: "none", condition: [] } }],
+      visibleFacts: ["The phone screen shows a delivery notification."],
+    },
+    actionEn: "Looking at phone notification",
+    description: "The phone screen shows a delivery notification.",
+    characterLooks: { [base.characterIds[0]]: { ...base.characterLooks?.[base.characterIds[0]], positionEn: "left side of the frame", actionEn: "holding a smartphone with both hands", expressionEn: "happy", gazeEn: "eyes focused on the phone screen", handsEn: "both hands holding the smartphone" } },
+  };
+  const result = buildRegionalPrompt(shot as any, data.assets, data.characters);
+  assert.ok(result.poseControl);
+  assert.ok(result.poseControl!.people[0][10].y > 1);
+  assert.match(result.prompt, /warm open smile/);
+  assert.match(result.negativePrompt, /pointed ears/);
+});
 
 test("Regional 提示词自动移除混入的中文片段", () => {
   const cleaned = sanitizeEnglishPrompt("rainy street, 小粉抬手接伞, visible umbrella, 夜晚灯光");

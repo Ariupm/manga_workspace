@@ -34,6 +34,20 @@ const inferGazeFromAction = (action: string) => {
   if(/walk|run|move|leave|enter/.test(source))return "looking toward the direction of movement, no eye contact with camera";
   return "eyes focused on the current action target, no eye contact with camera";
 };
+export const expressionPrompt = (value: string, fallback = "readable story-appropriate expression") => {
+  const source = clean(value);
+  if (/happy|joy|excited|delighted|期待|开心|高兴|惊喜/i.test(source))
+    return "genuine happy anticipation, warm open smile, raised cheeks, bright engaged eyes, clearly readable joyful expression";
+  if (/surpris|惊讶|震惊/i.test(source))
+    return "clearly readable surprised expression, raised brows, widened eyes, slightly parted lips";
+  if (/worried|concern|anxious|担心|焦虑/i.test(source))
+    return "clearly readable worried expression, gently knitted brows, tense attentive eyes";
+  if (/sad|悲伤|难过/i.test(source))
+    return "clearly readable sad expression, softened eyes, downturned mouth, restrained emotion";
+  if (/angry|怒|生气/i.test(source))
+    return "clearly readable angry expression, knitted brows, focused intense eyes";
+  return source ? `${source}, clearly readable facial expression` : fallback;
+};
 const explicitlyAllowsCameraGaze=(value:string)=>!/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(value)&&/(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(value);
 
 export type InteractionContract = {
@@ -111,12 +125,13 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const phoneReadEvidence=/\b(?:read(?:ing)?|message|notification|texting)\b|(?:eyes?|gaze|pupils?)\s+(?:focused|directed|looking)?[^;,.]*\b(?:phone|smartphone)?\s*screen\b|\b(?:phone|smartphone)\s+screen\b/i.test(source);
   const twoHandFrontEvidence=/\b(?:both|two)\s+(?:visible\s+)?hands?\b[^;,.]*\b(?:hold(?:ing|s)?|operate|use|support)/i.test(source)&&/\b(?:in front of (?:the )?(?:chest|torso)|at (?:the )?(?:chest|torso)|screen)\b/i.test(source);
   const explicitPhoneCall=/\b(?:phone|telephone)?\s*call(?:ing)?\b|\b(?:making|taking|answering|on)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)\b[^;,.]*\b(?:beside|against|to|at)\s+(?:her|his|their|the)?\s*ear\b|\b(?:listening|talking|speaking)\b[^;,.]*\b(?:phone|smartphone)\b/i.test(source);
-  if(phone&&(phoneReadEvidence||twoHandFrontEvidence)){purpose=phoneReadEvidence?"read":"inspect";orientation="portrait";viewerSurface="back";gazeMode="object";handMode="two";shape="portrait_rect";affordance="held vertically in portrait orientation in front of the torso with both hands, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
+  const screenEvidence=/phone screen (?:shows|displays)|notification (?:card|banner) visible|capture both face and phone screen|screen readable to (?:the )?viewer/i.test(source);
+  if(phone&&(phoneReadEvidence||twoHandFrontEvidence)){purpose=phoneReadEvidence?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";handMode="two";shape="portrait_rect";affordance=screenEvidence?"held vertically with both hands at a three-quarter angle, the character can read the screen while a parcel notification card and icon remain visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso with both hands, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(phone&&explicitPhoneCall){purpose="call";orientation="portrait";viewerSurface="side";gazeMode="independent";handMode="one";y=.34;affordance="held beside one ear by one hand, with the device side edge readable and the other hand free";}
   else if(phone&&/watch(?:ing)? (?:a )?video|video playback|movie|landscape mode/i.test(source)){purpose="watch";orientation="landscape";viewerSurface="back";gazeMode="object";handMode="two";shape="landscape_rect";affordance="held horizontally in landscape orientation with both hands, screen facing the character and back casing facing the viewer";}
   else if(phone&&/photo|photograph|camera|record(?:ing)?|film(?:ing)?|selfie/i.test(source)){purpose="capture";orientation="contextual";viewerSurface="screen";gazeMode="object";handMode=/both hands|two hands/i.test(source)?"two":"one";y=.46;affordance="raised toward the intended subject, camera side facing the subject and screen side facing the character";}
   else if(phone&&/scan|qr|barcode/i.test(source)){purpose="scan";orientation="portrait";viewerSurface="side";gazeMode="target";handMode="one";y=.5;affordance="held in one hand and aimed toward the code or document being scanned";}
-  else if(phone){purpose=/read|message|notification|texting/i.test(source)?"read":"inspect";orientation="portrait";viewerSurface="back";gazeMode="object";shape="portrait_rect";affordance="held vertically in portrait orientation in front of the torso, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
+  else if(phone){purpose=/read|message|notification|texting/i.test(source)?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";shape="portrait_rect";affordance=screenEvidence?"held vertically at a three-quarter angle so the character can read the notification while the parcel icon remains visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(/drink|sip|喝/i.test(source)&&/drink container/.test(match.object)){purpose="drink";orientation="upright";viewerSurface="side";gazeMode="independent";handMode="one";y=.4;affordance="held upright by one hand with its rim approaching the mouth";}
   else if(/carry|carrying|hold against|抱|提着/i.test(source)){purpose="carry";orientation="contextual";viewerSurface="contextual";gazeMode="independent";}
   else if(/offer|hand(?:ing)?|give|pass|递|交给/i.test(source)){purpose="offer";orientation="contextual";viewerSurface="contextual";gazeMode="target";}
@@ -169,6 +184,54 @@ export type FinalPromptValidation = {
   errors: string[];
 };
 
+export type PromptReconciliation = {
+  prompt: string;
+  changed: boolean;
+  repairs: string[];
+  validation: FinalPromptValidation;
+};
+
+type InteractionPromptPolicy = {
+  matches: (interaction: InteractionContract) => boolean;
+  canonical: string;
+  rewrites: Array<{ pattern: RegExp; replacement: string; label: string }>;
+};
+
+// Keep action-specific repair rules in one registry so new prop/action
+// contracts can be added without spreading special cases through API routes.
+const interactionPromptPolicies: InteractionPromptPolicy[] = [{
+  matches: (interaction) => interaction.object === "smartphone" && interaction.purpose === "read",
+  canonical: "required smartphone clearly visible, held in portrait orientation with both visible hands in front of the torso, both hands physically contacting and supporting the smartphone, reading the notification on the smartphone screen",
+  rewrites: [
+    { pattern: /\b(?:making|taking|answering)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)?\s*call(?:ing)?\b/gi, replacement: "reading a smartphone notification", label: "call → read" },
+    { pattern: /\b(?:held\s+)?(?:beside|against|to|at)\s+(?:the\s+)?(?:her|his|their)?\s*ear\b|\bphone\s+to\s+(?:the\s+)?ear\b/gi, replacement: "held in front of the torso", label: "ear pose → front-of-torso pose" },
+    { pattern: /\b(?:one|single)\s+hand(?:ed)?\b/gi, replacement: "both hands", label: "one hand → both hands" },
+    { pattern: /\bthe other hand (?:is )?free\b/gi, replacement: "both hands support the smartphone", label: "free hand → supporting hand" },
+  ],
+}];
+
+/** Reconcile editable/legacy prompt text with the authoritative action contract. */
+export function reconcileFinalPrompt(prompt: string, interaction?: InteractionContract | null): PromptReconciliation {
+  const policy = interaction ? interactionPromptPolicies.find((item) => item.matches(interaction)) : undefined;
+  if (!policy) return { prompt: clean(prompt), changed: false, repairs: [], validation: validateFinalPrompt(prompt, interaction) };
+  let repaired = clean(prompt);
+  const repairs: string[] = [];
+  for (const rewrite of policy.rewrites) {
+    if (rewrite.pattern.test(repaired)) {
+      rewrite.pattern.lastIndex = 0;
+      repaired = repaired.replace(rewrite.pattern, rewrite.replacement);
+      repairs.push(rewrite.label);
+    }
+    rewrite.pattern.lastIndex = 0;
+  }
+  if (!repaired.toLowerCase().includes(policy.canonical.toLowerCase())) {
+    repaired = `${repaired.replace(/[\s,]+$/, "")}, ${policy.canonical}`;
+    repairs.push("append canonical action contract");
+  }
+  repaired = repaired.replace(/\s+/g, " ").replace(/,\s*,+/g, ",").trim();
+  return { prompt: repaired, changed: repairs.length > 0, repairs, validation: validateFinalPrompt(repaired, interaction) };
+}
+
 /** Validate the prompt that will actually be sent to the image backend. */
 export function validateFinalPrompt(prompt: string, interaction?: InteractionContract | null): FinalPromptValidation {
   const value = clean(prompt).toLowerCase();
@@ -189,13 +252,7 @@ export function validateFinalPrompt(prompt: string, interaction?: InteractionCon
 }
 
 function canonicalActionForInteraction(action: string, interaction: InteractionContract) {
-  if (interaction.object === "smartphone" && interaction.purpose === "read")
-    return /(?:both|two)\s+(?:visible\s+)?hands?/i.test(action)
-      ? action.replace(/(?:phone|smartphone|device)?\s*call(?:ing)?/gi, "reading notification")
-        .replace(/(?:beside|against|to|at)\s+(?:the\s+)?(?:her|his|their)?\s*ear/gi, "in front of the torso")
-        .replace(/(?:one|single)\s+hand(?:ed)?/gi, "both hands")
-      : "holding a smartphone with both hands in front of the torso and reading a notification";
-  return action;
+  return reconcileFinalPrompt(action, interaction).prompt;
 }
 
 const splitPromptTerms = (value: string) => {
@@ -769,14 +826,23 @@ export function buildSingleFullBodyPoseSvg(width = 512, height = 768) {
 export function buildSingleActionPoseSvg(shot:Shot,interaction:InteractionContract,width=512,height=512) {
   const source=`${shot.actionEn} ${shot.description} ${shot.characterLooks?.[interaction.characterId]?.actionEn||""} ${shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts.join(" ")||"":""} ${shot.visualSpecConfirmed?shot.visualSpec?.characters.find((item)=>item.characterId===interaction.characterId)?.position||"":""}`;
   const seated=/sit|seated|sofa|couch|chair|坐/i.test(source),moving=/walk|run|stride|走|跑/i.test(source);
-  const cx=Math.max(.2,Math.min(.8,(interaction.region.xStart+interaction.region.xEnd)/2));
+  const camera=resolveCameraPrompt(shot);
+  const close=/close-up|medium close-up|chest-up/i.test(camera);
+  const position=shot.visualSpecConfirmed
+    ? shot.visualSpec?.characters.find((item)=>item.characterId===interaction.characterId)?.position || ""
+    : shot.characterLooks?.[interaction.characterId]?.positionEn || "";
+  const positionX=/left|左/i.test(position) ? .38 : /right|右/i.test(position) ? .62 : .5;
+  const cx=Math.max(.2,Math.min(.8,/left|左|right|右/i.test(position) ? positionX : (interaction.region.xStart+interaction.region.xEnd)/2));
+  const hipY=close ? 1.06 : seated ? .55 : .52;
+  const kneeY=close ? 1.24 : .7;
+  const ankleY=close ? 1.42 : .88;
   const ox=Math.max(.15,Math.min(.85,interaction.objectCenter.x)),oy=Math.max(.4,Math.min(.72,interaction.objectCenter.y));
   const leftWrist={x:ox-.045,y:oy},rightWrist=interaction.handMode==="two"?{x:ox+.045,y:oy}:{x:cx+.16,y:seated?.66:.57};
   const person:PosePoint[]=[
     {x:cx,y:.16},{x:cx,y:.27},{x:cx-.09,y:.29},{x:(cx-.09+leftWrist.x)/2-.025,y:(.29+leftWrist.y)/2},{...leftWrist},
     {x:cx+.09,y:.29},{x:(cx+.09+rightWrist.x)/2+.025,y:(.29+rightWrist.y)/2},{...rightWrist},
-    {x:cx-.055,y:seated?.55:.52},{x:cx-(moving?.1:.07),y:seated?.7:.7},{x:cx-(moving?.16:.08),y:seated?.88:.92},
-    {x:cx+.055,y:seated?.55:.52},{x:cx+(moving?.13:.07),y:seated?.7:.7},{x:cx+(moving?.2:.08),y:seated?.88:.92},
+    {x:cx-.055,y:hipY},{x:cx-(moving?.1:.07),y:kneeY},{x:cx-(moving?.16:.08),y:ankleY},
+    {x:cx+.055,y:hipY},{x:cx+(moving?.13:.07),y:kneeY},{x:cx+(moving?.2:.08),y:ankleY},
     {x:cx-.025,y:.15},{x:cx+.025,y:.15},{x:cx-.045,y:.16},{x:cx+.045,y:.16},
   ];
   return {kind:`single_action_${seated?"seated":moving?"moving":"standing"}_v1`,width,height,people:[person],svg:renderOpenPoseSvg([person],width,height)};
@@ -845,6 +911,7 @@ export function buildGenerationPrompt(
     return unique([
       look.positionEn,
       `(${stripTraits(character.appearanceEn)}:1.12)`,
+      character.invariantsEn?.join(", ") || "",
       character.profile?.agePresentationEn || "",
       character.profile?.faceShapeEn || "",
       character.profile?.skinToneEn || "",
@@ -858,7 +925,7 @@ export function buildGenerationPrompt(
       resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) ||
         "matching practical footwear",
       canonicalActionForInteraction(look.actionEn, interaction),
-      look.expressionEn,
+      expressionPrompt(look.expressionEn),
       `(${look.gazeEn}, head and pupils aligned toward the action target:1.28)`,
       look.handsEn,
       ...interaction.positive,
@@ -900,11 +967,13 @@ export function buildGenerationPrompt(
     : "plain background, empty background, studio backdrop, gradient background, featureless background, excessive background blur";
   const negativePrompt = compactPrompt(unique([
     "(low quality, worst quality:1.4), (blurry:1.2), bad anatomy, bad hands, extra fingers, missing fingers",
-    "ugly, deformed, crossed eyes, asymmetrical eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color",
+    "ugly, deformed, crossed eyes, asymmetrical eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
     countNegative,
     gazeNegative,
     ...interactionContracts.flatMap((item)=>item.negative),
     environmentNegative,
+    "blown highlights, overexposed face, clipped white clothing, unreadable facial expression",
+    close ? "full body, full-length figure, visible legs, visible shoes, standing portrait" : "",
     wide ? "cropped feet, missing legs, floating limbs, unbalanced stance" : "",
     "child, chibi, nsfw, 3d, realistic, monochrome, grayscale, text, letters, watermark, logo",
     shot.negativePromptEn,
@@ -1000,6 +1069,7 @@ export function buildRegionalPrompt(
       englishVisual(character.profile?.skinToneEn) ? `(${englishVisual(character.profile?.skinToneEn)}, clean consistent natural skin:1.15)` : "",
       englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",
       englishVisual(character.profile?.distinguishingFeaturesEn) ? `(${englishVisual(character.profile?.distinguishingFeaturesEn)}:1.18)` : "",
+      character.invariantsEn?.length ? `(${englishVisual(character.invariantsEn.join(", "), "canonical character invariants")}:1.28)` : "",
       `(exact canonical hair color and hairstyle, ${englishVisual(clean(`${look.hairStyleEn} ${look.hairColorEn}`), "hair matching the identity reference")}:1.45)`,
       englishVisual(look.eyeColorEn) ? `(${englishVisual(look.eyeColorEn)}:1.25)` : "",
       resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
@@ -1007,7 +1077,7 @@ export function buildRegionalPrompt(
         : "coherent adult outfit",
       resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn),
       englishVisual(canonicalActionForInteraction(look.actionEn, interaction), "performing the current story action"),
-      englishVisual(look.expressionEn, "readable story-appropriate expression"),
+      englishVisual(expressionPrompt(look.expressionEn), "readable story-appropriate expression"),
       `(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}, head and pupils aligned toward the action target:1.3)`,
       englishVisual(look.handsEn, "hands following the described action"),
       ...interaction.positive,
@@ -1038,7 +1108,7 @@ export function buildRegionalPrompt(
   });
   const negativeBlocks = {
     quality: "(low quality, worst quality:1.4), blurry face, featureless face, muddy details",
-    identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes",
+    identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
     anatomy: "deformed limbs, extra or missing limbs, fused hands, malformed wrists, extra or missing fingers",
     interaction: hasObjectTransfer ? "holding hands, linked arms, posing for camera, both people incorrectly owning the same prop, disconnected prop, unclear transfer" : "static portrait pose, unrelated actions",
     weather: /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, no falling rain, sunny weather, umbrella edge crossing a face, deep shadow across eyes" : "",

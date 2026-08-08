@@ -358,6 +358,13 @@ export default function Studio() {
           await load(data?.project.id);
           setActiveShotId(shotId);
           flash("构图草稿已完成，请检查后确认成品");
+        } else if (status.jobStatus === "draft_blocked") {
+          window.clearInterval(timer);
+          setBusy(false);
+          setGenerationProgress(null);
+          await load(data?.project.id);
+          setActiveShotId(shotId);
+          flash(`草稿已阻断：${status.error ?? "视觉后处理失败，请修改后重试"}`);
         } else if (status.jobStatus === "completed") {
           window.clearInterval(timer);
           setBusy(false);
@@ -388,7 +395,7 @@ export default function Studio() {
     const response = await fetch("/api/studio", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, jobId, projectId: data?.project.id }),
+      body: JSON.stringify({ action, jobId, projectId: data?.project.id, visualReviewConfirmed: action === "approveDraft" }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -4839,7 +4846,8 @@ function TaskQueue({
     draft_running: "草稿生成中",
     final_queued: "成品排队",
     final_running: "成品生成中",
-    awaiting_draft_approval: "等待草稿确认",
+    awaiting_draft_approval: "待视觉质检确认",
+    draft_blocked: "视觉质检阻断",
     draft_rejected: "草稿已放弃",
     paused: "已暂停",
     codex_queued: "Codex排队",

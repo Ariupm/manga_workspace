@@ -39,6 +39,8 @@ import {
   buildRegionalPrompt,
   containsCjk,
   deriveInteractionContract,
+  expressionPrompt,
+  reconcileFinalPrompt,
   validateFinalPrompt,
   resolveCharacterAssetDescription,
   sanitizeEnglishPrompt,
@@ -248,6 +250,11 @@ export async function POST(request: Request) {
         );
       return NextResponse.json({ ok: true, data: getStudioData(projectId) });
     }
+    if (body.visualReviewConfirmed !== true)
+      return NextResponse.json(
+        { error: "请先完成画面视觉质检，再批准草稿", code: "VISUAL_REVIEW_REQUIRED" },
+        { status: 422 },
+      );
     const approved = approveSdDraft(projectId, jobId);
     if (!approved)
       return NextResponse.json(
@@ -324,7 +331,7 @@ export async function POST(request: Request) {
       },
       { status: 422 },
     );
-  const prompt =
+  let prompt =
     typeof body.promptOverride === "string" && body.promptOverride.trim()
       ? body.promptOverride.trim()
       : compiled.prompt;
@@ -337,6 +344,12 @@ export async function POST(request: Request) {
   const readContracts = shot.characterIds
     .map((id) => deriveInteractionContract(shot, id))
     .filter((contract) => contract.object === "smartphone" && contract.purpose === "read");
+  const promptRepairs: string[] = [];
+  for (const contract of readContracts) {
+    const reconciled = reconcileFinalPrompt(prompt, contract);
+    prompt = reconciled.prompt;
+    promptRepairs.push(...reconciled.repairs);
+  }
   const promptContractErrors = readContracts.flatMap((contract) =>
     validateFinalPrompt(prompt, contract).errors,
   );
@@ -496,6 +509,7 @@ export async function POST(request: Request) {
               "masterpiece, best quality, anime illustration",
               "1girl, solo, one adult woman",
               character.appearanceEn,
+              ...(character.invariantsEn || []),
               character.profile?.faceShapeEn,
               character.profile?.skinToneEn,
               character.profile?.bodyTypeEn,
@@ -514,7 +528,7 @@ export async function POST(request: Request) {
                   asset.characterId === character.id,
               ), character.profile?.baseShoesEn),
               compiled.characterLooks[character.id]?.actionEn,
-              compiled.characterLooks[character.id]?.expressionEn,
+              expressionPrompt(compiled.characterLooks[character.id]?.expressionEn || ""),
               compiled.characterLooks[character.id]?.gazeEn,
               "same established facial identity, symmetrical readable eyes, defined nose and lips",
               "soft frontal fill light on the face, both eyes fully visible, face unobstructed by hair or props",
@@ -588,12 +602,23 @@ export async function POST(request: Request) {
     const regionalOverride = body.regionalPromptOverride as
       | { commonPrompt?: string; characterPrompts?: string[] }
       | undefined;
-    const regionalCommonPrompt = sanitizeEnglishPrompt(regionalOverride?.commonPrompt?.trim() || regionalSpec.commonPrompt);
-    const regionalCharacterPrompts =
+    let regionalCommonPrompt = sanitizeEnglishPrompt(regionalOverride?.commonPrompt?.trim() || regionalSpec.commonPrompt);
+    let regionalCharacterPrompts =
       Array.isArray(regionalOverride?.characterPrompts) &&
       regionalOverride!.characterPrompts!.length === regionalSpec.regionPrompts.length
         ? regionalOverride!.characterPrompts!.map((value) => sanitizeEnglishPrompt(String(value).trim()))
         : regionalSpec.regionPrompts;
+    for (const contract of readContracts) {
+      const commonReconciled = reconcileFinalPrompt(regionalCommonPrompt, contract);
+      regionalCommonPrompt = commonReconciled.prompt;
+      promptRepairs.push(...commonReconciled.repairs.map((item) => `regional common: ${item}`));
+      const regionIndex = shot.characterIds.indexOf(contract.characterId);
+      if (regionIndex >= 0 && regionalCharacterPrompts[regionIndex]) {
+        const characterReconciled = reconcileFinalPrompt(regionalCharacterPrompts[regionIndex], contract);
+        regionalCharacterPrompts[regionIndex] = characterReconciled.prompt;
+        promptRepairs.push(...characterReconciled.repairs.map((item) => `regional character ${contract.characterId}: ${item}`));
+      }
+    }
     const regionalCombinedPrompt = [regionalCommonPrompt, ...regionalCharacterPrompts].join(" BREAK ");
     const regionalContractErrors = readContracts.flatMap((contract) =>
       validateFinalPrompt(regionalCombinedPrompt, contract).errors,
@@ -694,6 +719,7 @@ export async function POST(request: Request) {
           preferredExpressionFaceWidthPx: 96,
           requiresFaceRefinement: true,
           warnings: [
+            ...([...new Set(promptRepairs)].length ? [`服务端已按动作契约自动修复最终提示词：${[...new Set(promptRepairs)].join("；")}`] : []),
             ...regionalSpec.assetWarnings,
             ...outfits
               .filter((entry) => !entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag)))
