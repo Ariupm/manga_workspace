@@ -451,9 +451,15 @@ try {
     if(response.images?.[0]&&propInteraction.gaze&&propInteraction.gazeMode!=="independent") {
       const cameraText=`${recipe.generationSpec?.visualSpec?.camera?.shotSize||""} ${recipe.prompt||""}`;
       const close=/close-up|extreme close|特写|近景/i.test(cameraText),medium=/medium shot|waist-up|中景/i.test(cameraText);
+      const regions=recipe.generationSpec?.characterRegions||[];
+      const characterIndex=regions.findIndex((item)=>item.characterId===propInteraction.characterId);
+      const characterRegion=characterIndex>=0?regions[characterIndex]:regions[0];
+      const poseNose=recipe.poseControl?.people?.[characterIndex>=0?characterIndex:0]?.[0];
+      const regionCenter=((characterRegion?.region?.xStart??0)+(characterRegion?.region?.xEnd??1))/2;
+      const faceCenterX=width*Math.max(.12,Math.min(.88,poseNose?.x??regionCenter));
       const faceCenterY=height*(close?.3:medium?.27:.23);
       const faceRadiusX=width*(close?.14:medium?.1:.075),faceRadiusY=faceRadiusX*1.28;
-      const gazeMaskSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${centerX}" cy="${faceCenterY}" rx="${Math.max(36,faceRadiusX)}" ry="${Math.max(46,faceRadiusY)}" fill="white"/></svg>`);
+      const gazeMaskSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="${Math.max(36,faceRadiusX)}" ry="${Math.max(46,faceRadiusY)}" fill="white"/></svg>`);
       const gazeMask=(await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);
       const expression = recipe.characterLooks?.[propInteraction.characterId]?.expressionEn || recipe.generationSpec?.visualSpec?.characters?.find((item) => item.characterId === propInteraction.characterId)?.expression || "";

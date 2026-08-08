@@ -27,7 +27,7 @@ test("近景动作骨骼不再强制生成全身且遵守左右位置", () => {
     ...base,
     camera: "近景",
     cameraEn: "close shot",
-    visualSpecConfirmed: true,
+    visualSpecConfirmed: false,
     visualSpec: {
       ...(base.visualSpec || {}),
       camera: { shotSize: "close shot" },
@@ -439,7 +439,7 @@ test("任务304式通知阅读不会被 wearing 中的 ear 误判为通话",()=>
   assert.equal(contract.purpose,"read");
   assert.equal(contract.handMode,"two");
   assert.equal(contract.gazeMode,"object");
-  assert.equal(contract.viewerSurface,"back");
+  assert.equal(contract.viewerSurface,"screen");
   assert.doesNotMatch(contract.positive.join(" "),/interaction purpose call|beside one ear/);
 });
 

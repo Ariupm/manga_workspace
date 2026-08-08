@@ -1163,6 +1163,8 @@ export function approveSdDraft(projectId: number, jobId: number) {
   const payload = JSON.parse(row.payload);
   if (payload.recipe?.postprocessWarnings?.length)
     return null;
+  if (payload.recipe?.pixelQa?.status === "blocked")
+    return null;
   if (
     !payload.draftImagePath ||
     !fs.existsSync(path.resolve(process.cwd(), payload.draftImagePath))
