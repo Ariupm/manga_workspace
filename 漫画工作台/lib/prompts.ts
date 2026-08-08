@@ -968,9 +968,15 @@ export function buildGenerationPrompt(
   const environmentNegative = close
     ? "studio portrait backdrop"
     : "plain background, empty background, studio backdrop, gradient background, featureless background, excessive background blur";
+  const earNegative = characters
+    .filter((character) => shot.characterIds.includes(character.id))
+    .every((character) => ![...(character.invariantsEn || []), character.appearanceEn || ""].some((value) => /elf|animal ear|兽耳|精灵耳/i.test(value)))
+    ? "pointed ears, elf ears, animal ears"
+    : "";
   const negativePrompt = compactPrompt(unique([
     "(low quality, worst quality:1.4), (blurry:1.2), bad anatomy, bad hands, extra fingers, missing fingers",
-    "ugly, deformed, crossed eyes, asymmetrical eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
+    "ugly, deformed, crossed eyes, asymmetrical eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors",
+    earNegative,
     countNegative,
     gazeNegative,
     ...interactionContracts.flatMap((item)=>item.negative),
