@@ -611,6 +611,11 @@ try {
   db.prepare(
     "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
   ).run(JSON.stringify(payload), jobId);
+  if (postprocessWarnings.length) {
+    db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
+    update("failed", 100, postprocessWarnings.join("；"), "正式成品后处理失败，未写入候选");
+    process.exit(0);
+  }
   for (const [index, image] of response.images.slice(0, 1).entries()) {
     if (status() === "cancelled") break;
     const filename = `shot-${row.shot_id}-${randomUUID()}.png`;

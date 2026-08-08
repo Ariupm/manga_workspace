@@ -92,7 +92,7 @@ export function deriveShotRiskProfile(shot: Shot): ShotRiskProfile {
   if (fullBody) reasons.push("full-body or wide framing");
   if (prop) reasons.push("prop interaction");
   if (gaze) reasons.push("independent gaze targets");
-  return { poseRequired: multi || contact || fullBody, identityRepairRequired: true, propRepairRequired: prop, gazeRepairRequired: gaze, depthGuideRequired: multi || contact, reasons };
+  return { poseRequired: multi || contact || fullBody || prop, identityRepairRequired: true, propRepairRequired: prop, gazeRepairRequired: gaze, depthGuideRequired: multi || contact || prop, reasons };
 }
 
 const interactionObjects: Array<{pattern:RegExp; object:string; affordance:string;y:number;shape:InteractionContract["shape"];handMode:InteractionContract["handMode"]}> = [
@@ -117,8 +117,11 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const match=interactionObjects.find((entry)=>entry.pattern.test(source));
   const index=Math.max(0,shot.characterIds.indexOf(characterId||shot.characterIds[0]));
   const region=planned?.region||{xStart:index/Math.max(1,shot.characterIds.length),xEnd:(index+1)/Math.max(1,shot.characterIds.length)};
-  const regionCenter=(region.xStart+region.xEnd)/2;
-  if(!match)return {required:false,characterId:characterId||"",object:"",affordance:"",region,objectCenter:{x:regionCenter,y:.58},gaze:"",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"independent",positive:[],negative:[]};
+  const lookPosition=shot.visualSpecConfirmed
+    ? planned?.position || ""
+    : shot.characterLooks?.[characterId]?.positionEn || "";
+  const positionCenter=/left|左/i.test(lookPosition) ? .38 : /right|右/i.test(lookPosition) ? .62 : (region.xStart+region.xEnd)/2;
+  if(!match)return {required:false,characterId:characterId||"",object:"",affordance:"",region,objectCenter:{x:positionCenter,y:.58},gaze:"",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"independent",positive:[],negative:[]};
   let purpose:InteractionContract["purpose"]="inspect",orientation:InteractionContract["orientation"]="contextual",viewerSurface:InteractionContract["viewerSurface"]="contextual",gazeMode:InteractionContract["gazeMode"]="object";
   let handMode=match.handMode,shape=match.shape,y=match.y,affordance=match.affordance;
   const phone=/smartphone/.test(match.object);
@@ -145,7 +148,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const surfaceText=viewerSurface==="contextual"?"visible surface follows camera and action geometry":`${viewerSurface} surface is the side readable to the viewer`;
   return {
     required:true,characterId:characterId||"",object:match.object,affordance,region,
-    objectCenter:{x:regionCenter,y},gaze,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
+    objectCenter:{x:Math.max(.15,Math.min(.85,positionCenter)),y},gaze,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
     positive:[
       `(required story prop clearly visible: ${match.object}:1.38)`,
       `(interaction purpose ${purpose}; ${affordance}:1.32)`,orientationText,surfaceText,
