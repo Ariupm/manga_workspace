@@ -132,6 +132,13 @@ ensureColumns("assets", [
   ["confirmed", "INTEGER NOT NULL DEFAULT 1"],
   ["quality_status", "TEXT NOT NULL DEFAULT 'unknown'"],
 ]);
+ensureColumns("candidates", [
+  ["quality_status", "TEXT NOT NULL DEFAULT 'manual_required'"],
+  ["quality_labels_json", "TEXT NOT NULL DEFAULT '[]'"],
+  ["quality_report_json", "TEXT NOT NULL DEFAULT '{}'"],
+  ["reviewed_by", "TEXT NOT NULL DEFAULT ''"],
+  ["reviewed_at", "TEXT NOT NULL DEFAULT ''"],
+]);
 ensureColumns("jobs", [
   ["updated_at", "TEXT NOT NULL DEFAULT ''"],
   ["progress", "REAL NOT NULL DEFAULT 0"],
@@ -1865,11 +1872,14 @@ export function deletePage(pageId: number) {
 }
 
 export function selectCandidate(shotId: number, candidateId: number) {
+  const candidate = one<{ quality_status: string }>("SELECT quality_status FROM candidates WHERE id=? AND shot_id=?", candidateId, shotId);
+  if (!candidate || !["passed", "approved"].includes(candidate.quality_status)) return false;
   db.prepare("UPDATE candidates SET selected=0 WHERE shot_id=?").run(shotId);
   db.prepare("UPDATE candidates SET selected=1 WHERE id=? AND shot_id=?").run(
     candidateId,
     shotId,
   );
+  return true;
 }
 
 export function createGenerationJob(shotId: number) {
@@ -1889,7 +1899,7 @@ export function createGenerationJob(shotId: number) {
   return { status: "queued" as const };
 }
 
-export function addCandidate(shotId: number, imagePath: string, label: string) {
+export function addCandidate(shotId: number, imagePath: string, label: string, quality?: {status?: string; labels?: string[]; report?: Record<string, unknown>}) {
   const next = one<{ v: number }>(
     "SELECT COALESCE(MAX(version),0)+1 v FROM candidates WHERE shot_id=?",
     shotId,
@@ -1900,14 +1910,17 @@ export function addCandidate(shotId: number, imagePath: string, label: string) {
   ).c;
   const result = db
     .prepare(
-      "INSERT INTO candidates(shot_id,image_path,label,version,selected) VALUES(?,?,?,?,?)",
+      "INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json) VALUES(?,?,?,?,?,?,?,?)",
     )
     .run(
       shotId,
       imagePath,
       label || `导入候选 ${next}`,
       next,
-      existing === 0 ? 1 : 0,
+      existing === 0 && ["passed","approved"].includes(quality?.status || "manual_required") ? 1 : 0,
+      quality?.status || "manual_required",
+      JSON.stringify(quality?.labels || []),
+      JSON.stringify(quality?.report || {}),
     );
   db.prepare("UPDATE shots SET status='review' WHERE id=?").run(shotId);
   return Number(result.lastInsertRowid);
