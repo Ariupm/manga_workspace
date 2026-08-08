@@ -586,11 +586,21 @@ try {
   const actualSeed = Number.isFinite(Number(info.seed))
     ? Number(info.seed)
     : undefined;
+  let pixelQa={status:"blocked",blockers:["pixel_decode_failed"],warnings:[],checkedAt:new Date().toISOString()};
+  try {
+    const imageBuffer=Buffer.from(response.images?.[0]||"","base64");
+    const meta=await sharp(imageBuffer).metadata();
+    const blockers=[];
+    if(!meta.width||!meta.height||meta.width<256||meta.height<256) blockers.push("image_dimensions_below_256px");
+    if(imageBuffer.length<20_000) blockers.push("image_payload_suspiciously_small");
+    pixelQa={status:blockers.length?"blocked":"manual_required",blockers,warnings:["semantic checks (expression, hands, prop, identity and outfit) require visual review"],width:meta.width,height:meta.height,checkedAt:new Date().toISOString()};
+  } catch(error) { pixelQa={status:"blocked",blockers:[`pixel_decode_failed:${error instanceof Error?error.message:String(error)}`],warnings:[],checkedAt:new Date().toISOString()}; }
   payload.recipe = {
     ...recipe,
     actualSeed,
     actualSeeds: Array.isArray(info.all_seeds) ? info.all_seeds : undefined,
     postprocessWarnings,
+    pixelQa,
   };
   if (phase === "draft") {
     const filename = `sd-draft-job-${jobId}-${randomUUID()}.png`;
@@ -603,17 +613,17 @@ try {
     db.prepare(
       "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
     ).run(JSON.stringify(payload), jobId);
-    const draftStatus = postprocessWarnings.length ? "draft_blocked" : "awaiting_draft_approval";
+    const draftStatus = postprocessWarnings.length || pixelQa.status === "blocked" ? "draft_blocked" : "awaiting_draft_approval";
     db.prepare("UPDATE shots SET status=? WHERE id=?").run(draftStatus === "draft_blocked" ? "draft" : "awaiting_draft_approval", row.shot_id);
-    update(draftStatus, 100, postprocessWarnings.join("；"), draftStatus === "draft_blocked" ? "视觉后处理失败，草稿已阻断" : "图片已生成，等待人工视觉质检");
+    update(draftStatus, 100, [...postprocessWarnings,...pixelQa.blockers].join("；"), draftStatus === "draft_blocked" ? "视觉质检阻断" : "图片已生成，等待人工视觉质检");
     process.exit(0);
   }
   db.prepare(
     "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
   ).run(JSON.stringify(payload), jobId);
-  if (postprocessWarnings.length) {
+  if (postprocessWarnings.length || pixelQa.status === "blocked") {
     db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
-    update("failed", 100, postprocessWarnings.join("；"), "正式成品后处理失败，未写入候选");
+    update("failed", 100, [...postprocessWarnings,...pixelQa.blockers].join("；"), "正式成品质检失败，未写入候选");
     process.exit(0);
   }
   for (const [index, image] of response.images.slice(0, 1).entries()) {

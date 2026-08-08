@@ -119,7 +119,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const region=planned?.region||{xStart:index/Math.max(1,shot.characterIds.length),xEnd:(index+1)/Math.max(1,shot.characterIds.length)};
   const lookPosition=shot.visualSpecConfirmed
     ? planned?.position || ""
-    : shot.characterLooks?.[characterId]?.positionEn || "";
+    : shot.characterLooks?.[characterId || shot.characterIds[0]]?.positionEn || "";
   const positionCenter=/left|左/i.test(lookPosition) ? .38 : /right|右/i.test(lookPosition) ? .62 : (region.xStart+region.xEnd)/2;
   if(!match)return {required:false,characterId:characterId||"",object:"",affordance:"",region,objectCenter:{x:positionCenter,y:.58},gaze:"",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"independent",positive:[],negative:[]};
   let purpose:InteractionContract["purpose"]="inspect",orientation:InteractionContract["orientation"]="contextual",viewerSurface:InteractionContract["viewerSurface"]="contextual",gazeMode:InteractionContract["gazeMode"]="object";
