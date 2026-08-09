@@ -24,7 +24,7 @@ async function refineOne(data:ReturnType<typeof getStudioData>,shotId:number,for
     previousShot:allowPendingPrevious&&all[index-1]?{...shotSummary(all[index-1],false),confirmedVisualSpec:all[index-1].visualSpec}:shotSummary(all[index-1]),currentShot:shotSummary(shot,false),nextShot:shotSummary(all[index+1],false),
     characters:data.characters.filter((x)=>shot.characterIds.includes(x.id)).map((x)=>({id:x.id,name:x.name,appearance:x.appearanceEn,invariants:x.invariantsEn,visualTraits:x.visualTraits,profile:x.profile})),
     allowedAssets:data.assets.filter((x)=>shot.characterIds.includes(x.characterId)).map((x)=>({id:x.id,type:x.type,characterId:x.characterId,description:x.visualDescriptionEn})),
-    requiredShape:{schemaVersion:"1.0",visibleFacts:[],scene:{},characters:[],interaction:null,camera:{},stateChanges:[],warnings:[]}};
+    requiredShape:{schemaVersion:"1.0",visibleFacts:[],scene:{},characters:[],interactions:[{type:"",actorCharacterId:"",targetCharacterId:"",propId:"",action:"",phase:"",contactPoints:[],gazeTarget:"",ownershipBefore:null,ownershipAfter:null}],camera:{},stateChanges:[],warnings:[]}};
   const hash=dependencyHash(input);
   if(shot.visualSpec&&shot.visualSpecDependencyHash===hash&&!force)return {cached:true,spec:shot.visualSpec,shotId};
   const result=await invoke(shotSystemPrompt,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`);

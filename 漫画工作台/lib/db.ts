@@ -14,6 +14,7 @@ import type {
   Timeline,
 } from "./types";
 import { buildGenerationPrompt } from "./prompts";
+import { normalizeSemanticReviewItems, validateSemanticReviewSubmission, type SemanticReviewSubmission } from "./semantic-review";
 
 const dataDir = path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
@@ -1158,7 +1159,7 @@ export function getCandidateExport(candidateId: number, projectId: number) {
   );
 }
 
-export function approveSdDraft(projectId: number, jobId: number) {
+export function approveSdDraft(projectId: number, jobId: number, semanticReview?: SemanticReviewSubmission) {
   if (!recordBelongsToProject("job", jobId, projectId)) return null;
   const row = getGenerationJobRecord(jobId);
   if (
@@ -1172,6 +1173,9 @@ export function approveSdDraft(projectId: number, jobId: number) {
     return null;
   if (payload.recipe?.pixelQa?.status === "blocked")
     return null;
+  const semanticItems = normalizeSemanticReviewItems(payload.recipe?.semanticQa);
+  const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview);
+  if (!semanticValidation.valid) return null;
   if (
     !payload.draftImagePath ||
     !fs.existsSync(path.resolve(process.cwd(), payload.draftImagePath))
@@ -1189,6 +1193,7 @@ export function approveSdDraft(projectId: number, jobId: number) {
     batchSize: 1,
     denoisingStrength: 0.35,
     approvedDraftPath: payload.draftImagePath,
+    semanticApproval: semanticValidation.approval || { version: "semantic-review-v1", source: "manual_draft_approval", approvedAt: new Date().toISOString(), verdicts: {}, notes: "", reviewedItems: [] },
     references: payload.recipe.finalReferences || payload.recipe.references,
   };
   db.prepare(

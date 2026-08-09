@@ -2,10 +2,11 @@ packages:
   - "."
 
 allowBuilds:
-  core-js: set this to true or false
-  esbuild: set this to true or false
-  sharp: set this to true or false
+  core-js: false
+  esbuild: true
+  sharp: true
 
 onlyBuiltDependencies:
   - core-js
+  - esbuild
   - sharp

@@ -9,6 +9,12 @@
     "test": "cross-env STUDIO_DB_PATH=:memory: tsx --test tests/**/*.test.ts",
     "memory:sync": "node scripts/project-memory-sync.mjs",
     "memory:sync:apply": "node scripts/project-memory-sync.mjs --apply",
+    "issue:check": "node scripts/issue-ledger.mjs check",
+    "issue:queue": "node scripts/issue-ledger.mjs queue",
+    "issue:activate": "node scripts/issue-ledger.mjs activate",
+    "issue:handoff": "node scripts/issue-ledger.mjs handoff",
+    "issue:review": "node scripts/issue-ledger.mjs review",
+    "test:issues": "node --test scripts/issue-ledger.test.mjs",
     "seed": "node scripts/seed.mjs",
     "assets:split": "node scripts/split-assets.mjs"
   },

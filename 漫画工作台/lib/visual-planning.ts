@@ -10,6 +10,24 @@ const meaningful = (value: unknown) => typeof value === "string" && Boolean(valu
 const resolved = (value: unknown, fallback: string) => meaningful(value) ? String(value).trim() : fallback;
 const englishTime = (value: string) => /夜|晚/.test(value) ? "evening" : /晨|早/.test(value) ? "morning" : /午/.test(value) ? "afternoon" : "daytime";
 const inferredWeather = (shot: Shot) => /雨|伞|rain/i.test(`${shot.scene} ${shot.description}`) ? "visible steady rain" : "calm dry weather";
+const genericInteractionTarget = /^(?:the )?(?:current )?(?:story|interaction|action) (?:focus|target)|^(?:the )?current story focus$/i;
+const propSlug = (value: string) => value.toLowerCase().replace(/[^a-z0-9_\-]+/g, "_").replace(/^_+|_+$/g, "");
+const inferInteractionProp = (target: string, source: string, targetIsCharacter: boolean) => {
+  const known: Array<[RegExp,string]> = [
+    [/smartphone|phone screen|mobile phone|cell phone|手机/i,"smartphone"],
+    [/umbrella|parasol|雨伞/i,"umbrella"],
+    [/book|document|letter|page|magazine/i,"book_or_document"],
+    [/package|parcel|delivery box/i,"package"],
+    [/screwdriver|hammer|wrench|pliers|scissors|handheld tool/i,"handheld_tool"],
+    [/cup|mug|glass|bottle/i,"drink_container"],
+    [/handbag|backpack|purse|\bbag\b/i,"bag"],
+  ];
+  const knownMatch=known.find(([pattern])=>pattern.test(`${target} ${source}`));
+  if(knownMatch)return knownMatch[1];
+  if(target&&!genericInteractionTarget.test(target)&&!targetIsCharacter)return propSlug(target);
+  const described=source.match(/\b(?:hold(?:ing)?|read(?:ing)?|us(?:e|ing)|operat(?:e|ing)|inspect(?:ing)?|carry(?:ing)?|open(?:ing)?)\s+(?:a|an|the)?\s*([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,2})/i)?.[1]||"";
+  return described&&!genericInteractionTarget.test(described)?propSlug(described):"";
+};
 const boundedRegion = (value: any, index: number, count: number) => {
   const fallbackStart = index / Math.max(1, count);
   const fallbackEnd = (index + 1) / Math.max(1, count);
@@ -27,6 +45,8 @@ export function assertVisualShape(kind: "chapter" | "shot", raw: any) {
   const arrays = kind === "chapter" ? ["scenes", "timeline", "warnings"] : ["visibleFacts", "characters", "stateChanges", "warnings"];
   for (const key of arrays) if (!Array.isArray(raw[key])) throw new Error(`视觉规划字段 ${key} 必须是数组。`);
   if (kind === "shot" && (typeof raw.scene !== "object" || typeof raw.camera !== "object")) throw new Error("镜头场景或相机字段无效。");
+  if (kind === "shot" && !("interactions" in raw) && !("interaction" in raw)) throw new Error("视觉规划缺少字段：interactions");
+  if (kind === "shot" && "interactions" in raw && !Array.isArray(raw.interactions)) throw new Error("视觉规划字段 interactions 必须是数组。");
 }
 
 export function normalizeChapterPlan(raw: any): ChapterVisualPlan {
@@ -57,31 +77,58 @@ export function normalizeChapterPlan(raw: any): ChapterVisualPlan {
 
 export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
   const rawCharacters = array(raw?.characters);
+  const normalizedCharacters = shot.characterIds.map((characterId, index) => {
+    const item: any = rawCharacters.find((x: any) => x?.characterId === characterId) || {};
+    const look = shot.characterLooks?.[characterId];
+    return { characterId, outfitId: text(item.outfitId, "") || look?.outfitId || shot.outfitId, shoeId: text(item.shoeId, "") || look?.shoeId || shot.shoeId,
+      position: meaningful(look?.positionEn) ? look!.positionEn : resolved(item.position,index===0?"left side of the frame":"right side of the frame"), region: boundedRegion(item.region, index, shot.characterIds.length),
+      action: meaningful(look?.actionEn) ? look!.actionEn : meaningful(shot.actionEn) ? shot.actionEn : resolved(item.action,"performing the current story action"), actionTarget: resolved(item.actionTarget,"the current story focus"),
+      expression: meaningful(look?.expressionEn) ? look!.expressionEn : meaningful(shot.expressionEn) ? shot.expressionEn : resolved(item.expression,"readable attentive expression"), expressionReason: resolved(item.expressionReason,"responding to the visible event"),
+      gazeTarget: meaningful(look?.gazeEn) ? look!.gazeEn : resolved(item.gazeTarget,"looking toward the current story focus"), hands: meaningful(look?.handsEn) ? look!.handsEn : resolved(item.hands,"both visible hands follow the described action"), occlusion: resolved(item.occlusion,"face and action remain unobstructed"),
+      appearanceState:{hair:resolved(item?.appearanceState?.hair,"hair unchanged from the identity reference"),bag:resolved(item?.appearanceState?.bag,"no visible bag"),accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),glasses:resolved(item?.appearanceState?.glasses,"no glasses"),outerwearState:resolved(item?.appearanceState?.outerwearState,"no visible outerwear change"),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
+  });
+  const normalizeInteraction = (item: any) => ({
+    type: text(item?.type), actorCharacterId: text(item?.actorCharacterId, ""), targetCharacterId: text(item?.targetCharacterId, ""),
+    propId: text(item?.propId, ""), action: text(item?.action, "perform the described interaction"), phase: text(item?.phase, "in progress"),
+    contactPoints: array(item?.contactPoints || (item?.contactPoint ? [item.contactPoint] : [])).map((x) => text(x)).filter(meaningful),
+    gazeTarget: text(item?.gazeTarget, ""), ownershipBefore: typeof item?.ownershipBefore === "string" ? item.ownershipBefore : null,
+    ownershipAfter: typeof item?.ownershipAfter === "string" ? item.ownershipAfter : null,
+  });
+  const suppliedInteractions = array(raw?.interactions || (raw?.interaction ? [raw.interaction] : [])).map(normalizeInteraction);
+  const facts = array(raw?.visibleFacts).map((x) => text(x)).join(" ");
+  const inferredInteractions = suppliedInteractions.length ? [] : normalizedCharacters.flatMap((character) => {
+    const source = `${character.action} ${character.actionTarget} ${character.hands} ${character.gazeTarget} ${facts}`;
+    const actionable = /\b(?:hold|holding|held|read|reading|use|using|operate|operating|pass|passing|hand|handing|give|giving|receive|receiving|take|taking|reach|reaching|touch|touching|carry|carrying|open|opening|write|writing|pour|pouring|show|showing|inspect|inspecting)\b|拿|持|读|看手机|使用|操作|递|交接|接过|触碰|打开|书写/i.test(source);
+    const handsParticipate = meaningful(character.hands) && !/hands? out of frame|no visible hands?/i.test(character.hands);
+    const target = meaningful(character.actionTarget) ? character.actionTarget.trim() : "";
+    if (!actionable || !handsParticipate) return [];
+    const targetCharacterId = shot.characterIds.find((id) => id !== character.characterId && new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(source)) || "";
+    const targetIsCharacter = targetCharacterId && new RegExp(`\\b${targetCharacterId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(target);
+    const propId = inferInteractionProp(target,source,Boolean(targetIsCharacter));
+    return [{
+      type: /\b(?:pass|hand|give|receive|take)\b|递|交接|接过/i.test(character.action) ? "object_transfer" : "prop_interaction",
+      actorCharacterId: character.characterId,
+      targetCharacterId,
+      propId,
+      action: character.action,
+      phase: "in progress",
+      contactPoints: [character.hands],
+      gazeTarget: character.gazeTarget,
+      ownershipBefore: null,
+      ownershipAfter: null,
+    }];
+  });
+  const interactions = suppliedInteractions.length ? suppliedInteractions : inferredInteractions;
   return {
     schemaVersion: VISUAL_SCHEMA_VERSION,
     visibleFacts: array(raw?.visibleFacts).map((x) => text(x)).filter(meaningful).length ? array(raw?.visibleFacts).map((x) => text(x)).filter(meaningful) : [resolved(shot.actionEn,"the character performs the current story action")],
     scene: { sceneId: resolved(raw?.scene?.sceneId,"current_scene"), location: resolved(raw?.scene?.location,resolved(shot.sceneEn,"specific story location")), timeOfDay: resolved(raw?.scene?.timeOfDay,englishTime(shot.timeOfDay)),
       weather: resolved(raw?.scene?.weather,inferredWeather(shot)), anchors: array(raw?.scene?.anchors).map((x) => text(x)).filter(meaningful), lighting: resolved(raw?.scene?.lighting,resolved(shot.lightingEn,"motivated soft key light with readable ambient fill")) },
-    characters: shot.characterIds.map((characterId, index) => {
-      const item: any = rawCharacters.find((x: any) => x?.characterId === characterId) || {};
-      const look = shot.characterLooks?.[characterId];
-      return { characterId, outfitId: text(item.outfitId, "") || look?.outfitId || shot.outfitId, shoeId: text(item.shoeId, "") || look?.shoeId || shot.shoeId,
-        position: meaningful(look?.positionEn) ? look!.positionEn : resolved(item.position,index===0?"left side of the frame":"right side of the frame"), region: boundedRegion(item.region, index, shot.characterIds.length),
-        action: meaningful(look?.actionEn) ? look!.actionEn : meaningful(shot.actionEn) ? shot.actionEn : resolved(item.action,"performing the current story action"), actionTarget: resolved(item.actionTarget,"the current story focus"),
-        expression: meaningful(look?.expressionEn) ? look!.expressionEn : meaningful(shot.expressionEn) ? shot.expressionEn : resolved(item.expression,"readable attentive expression"), expressionReason: resolved(item.expressionReason,"responding to the visible event"),
-        gazeTarget: meaningful(look?.gazeEn) ? look!.gazeEn : resolved(item.gazeTarget,"looking toward the current story focus"), hands: meaningful(look?.handsEn) ? look!.handsEn : resolved(item.hands,"both visible hands follow the described action"), occlusion: resolved(item.occlusion,"face and action remain unobstructed"),
-        appearanceState:{hair:resolved(item?.appearanceState?.hair,"hair unchanged from the identity reference"),bag:resolved(item?.appearanceState?.bag,"no visible bag"),accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),glasses:resolved(item?.appearanceState?.glasses,"no glasses"),outerwearState:resolved(item?.appearanceState?.outerwearState,"no visible outerwear change"),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
-    }),
+    characters: normalizedCharacters,
     interaction: raw?.interaction ? { type: text(raw.interaction.type), propId: text(raw.interaction.propId, ""),
       actorCharacterId: text(raw.interaction.actorCharacterId, ""), targetCharacterId: text(raw.interaction.targetCharacterId, ""),
       contactPoint: text(raw.interaction.contactPoint), phase: text(raw.interaction.phase) } : null,
-    interactions: array(raw?.interactions || (raw?.interaction ? [raw.interaction] : [])).map((item: any) => ({
-      type: text(item?.type), actorCharacterId: text(item?.actorCharacterId, ""), targetCharacterId: text(item?.targetCharacterId, ""),
-      propId: text(item?.propId, ""), action: text(item?.action, "perform the described interaction"), phase: text(item?.phase, "in progress"),
-      contactPoints: array(item?.contactPoints || (item?.contactPoint ? [item.contactPoint] : [])).map((x) => text(x)).filter(meaningful),
-      gazeTarget: text(item?.gazeTarget, "the interaction target"), ownershipBefore: typeof item?.ownershipBefore === "string" ? item.ownershipBefore : null,
-      ownershipAfter: typeof item?.ownershipAfter === "string" ? item.ownershipAfter : null,
-    })),
+    interactions,
     camera: { shotSize: resolved(shot.cameraEn,resolved(raw?.camera?.shotSize,"medium shot")), angle: resolved(raw?.camera?.angle,"eye-level angle"), axis: resolved(raw?.camera?.axis,"consistent screen direction"),
       focus: resolved(raw?.camera?.focus,"focus on the acting character and story prop"), composition: resolved(shot.compositionEn,resolved(raw?.camera?.composition,"balanced narrative composition with readable action")) },
     stateChanges: array(raw?.stateChanges).map((x) => typeof x === "string" ? ({note: text(x)}) : ({
@@ -142,7 +189,8 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
       if (!character.gazeTarget?.trim()) failures.push({ code: "gaze_failed", severity: "P0", message: `角色 ${character.characterId} 缺少视线目标。` });
     }
     for (const relation of value.interactions || []) {
-      if (!relation.actorCharacterId || (!relation.targetCharacterId && !relation.propId) || !relation.contactPoints?.length) failures.push({ code: "interaction_failed", severity: "P0", message: "交互关系缺少参与者、目标或接触点。" });
+      if (!relation.actorCharacterId || (!relation.targetCharacterId && !relation.propId) || !relation.action?.trim() || !relation.phase?.trim() || !relation.contactPoints?.length) failures.push({ code: "interaction_failed", severity: "P0", message: "交互关系缺少参与者、目标、动作阶段或接触点。" });
+      if (!relation.gazeTarget?.trim()) failures.push({ code: "gaze_failed", severity: "P0", message: "交互关系缺少必要视线目标。" });
       if (relation.actorCharacterId && !characterIds.has(relation.actorCharacterId)) failures.push({ code: "interaction_failed", severity: "P0", message: `交互指向未知角色：${relation.actorCharacterId}` });
       if (relation.targetCharacterId && !characterIds.has(relation.targetCharacterId)) failures.push({ code: "interaction_failed", severity: "P0", message: `交互目标指向未知角色：${relation.targetCharacterId}` });
     }
@@ -153,4 +201,4 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
 }
 
 export const chapterSystemPrompt = `You are a visual continuity director for serialized anime comics. Output JSON only. Use only supplied character and asset IDs. Every descriptive value, warning and note must be English; IDs must remain unchanged. Describe visible facts, persistent states, locations, weather, lighting, props and continuity. When a harmless visual detail is missing, infer one plausible production-ready choice from the story, character profile, adjacent shots and genre. Never write "unknown", never invent an ID, and never add a new plot event.`;
-export const shotSystemPrompt = `You are a storyboard visual director for Stable Diffusion. Output JSON only. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Convert narrative meaning into directly visible facts and precise subject-action-target relationships. For every character describe position, normalized xStart/xEnd region, concrete action, actionTarget, facial expression, expressionReason, gazeTarget, visible hands, occlusion, outfitId, shoeId, and appearanceState containing hair, bag, accessories, glasses, outerwearState and visible condition. Describe a physically specific location, time, weather, architectural or furniture anchors, motivated lighting, camera size, angle, axis, focus and composition. Preserve explicit manual camera, character, outfit and shoe selections. Infer plausible non-plot-changing visual details from character assets, adjacent shots and scene context instead of writing "unknown". Never invent an ID or invisible psychology.`;
+export const shotSystemPrompt = `You are a storyboard visual director for Stable Diffusion. Output JSON only. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Convert narrative meaning into directly visible facts and precise subject-action-target relationships. Always output an interactions array. It may be empty only for a genuinely static shot with no person-person or person-prop action. Every explicit prop operation, hand contact, handoff, or multi-subject action must have one complete interactions entry with type, actorCharacterId, targetCharacterId or propId, action, phase, contactPoints, gazeTarget, ownershipBefore, and ownershipAfter; emit multiple entries when the shot contains multiple relations. For every character describe position, normalized xStart/xEnd region, concrete action, actionTarget, facial expression, expressionReason, gazeTarget, visible hands, occlusion, outfitId, shoeId, and appearanceState containing hair, bag, accessories, glasses, outerwearState and visible condition. Describe a physically specific location, time, weather, architectural or furniture anchors, motivated lighting, camera size, angle, axis, focus and composition. Preserve explicit manual camera, character, outfit and shoe selections. Infer plausible non-plot-changing visual details from character assets, adjacent shots and scene context instead of writing "unknown". Never invent a character or asset ID or invisible psychology.`;

@@ -1980,6 +1980,37 @@ button:disabled {
   flex-wrap: wrap;
   gap: 8px;
 }
+.pose-control-card .pose-template-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #49444a;
+  background: #191719;
+}
+.pose-template-controls .pose-recommendation {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 3px;
+}
+.pose-template-controls label {
+  display: grid;
+  gap: 4px;
+  color: #d9d1d9;
+  font-size: 9px;
+}
+.pose-template-controls select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #5b555c;
+  background: #29252a;
+  color: #f2edf2;
+  padding: 6px;
+  font-size: 9px;
+}
+.pose-template-controls button {
+  align-self: end;
+}
 .pose-control-card button,
 .pose-upload {
   border: 1px solid #5b555c;
@@ -2005,6 +2036,40 @@ button:disabled {
   background: black;
   border: 1px solid #575158;
 }
+
+.semantic-review-checklist {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 92%, #f3f0ff);
+}
+
+.semantic-review-checklist > header,
+.semantic-review-checklist > article,
+.semantic-review-checklist > article > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.semantic-review-checklist > article {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.semantic-review-checklist > article.passed { border-color: #55a276; }
+.semantic-review-checklist > article.failed { border-color: #d45a65; background: #fff4f5; }
+.semantic-review-checklist > article span { font-size: 11px; font-weight: 700; color: var(--muted); }
+.semantic-review-checklist > article small { color: var(--muted); }
+.semantic-verdicts { display: flex; gap: 6px; }
+.semantic-verdicts button.active.pass { background: #26734d; color: white; }
+.semantic-verdicts button.active.fail { background: #b73745; color: white; }
+.semantic-review-checklist textarea { min-height: 64px; }
 .pose-editor-backdrop {
   position: fixed;
   inset: 0;
