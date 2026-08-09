@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { analyzeStory } from "../lib/analysis";
-import { inheritShotContinuity, normalizeShotSpec, validateVisualIds } from "../lib/visual-planning";
+import { assertVisualShape, inheritShotContinuity, normalizeShotSpec, validateVisualIds } from "../lib/visual-planning";
 import {
   analyzeGenerationPrompt,
   buildGenerationPrompt,
@@ -11,7 +11,21 @@ import {
   compactPrompt,
   sanitizeEnglishPrompt,
   suggestPromptFixes,
+  buildSingleActionPoseSvg,
+  classifyOutfitConditioning,
+  buildCanonicalGenerationPrompt,
+  buildCanonicalNegativePrompt,
+  derivePoseActionPlan,
+  derivePoseFramingMode,
 } from "../lib/prompts";
+import { poseDisplayDetails } from "../lib/pose-display";
+import {
+  applyPoseControlOverride,
+  buildPoseControlV2,
+  derivePoseScenePlanV2,
+  posePresetCatalog,
+  validatePosePeople,
+} from "../lib/pose-v2";
 
 test("期待表情会编译为可见的笑容与眼神特征", () => {
   const cue = expressionPrompt("happy");
@@ -451,6 +465,356 @@ test("明确举到耳边的手机通话仍分类为 call",()=>{
   assert.equal(contract.gazeMode,"independent");
 });
 
+test("近景坐姿 OpenPose 不绘制越界髋部和腿部连接线", () => {
+  const data=getStudioData(1), shot={...data.episode.pages[0].shots[0],camera:"中景",cameraEn:"medium shot",compositionEn:"upper body framing",characterIds:["character_xiaofen"],actionEn:"sitting on a sofa holding a smartphone",characterLooks:{},visualSpecConfirmed:false};
+  const interaction=deriveInteractionContract(shot,"character_xiaofen");
+  const pose=buildSingleActionPoseSvg(shot,interaction,512,512);
+  assert.equal(pose.kind,"single_action_seated_v1");
+  assert.equal(pose.framingMode,"upper_body");
+  assert.doesNotMatch(pose.svg,/y2="542\.72"/);
+});
+
+test("所有单人动作族在近景和中景统一隐藏髋膝脚控制", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const actions=[
+    "sitting on a sofa holding a smartphone",
+    "walking toward the door",
+    "pointing toward the directory text",
+    "rubbing her eyes",
+    "turning off the bedside lamp",
+    "reaching toward a high shelf",
+    "lying down on the bed",
+    "reclining against the sofa back",
+    "turning around",
+    "bending forward",
+    "nodding gently",
+  ];
+  for(const cameraEn of ["close-up","medium close-up","medium shot"]){
+    for(const actionEn of actions){
+      const shot={...base,characterIds:[characterId],description:"",actionEn,camera:cameraEn==="medium shot"?"中景":"近景",cameraEn,compositionEn:"structured upper-body narrative framing",visualSpecConfirmed:false,characterLooks:{}};
+      assert.equal(derivePoseFramingMode(shot),"upper_body",`${cameraEn}/${actionEn}`);
+      const pose=buildSingleActionPoseSvg(shot,deriveInteractionContract(shot,characterId));
+      assert.equal(pose.framingMode,"upper_body",`${cameraEn}/${actionEn}`);
+      assert.deepEqual(pose.hiddenJointIndices,[8,9,10,11,12,13]);
+      assert.ok(pose.people[0].slice(8,14).every((point)=>point.y>1),`${cameraEn}/${actionEn}`);
+      assert.equal((pose.svg.match(/<line /g)||[]).length,11,`${cameraEn}/${actionEn}`);
+    }
+  }
+});
+
+test("无道具剧情动作共享 action plan 并稳定进入对应骨骼路径", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const cases: Array<[string,string,string]> = [
+    ["walking out through the door","locomotion","single_action_moving_v1"],
+    ["pointing toward the directory text","point","single_action_point_v1"],
+    ["rubbing her eyes","self_touch","single_action_self_touch_v1"],
+    ["turning off the bedside lamp","operate_environment","single_action_operate_environment_v1"],
+    ["lying down on the bed","lie","single_action_lie_v1"],
+    ["reclining against the sofa back","recline","single_action_recline_v1"],
+    ["reaching toward a high shelf","reach","single_action_reach_v1"],
+  ];
+  for (const [action,family,kind] of cases) {
+    const shot={...base,characterIds:[characterId],description:"",actionEn:action,camera:"中景",cameraEn:"medium shot",compositionEn:"medium narrative composition",visualSpecConfirmed:false,characterLooks:{}};
+    const plan=derivePoseActionPlan(shot,characterId);
+    const regional=buildRegionalPrompt(shot,data.assets,data.characters);
+    assert.equal(plan.family,family,action);
+    assert.equal(plan.required,true,action);
+    assert.equal(regional.repairPasses.risk.poseRequired,true,action);
+    assert.equal(regional.poseControl?.kind,kind,action);
+    assert.match(regional.poseControl?.selectorReason || "",/requires|require/i,action);
+  }
+});
+
+test("动作骨骼在关键关节上表达指向、自触摸、环境操作、行走、坐姿与卧姿", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const pose=(action:string,cameraEn="medium shot")=>{
+    const shot={...base,characterIds:[characterId],description:"",actionEn:action,camera:cameraEn==="wide shot"?"远景":"中景",cameraEn,visualSpecConfirmed:false,characterLooks:{}};
+    return buildSingleActionPoseSvg(shot,deriveInteractionContract(shot,characterId));
+  };
+  const pointing=pose("pointing toward the directory text").people[0];
+  assert.ok(Math.max(Math.abs(pointing[4].x-pointing[1].x),Math.abs(pointing[7].x-pointing[1].x))>.24);
+  const selfTouch=pose("rubbing her eyes").people[0];
+  assert.ok(Math.hypot(selfTouch[4].x-selfTouch[0].x,selfTouch[4].y-selfTouch[0].y)<.06);
+  const operate=pose("turning off the bedside lamp").people[0];
+  assert.ok(operate[7].x-operate[5].x>.16);
+  const moving=pose("walking toward the door","wide shot").people[0];
+  assert.ok(Math.abs(moving[10].x-moving[13].x)>.35);
+  const seated=pose("sitting on a sofa holding a smartphone","wide shot").people[0];
+  assert.ok(Math.abs(seated[8].y-seated[9].y)<.08);
+  assert.ok(Math.abs(seated[8].x-seated[9].x)>.1);
+  assert.ok(Math.abs(seated[9].x-seated[10].x)<.03);
+  const lying=pose("lying down on the bed","wide shot").people[0];
+  const hip={x:(lying[8].x+lying[11].x)/2,y:(lying[8].y+lying[11].y)/2};
+  assert.ok(Math.abs(hip.y-lying[1].y)<.1);
+  assert.ok(Math.abs(hip.x-lying[1].x)>.18);
+});
+
+test("卧姿在近景只保留水平上身，宽景才发送完整下肢", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const compile=(camera:string,cameraEn:string)=>{
+    const shot={...base,characterIds:[characterId],description:"",actionEn:"lying down on the bed",camera,cameraEn,visualSpecConfirmed:false,characterLooks:{}};
+    return buildSingleActionPoseSvg(shot,deriveInteractionContract(shot,characterId));
+  };
+  const close=compile("近景","close-up");
+  assert.equal(close.kind,"single_action_lie_v1");
+  assert.equal(close.framingMode,"upper_body");
+  assert.ok(close.people[0].slice(8,14).every((point)=>point.y>1));
+  assert.ok(Math.abs(close.people[0][0].x-close.people[0][1].x)>.08);
+  const wide=compile("远景","wide shot");
+  assert.equal(wide.framingMode,"full_body");
+  assert.ok(wide.people[0].slice(8,14).every((point)=>point.y>=0&&point.y<=1));
+  assert.equal((wide.svg.match(/<line /g)||[]).length,17);
+});
+
+test("当前结构化动作优先于描述中的后续姿态", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const shot={...base,characterIds:[characterId],actionEn:"walking to the bed and pulling back the blanket",description:"she will be lying in bed afterward",camera:"中景",cameraEn:"medium shot",visualSpecConfirmed:false,characterLooks:{}};
+  assert.equal(derivePoseActionPlan(shot,characterId).family,"locomotion");
+  assert.equal(buildRegionalPrompt(shot,data.assets,data.characters).poseControl?.kind,"single_action_moving_v1");
+});
+
+test("宽景静态人物与坐姿道具动作仍使用非空专用骨骼", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  const wide={...base,characterIds:[base.characterIds[0]],description:"",actionEn:"standing calmly",camera:"远景",cameraEn:"wide shot",compositionEn:"complete figure in environment",visualSpecConfirmed:false,characterLooks:{}};
+  assert.equal(buildRegionalPrompt(wide,data.assets,data.characters).poseControl?.kind,"single_full_body_v1");
+  const seated={...base,characterIds:[base.characterIds[0]],description:"reading a phone notification",actionEn:"sitting on a sofa holding a smartphone",camera:"中景",cameraEn:"medium shot",visualSpecConfirmed:false,characterLooks:{}};
+  assert.equal(buildRegionalPrompt(seated,data.assets,data.characters).poseControl?.kind,"single_action_seated_v1");
+});
+
+test("OpenPose v2 覆盖剧情中的持物、拿取、开合、书写、工具和饮食动作", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const cases: Array<[string,string]> = [
+    ["Holding the package against her torso","hold_carry"],
+    ["Taking out two books from the package","pick_place"],
+    ["Turning pages and closing the notebook","open_close"],
+    ["Writing a reading plan in a notebook","write_tool"],
+    ["Cutting open the package with scissors","write_tool"],
+    ["Drinking tea from a cup","drink_eat"],
+    ["Reading a phone notification","read_phone"],
+    ["Kneeling beside the shelf","crouch_kneel"],
+  ];
+  for (const [action,expected] of cases) {
+    const shot={...base,id:base.id+action.length,characterIds:[characterId],description:"",actionEn:action,camera:"中景",cameraEn:"medium shot",visualSpecConfirmed:false,characterLooks:{}};
+    const interaction=deriveInteractionContract(shot,characterId);
+    const pose=buildPoseControlV2(shot,[{characterId,required:interaction.required,object:interaction.object,purpose:interaction.purpose,handMode:interaction.handMode,objectCenter:interaction.objectCenter,region:interaction.region}]);
+    assert.ok(pose,action);
+    assert.ok(pose!.scenePlan.people[0].actions.includes(expected as any),action);
+    assert.notEqual(pose!.kind,"single_action_standing_v1",action);
+  }
+});
+
+test("OpenPose v2 将复合动作拆成身体基座和上身动作叠加", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const shot={...base,id:2201,characterIds:[characterId],description:"",actionEn:"walking toward the bed while carrying two books and pulling the blanket",camera:"远景",cameraEn:"wide shot",visualSpecConfirmed:false,characterLooks:{}};
+  const interaction=deriveInteractionContract(shot,characterId);
+  const pose=buildPoseControlV2(shot,[{characterId,required:interaction.required,object:interaction.object,purpose:interaction.purpose,handMode:interaction.handMode,objectCenter:interaction.objectCenter,region:interaction.region}]);
+  assert.ok(pose);
+  assert.equal(pose!.scenePlan.people[0].primaryAction,"locomotion");
+  assert.ok(pose!.scenePlan.people[0].actions.includes("hold_carry"));
+  assert.ok(pose!.scenePlan.people[0].actions.includes("push_pull"));
+  assert.ok(Math.abs(pose!.people[0][10].x-pose!.people[0][13].x)>.28);
+  assert.equal(pose!.controlProfile.id,"dynamic_full");
+  assert.equal(pose!.controlProfile.weight,.95);
+});
+
+test("OpenPose v2 的变体稳定可复现且相邻镜头默认不同", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const compile=(id:number)=>buildPoseControlV2({...base,id,characterIds:[characterId],description:"",actionEn:"walking through the door",camera:"远景",cameraEn:"wide shot",visualSpecConfirmed:false,characterLooks:{}},[]);
+  const first=compile(2301),again=compile(2301),next=compile(2302);
+  assert.deepEqual(first,again);
+  assert.notEqual(first!.variantId,next!.variantId);
+  assert.notDeepEqual(first!.people,next!.people);
+});
+
+test("通用双人模板覆盖交谈、递交、共享道具、接触、搀扶、引导、并行与对峙", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  const characters=["character_xiaofen","character_friend"];
+  const cases: Array<[string,string]> = [
+    ["two women face each other and talk","conversation"],
+    ["the other woman listens and reacts with surprise","reaction"],
+    ["one woman hands a book to the other","handover"],
+    ["both women look at and hold the shared book together","shared_prop"],
+    ["the women shake hands","handshake_highfive"],
+    ["one woman supports and helps the other up","embrace_support"],
+    ["one woman guides and pulls the other forward","guide_pull"],
+    ["the women walk together side by side","walk_together"],
+    ["the two women confront each other","confrontation"],
+  ];
+  for(const [action,kind] of cases){
+    const shot={...base,id:2400+action.length,characterIds:characters,description:"",actionEn:action,camera:"中景",cameraEn:"medium shot",visualSpecConfirmed:false,characterLooks:{}};
+    const pose=buildPoseControlV2(shot,[]);
+    assert.ok(pose,action);
+    assert.equal(pose!.scenePlan.interactionKind,kind,action);
+    assert.equal(pose!.people.length,2);
+    assert.equal(pose!.controlProfile.id,"multi_contact");
+    assert.equal(pose!.controlProfile.weight,.9);
+    assert.ok(pose!.people.every((person)=>person.slice(8,14).every((point)=>point.y>1)),action);
+    assert.equal(pose!.safety.valid,true,action);
+  }
+  assert.equal(posePresetCatalog.filter((preset)=>preset.peopleCount===2).length,9);
+});
+
+test("双人递交和握手的腕部接触点闭合", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  for(const action of ["one woman hands an umbrella to the other","the women shake hands"]){
+    const pose=buildPoseControlV2({...base,id:2500+action.length,characterIds:["character_xiaofen","character_friend"],description:"",actionEn:action,camera:"远景",cameraEn:"wide shot",visualSpecConfirmed:false,characterLooks:{}},[]);
+    assert.ok(pose);
+    assert.ok(Math.hypot(pose!.people[0][7].x-pose!.people[1][4].x,pose!.people[0][7].y-pose!.people[1][4].y)<.001);
+    assert.equal(pose!.safety.contactError,0);
+  }
+});
+
+test("OpenPose v2 结构化覆盖可重建模板参数并保存关节点编辑", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],characterId=base.characterIds[0];
+  const automatic=buildPoseControlV2({...base,id:2601,characterIds:[characterId],description:"",actionEn:"pointing at the sign",camera:"中景",cameraEn:"medium shot",visualSpecConfirmed:false,characterLooks:{}},[])!;
+  const parameterized=applyPoseControlOverride(automatic,{schemaVersion:"pose-override-v1",templateId:"single_write_tool_v2",phase:"anticipation",intensity:"dynamic",handedness:"left",targetDirection:"up",mirror:true,editMode:"parameter_edit"});
+  assert.equal(parameterized.source,"user_override");
+  assert.equal(parameterized.scenePlan.people[0].primaryAction,"write_tool");
+  assert.equal(parameterized.scenePlan.people[0].phase,"anticipation");
+  assert.equal(parameterized.scenePlan.people[0].intensity,"dynamic");
+  const edited=parameterized.people.map((person)=>person.map((point)=>({...point})));
+  edited[0][4]={x:.2,y:.2};
+  const jointEdited=applyPoseControlOverride(automatic,{schemaVersion:"pose-override-v1",people:edited,editMode:"joint_edit"});
+  assert.deepEqual(jointEdited.people[0][4],{x:.2,y:.2});
+  assert.equal(jointEdited.override?.editMode,"joint_edit");
+});
+
+test("OpenPose v2 对三人以上和非法骨架执行安全降级", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  assert.equal(derivePoseScenePlanV2({...base,characterIds:["a","b","c"],actionEn:"three people embrace",visualSpecConfirmed:false,characterLooks:{}},[]),null);
+  const invalid=validatePosePeople([[{x:Number.NaN,y:0}]])
+  assert.equal(invalid.valid,false);
+  assert.match(invalid.errors.join(" "),/18|坐标无效/);
+});
+
+test("OpenPose UI 显示真实 kind、来源、选择原因和未知类型", () => {
+  const labels=[
+    ["single_action_seated_v1","单人·坐姿动作"],
+    ["single_action_moving_v1","单人·移动"],
+    ["single_action_point_v1","单人·指向"],
+    ["single_action_lie_v1","单人·卧姿"],
+    ["single_full_body_v1","单人·全身"],
+    ["umbrella_handover_v1","双人·雨伞交接"],
+  ];
+  for (const [kind,label] of labels) assert.equal(poseDisplayDetails(kind,"automatic_action_plan","test reason","upper_body").kindLabel,label);
+  assert.equal(poseDisplayDetails("single_action_lie_v1","automatic_action_plan","test reason","upper_body").framingLabel,"上身裁切骨骼");
+  assert.equal(poseDisplayDetails("single_full_body_v1","automatic_action_plan","test reason","full_body").framingLabel,"完整全身骨骼");
+  assert.match(poseDisplayDetails("future_pose_v9","custom_source","").kindLabel,/future_pose_v9/);
+  assert.match(poseDisplayDetails("future_pose_v9","custom_source","").sourceLabel,/custom_source/);
+});
+
+test("服装 conditioning 状态与景别、纯服装标签和 adapter 一致", () => {
+  for (const camera of ["close-up", "medium shot", "wide shot"]) {
+    for (const isolated of [false, true]) {
+      const result=classifyOutfitConditioning(camera, isolated, true);
+      assert.equal(result.status, camera === "wide shot" && isolated ? "control_applied" : "text_only");
+    }
+  }
+  const unavailable=classifyOutfitConditioning("wide shot", true, false);
+  assert.equal(unavailable.status,"text_only");
+  assert.equal(unavailable.controlApplied,false);
+  assert.equal([unavailable].filter((decision)=>decision.controlApplied).length,0);
+});
+
+test("最终请求统一使用结构化 prompt 契约并保留可追溯编辑层", () => {
+  const data=getStudioData(1),base={...data.episode.pages[0].shots[0],characterLooks:{}};
+  const sources=[
+    {mode:"structured",override:""},
+    {mode:"manual_override",override:"cinematic full body portrait, dramatic rim light"},
+    {mode:"auto_repaired",override:"full-length figure, polished color design"},
+  ];
+  for (const cameraEn of ["close-up","medium shot","wide shot"]) {
+    for (const count of [1,2]) {
+      const ids=data.characters.slice(0,count).map((character)=>character.id);
+      const shot={...base,camera:cameraEn==="wide shot"?"远景":cameraEn==="medium shot"?"中景":"特写",cameraEn,characterIds:ids};
+      const regional=buildRegionalPrompt(shot,data.assets,data.characters);
+      for (const source of sources) {
+        const plan=buildCanonicalGenerationPrompt(shot,regional.prompt,source.override,count);
+        assert.equal(plan.validation.valid,true,`${source.mode}/${cameraEn}/${count}`);
+        assert.match(plan.prompt,/masterpiece, best quality/);
+        if(cameraEn!=="wide shot") assert.match(plan.prompt,/strict crop at the waist|no waist or legs visible|do not show legs or the full body/);
+        if(source.override) assert.equal(plan.overrideApplied,true);
+        if(cameraEn!=="wide shot") assert.equal(plan.prompt.includes("editorial visual details, cinematic full body portrait"),false);
+        const negative=buildCanonicalNegativePrompt(shot,regional.negativePrompt,"soft focus");
+        assert.match(negative,cameraEn==="wide shot"?/cropped feet/:/visible legs/);
+      }
+    }
+  }
+});
+
+test("Regional override 内部的景别冲突也会在 canonical 层清除", () => {
+  const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],camera:"近景",cameraEn:"medium close-up",characterIds:[data.characters[0].id],characterLooks:{}};
+  const regional=buildRegionalPrompt(shot,data.assets,data.characters);
+  const polluted=`${regional.prompt}, cinematic full body portrait, both feet fully visible`;
+  const plan=buildCanonicalGenerationPrompt(shot,polluted,"",1);
+  assert.equal(plan.validation.valid,true);
+  assert.doesNotMatch(plan.prompt,/full body portrait|both feet fully visible/);
+  assert.ok(plan.repairs.some((repair)=>repair.includes("regional contract")));
+});
+
+test("wide/full canonical 会清除反向的 no legs 近景契约", () => {
+  const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],camera:"远景",cameraEn:"wide shot",characterIds:[data.characters[0].id],characterLooks:{}};
+  const regional=buildRegionalPrompt(shot,data.assets,data.characters);
+  const polluted=`${regional.prompt}, strict crop at the waist, no legs or full bodies`;
+  const plan=buildCanonicalGenerationPrompt(shot,polluted,"",1);
+  assert.equal(plan.validation.valid,true);
+  assert.doesNotMatch(plan.prompt,/strict crop at the waist|no legs or full bodies/);
+  assert.match(plan.prompt,/complete figures visible/);
+  assert.ok(plan.repairs.some((repair)=>repair.includes("regional contract")));
+});
+
+test("视觉规格把显式手机和未知道具动作规范化为完整 interactions", () => {
+  const data=getStudioData(1),base={...data.episode.pages[0].shots[0],actionEn:"natural storytelling action",characterLooks:{},characterIds:[data.characters[0].id]};
+  for (const target of ["smartphone","prototype scanner"]) {
+    const raw={visibleFacts:[`the character reads the ${target}`],scene:{},characters:[{characterId:base.characterIds[0],action:`holding and inspecting the ${target}`,actionTarget:target,gazeTarget:`the ${target} surface`,hands:`both hands holding the ${target}`}],interactions:[],camera:{},stateChanges:[],warnings:[]};
+    assertVisualShape("shot",raw);
+    const spec=normalizeShotSpec(raw,base);
+    assert.equal(spec.interactions.length,1);
+    assert.equal(spec.interactions[0].actorCharacterId,base.characterIds[0]);
+    assert.equal(spec.interactions[0].propId,target==="smartphone"?"smartphone":"prototype_scanner");
+    assert.ok(spec.interactions[0].contactPoints.length);
+    assert.ok(spec.interactions[0].gazeTarget);
+    assert.equal(validateVisualIds(spec,data.characters,data.assets).valid,true);
+  }
+});
+
+test("通用 actionTarget 不会遮蔽 action、gaze 和 visibleFacts 中的 smartphone", () => {
+  const data=getStudioData(1),base={...data.episode.pages[0].shots[0],actionEn:"natural storytelling action",characterLooks:{},characterIds:[data.characters[0].id]};
+  const spec=normalizeShotSpec({visibleFacts:["the character sits on a sofa holding a smartphone with both hands","the phone screen displays a delivery notification"],scene:{},characters:[{characterId:base.characterIds[0],action:"looking at a phone notification",actionTarget:"the current story focus",gazeTarget:"phone screen",hands:"both hands holding the smartphone"}],interactions:[],camera:{},stateChanges:[],warnings:[]},base);
+  assert.equal(spec.interactions[0].propId,"smartphone");
+  const contract=deriveInteractionContract({...base,visualSpecConfirmed:true,visualSpec:spec},base.characterIds[0]);
+  assert.equal(contract.object,"smartphone");
+  assert.equal(contract.required,true);
+});
+
+test("多关系、legacy 单数迁移、残缺关系和静态镜头走各自校验路径", () => {
+  const data=getStudioData(1),ids=data.characters.slice(0,2).map((character)=>character.id),base={...data.episode.pages[0].shots[0],actionEn:"natural storytelling action",characterLooks:{},characterIds:ids,outfitId:"",shoeId:""};
+  const characters=ids.map((id,index)=>({characterId:id,action:index?"receiving the umbrella":"passing the umbrella",actionTarget:"umbrella",gazeTarget:"umbrella handle",hands:index?"left hand receiving the handle":"right hand holding the handle"}));
+  const relations=characters.map((character,index)=>({type:"object_transfer",actorCharacterId:character.characterId,targetCharacterId:ids[1-index],propId:"umbrella",action:character.action,phase:index?"receiving":"releasing",contactPoints:[character.hands],gazeTarget:character.gazeTarget,ownershipBefore:index?null:ids[0],ownershipAfter:ids[1]}));
+  const multi=normalizeShotSpec({visibleFacts:["an umbrella changes hands"],scene:{},characters,interactions:relations,camera:{},stateChanges:[],warnings:[]},base);
+  assert.equal(multi.interactions.length,2);
+  assert.equal(validateVisualIds(multi,data.characters,data.assets).valid,true);
+
+  const legacy=normalizeShotSpec({visibleFacts:["a phone is held"],scene:{},characters:[characters[0]],interaction:{type:"use",actorCharacterId:ids[0],targetCharacterId:"",propId:"legacy_phone",action:"read",phase:"in progress",contactPoint:"both hands",gazeTarget:"screen"},camera:{},stateChanges:[],warnings:[]},{...base,characterIds:[ids[0]]});
+  assert.equal(legacy.interactions[0].propId,"legacy_phone");
+  assert.deepEqual(legacy.interactions[0].contactPoints,["both hands"]);
+
+  const partial=normalizeShotSpec({visibleFacts:["a device is used"],scene:{},characters:[characters[0]],interactions:[{type:"use",actorCharacterId:ids[0],propId:"device",action:"use",phase:"in progress",contactPoints:["right hand"],gazeTarget:""}],camera:{},stateChanges:[],warnings:[]},{...base,characterIds:[ids[0]]});
+  assert.equal(validateVisualIds(partial,data.characters,data.assets).blocked,true);
+
+  const staticSpec=normalizeShotSpec({visibleFacts:["the character stands beside a window"],scene:{},characters:[{characterId:ids[0],action:"standing beside a window",actionTarget:"window",gazeTarget:"outside",hands:"hands out of frame"}],interactions:[],camera:{},stateChanges:[],warnings:[]},{...base,characterIds:[ids[0]],actionEn:"standing beside a window"});
+  assert.equal(staticSpec.interactions.length,0);
+  assert.equal(validateVisualIds(staticSpec,data.characters,data.assets).valid,true);
+});
+
+test("结构化 propId 和中文动作会强制建立道具契约",()=>{
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  const visualSpec=normalizeShotSpec({visibleFacts:["人物看手机"],scene:{location:"room",timeOfDay:"day",weather:"dry",anchors:[],lighting:"soft"},characters:[{characterId:"character_xiaofen",action:"查看消息",actionTarget:"手机",gazeTarget:"手机屏幕",hands:"双手持手机",position:"center",region:{xStart:0,xEnd:1}}],interaction:{type:"use",propId:"parcel_notification_device",actorCharacterId:"character_xiaofen",targetCharacterId:"",contactPoint:"hands",phase:"in progress"},camera:{shotSize:"close-up"},stateChanges:[],warnings:[]},base);
+  const contract=deriveInteractionContract({...base,characterIds:["character_xiaofen"],visualSpecConfirmed:true,visualSpec,characterLooks:{}},"character_xiaofen");
+  assert.equal(contract.required,true); assert.equal(contract.object,"parcel_notification_device");
+  assert.match(contract.negative.join(" "),/missing parcel_notification_device/);
+});
+
 test("通用手持工具生成单手接触契约与动作骨架",()=>{
   const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],characterIds:["character_xiaofen"],actionEn:"using a screwdriver to tighten a cabinet hinge",characterLooks:{}};
   const contract=deriveInteractionContract(shot,"character_xiaofen"),result=buildRegionalPrompt(shot,data.assets,data.characters);
@@ -468,7 +832,7 @@ test("已确认的沙发坐姿事实会生成坐姿交互骨架",()=>{
 });
 
 test("单人全景启用完整四肢 OpenPose 模板", () => {
-  const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],camera:"全景",cameraEn:"full shot",characterIds:["character_xiaofen"]};
+  const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],camera:"全景",cameraEn:"full shot",description:"A static full-body character standing in the room",actionEn:"natural storytelling action",characterIds:["character_xiaofen"],characterLooks:{},visualSpecConfirmed:false};
   const result=buildRegionalPrompt(shot,data.assets,data.characters);
   assert.equal(result.poseControl?.kind,"single_full_body_v1");
   assert.equal(result.poseControl?.people.length,1);
@@ -570,6 +934,27 @@ test("批准草稿会把同一任务转换为单张512方形成品配方", () =>
   assert.equal(next.recipe.height, 512);
   assert.equal(next.recipe.batchSize, 1);
   assert.equal(next.recipe.denoisingStrength, 0.35);
+});
+
+test("含语义检查项的草稿必须逐项通过并保存审核证据", () => {
+  const data=getStudioData(1),shot=data.episode.pages[0].shots[0];
+  const items=[
+    {id:"interaction_review_required",label:"关键交互",priority:"P0",required:true,expectation:"双手正确持手机",sources:["propInteraction"]},
+    {id:"outfit_review_required",label:"服装一致性",priority:"P1",required:true,expectation:"服装符合当前规格",sources:["outfitConditioning"]},
+  ];
+  const payload={phase:"draft",draftImagePath:"../角色资产/小粉/00-原始参考图.png",recipe:{phase:"draft",endpoint:"http://127.0.0.1:7860/sdapi/v1/txt2img",postprocessWarnings:[],pixelQa:{status:"passed"},semanticQa:{version:"semantic-review-v1",status:"manual_required",items,labels:items.map((item)=>item.id)},references:[],finalReferences:[]}};
+  const id=createPersistentGenerationJob(shot.id,"sd-webui",payload);
+  updateGenerationJobPayload(id,payload);
+  updatePersistentGenerationJob(id,"awaiting_draft_approval",100,"","等待确认");
+  assert.equal(approveSdDraft(1,id),null);
+  assert.equal(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{interaction_review_required:"pass",outfit_review_required:"fail"}}),null);
+  assert.equal(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{interaction_review_required:"pass"}}),null);
+  assert.ok(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{interaction_review_required:"pass",outfit_review_required:"pass"},notes:"逐项检查完成"}));
+  const recipe=JSON.parse(getGenerationJobRecord(id).payload).recipe;
+  assert.equal(recipe.semanticApproval.version,"semantic-review-v1");
+  assert.equal(recipe.semanticApproval.verdicts.outfit_review_required,"pass");
+  assert.equal(recipe.semanticApproval.reviewedItems.length,2);
+  assert.equal(recipe.semanticApproval.notes,"逐项检查完成");
 });
 
 test("旧章节迁移后至少包含五页", () => {

@@ -402,7 +402,7 @@
 ## ISSUE-POSE-003 UI 将真实 OpenPose kind 折叠为二元类型标签
 
 - 优先级：P2
-- 状态：fixed_pending_review
+- 状态：verified
 - 来源问题：用户追查“骨骼图为什么看起来只有两种”；本项是 `ISSUE-POSE-002` 的界面可观测性关联问题。
 - 用户报告：界面里的骨骼“类型”看起来始终只有“单人动作”或“多人交互”，无法判断实际使用了坐姿、站姿、移动还是全身模板。
 - 已确认事实：`app/page.tsx` 的类型显示硬编码为 `people.length > 1 ? "多人交互" : "单人动作"`，没有读取 `poseControl.kind`。底层实际存在 `umbrella_handover_v1`、`single_full_body_v1`、`single_action_seated_v1`、`single_action_moving_v1`、`single_action_standing_v1`，但都被折叠为两类 UI 文案。
@@ -422,6 +422,7 @@
 - 诊断 Agent 最终复核（2026-08-09）：骨骼卡片已删除按 people.length 生成的二元类型文案，改为调用集中式 `poseDisplayDetails(kind, source, selectorReason)`；映射覆盖当前全部 seated/moving/standing/point/self-touch/environment-operation/reach/lie/recline/turn/bend/head-gesture/full-body/umbrella kind，用户覆盖与自动来源可区分，未知 kind/source 保留原始值，选择原因也直接显示。展示值与 recipe.poseControl 数据流一致，标记 `verified`。
 - 后续处理：解决 Agent 增加真实 kind/source/selector reason 映射与界面展示测试。
 - 诊断 Agent 回归复核（2026-08-09）：UI 仍读取真实 `poseControl.kind`，但解决 `ISSUE-POSE-005` 时把 `kindForSingle` 的首个条件改成 `framingMode === "full_body"`，导致所有 wide/full 动作在读取 `primaryAction` 前统一返回 `single_full_body_v1`。独立矩阵中 wide walking 的 `primaryAction=locomotion`、wide seated 的 `primaryAction=seated`，recipe kind 均被折叠为 `single_full_body_v1`；Studio 测试中手机、工具、坐姿等 4 个动作 kind 断言因此回归失败。真实动作类型再次无法由 recipe/UI 区分，状态改为 `regression`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：当前 `kindForSingle` 只在 `primaryAction=static && framingMode=full_body` 时返回通用 `single_full_body_v1`，动作镜头先保留结构化 kind。独立 medium/wide 矩阵中 locomotion、seated、recline、lie、write_tool 分别保持 moving/seated/recline/lie/write_tool kind，且 framing 独立记录 upper/full body；`poseDisplayDetails` 的真实 kind/source/reason 测试通过。wide/full 动作折叠回归已消除，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-POSE-004 单人动作骨骼几何高度同质化，不能表达不同动作拓扑
 
@@ -472,6 +473,7 @@
 - 后续处理：解决 Agent 建立 GazePlan，并闭合 face/target/crop/request/recipe 数据流。
 - 诊断 Agent 最终复核（2026-08-09）：联合几何已经让 `maskBounds` 覆盖 face 与 target，旧的“目标完全位于高分辨率裁剪外”问题部分消除；但 `gazeMaskGeometry` 只返回 face/target/bounds，没有 face→target 向量、八方向或距离，四组左下/右下/正下/侧方输入的 worker prompt 仍是同一抽象“converge on object/target”文本。recipe 也没有记录 vector/direction/containsTarget；worker 还把目标椭圆和连接走廊写成白色实际 inpaint mask，导致本应作为方向上下文的手机/工具本体及中间区域被二次重绘，而不是保持“只重绘眼脸 mask”。未满足方向化请求与可审计 GazePlan 验收，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：本轮新增 face→target vector、角度、八方向、距离 trace，实际白色 inpaint mask 已缩回脸部，padding 也会随距离扩大，属于实质性进展；但 worker 的方向提示把“target at normalized coordinates”写成 `gazePlan.center`（人脸坐标），而不是 `propInteraction.objectCenter`。`containsTarget` 仅为 `Boolean(target)`，不验证实际 full-res crop：在 768×512、face.x=0.12、target.x=0.88 的合法横向镜头中，动态 crop 右边界约 469.76px，目标位于 675.84px，实际不包含却记录为 true。目标坐标和边缘景别上下文仍错误，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：独立左下、右下、正下、侧方矩阵确认 vector/direction/angle/distance 已产生不同结果，且白色重绘 mask 只覆盖脸部，这是有效修复；但实际 `gazePayload.prompt` 仍把 `gazePlan.center` 人脸坐标写成 target coordinates，recipe 的 `containsTarget` 仍仅等于 `Boolean(target)`，不验证扩大后的 full-res crop 是否包含远端目标。宽画幅边缘目标可继续在 crop 外却记录 true，因此保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-VISUALSPEC-002 已确认旧视觉规格绕过生成时规范化与校验
 
@@ -519,6 +521,7 @@
 - 后续处理：解决 Agent 将 interaction contract、pose、repair 和 QA 全链升级为 relation 数组。
 - 诊断 Agent 最终复核（2026-08-09）：`deriveInteractionContracts` 与 `repairPasses.propInteractions` 已保留同一 actor 的多条关系，Regional 负向词也消费数组，属于有效的部分修复；但 `InteractionContract` 仍无 `relationId`，pose 输入仍使用 `characterIds.map(deriveInteractionContract)` 每人只取第一条，recipe 同时保留单数 `propInteraction=.find(...)`，而 `sd-worker.mjs` 只读取并执行该单数值。semantic QA 的 interaction/gaze/prop 摘要同样以单数为主。第二关系没有对应 pose、prop/gaze pass 或逐关系 QA trace，仍可被执行层静默丢弃，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：关系现有稳定 `relationId`，recipe 也保留全部 `propInteractions`，但执行链仍未升级。单 actor 的 smartphone+screwdriver 推导会产生两条 relationId，pose 仍由 `characterIds.map(deriveInteractionContract)` 只消费 smartphone，动作仅含 `read_phone`；worker 仅给数组建立 `relationTraces`，把第二条标为 `queued_for_followup_pass`，随后仍以单数 `propInteraction` 进入唯一一次 prop/gaze 修复，代码中不存在 follow-up loop。第二 required relation 仍未执行，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：同 actor smartphone+screwdriver 独立推导得到两条稳定 relationId，`repairPasses.propInteractions` 也保留两条；但 pose 仍只取 smartphone，worker 把第二条写成 `queued_for_followup_pass` 后只执行单数 `propInteraction`，没有任何后续循环或逐关系 QA 结果。记录 queued 不能替代执行，第二条 required relation 仍被截断，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-TOOL-001 单手工具契约在 OpenPose v2 中变成双手聚集
 
@@ -543,6 +546,7 @@
 - 后续处理：解决 Agent 贯通 handMode/activeHand/supportRole 并为工具族增加关键关节断言。
 - 诊断 Agent 最终复核（2026-08-09）：one-hand 分支现只把一个腕点送到工具目标，双腕聚集的原缺陷已部分消除；独立推导 screwdriver 得到单手时一腕距离目标 0、另一腕约 0.10/0.20，two-hand phone/book 路径仍让双腕接近目标。但 COCO 索引语义写反：标准右腕为 4、左腕为 7，代码却用 `activeHand === "left" ? 4 : 7`。显式 left-hand 输入实际移动右腕，right-hand 输入实际移动左腕，且 elbow 计算仍依赖另一套 `activeRight`。左右主动手契约未闭合，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：COCO 主动手索引已修正为 left→腕7/肘6、right→腕4/肘3。独立矩阵中 left-hand 工具的左腕到 target 距离为 0、右腕约 0.20；right-hand 工具的右腕距离为 0、左腕约 0.10；two-hand 输入则两腕分别约 0.045/0.051。单双手与左右主动手均和 prop contract 一致，原双腕聚集及左右反转路径消除，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：当前源码继续保持 left→腕7/肘6、right→腕4/肘3；独立 medium/wide 矩阵中左右单手均只有对应主动腕到 target，另一腕保持自由，双手分支不受影响。`ISSUE-TOOL-001` 维持 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-UMBRELLA-001 雨伞交接修复的 mask 与伞面结构引导空间断裂
 
@@ -567,6 +571,7 @@
 - 后续处理：解决 Agent 用共享 PropGeometry 重构 handoff mask/guide，并增加几何覆盖安全检查。
 - 诊断 Agent 最终复核（2026-08-09）：worker 已读取 `scenePlan.interactionTarget/anchors`，伞面、伞轴、接触区与 mask 共用 `umbrellaGeometry`，旧固定 y=31%..74% 导致伞面完全落在 effective mask 外的缺陷得到部分修复。但验收矩阵仍失败：target.x=0.05 时 canopy.x1=-87.04，target.x=0.95 时 canopy.x2=599.04 且 bounds 右侧越出 512；代码没有实际覆盖安全检查，`maskGuideIntersection:true` 只是硬编码 trace。handoff prompt 仍硬编码“right-side giver / left-side receiver”，不读取 `swapRoles` 或关系 actor/target；双人 handover 的两个腕点还被设为同一坐标，现有 Studio 用例的 receiverWrist.x < giverWrist.x 失败，存在手部融合诱因。不同边缘位置、角色交换与接触分离未通过，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：`umbrellaGeometry` 已对 canopy 和 bounds 做画布裁切，左缘、右缘和宽间距三组 512 输入均完全落在画布内，旧越界路径已消除。但 worker 仍硬编码 `maskGuideIntersection:true`，没有真正的关键部件覆盖拒绝分支；handoff prompt 仍固定“right-side giver / left-side receiver”，不消费 `swapRoles` 或结构化 actor/target。双人 handover 仍把双方腕点设为完全相同坐标，Studio 的 `receiverWrist.x < giverWrist.x` 断言继续失败。边缘几何通过，角色交换、接触分离和安全检查未通过，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：左缘、右缘、宽间距的 canopy/shaft/bounds 均已落在 512 画布内，UI `swapRoles` 也会改变 worker 递出/接收侧文案，属于有效进展。但 `maskGuideIntersection` 仍是无计算的硬编码 true；默认角色仍由固定左右侧而非结构化 actor/target 决定。双人 handover 腕点现从完全重合改为目标两侧 ±0.045，距离 0.09，却超过 `validatePosePeople` 的 0.08 接触闭合阈值，导致 handover safety=false；完整 Studio 测试中的区域递伞、通用 handover、接触闭合三项因此失败。安全检查、角色泛化和接触几何未闭环，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-CONTROL-001 depthGuideRequired 只记录风险但没有任何执行组件
 
@@ -614,6 +619,7 @@
 - 后续处理：解决 Agent 增加 dirty diff、去重和显式 token/语义块预算。
 - 诊断 Agent 最终复核（2026-08-09）：服务端会把与 `compiled.prompt` 完全相等的默认 override 清空，canonical 层也不再 first-N 截断，尾部合法编辑能够保留，属于有效部分修复。但 UI 未编辑时仍固定发送 `promptMode:"manual_override"`，route 的 `promptSource` 直接信任该值，因此 recipe 仍错误标记为 manual_override。更重要的是，只在完整旧 prompt 尾部追加一个光照短语时，服务端把整份旧 prompt 交给 Regional contract 做逐逗号项差集；独立推导中一个新增短语产生约 529 字符 editorial layer，而不是只追加该光照差异。缺少基线 dirty/diff 数据流，未满足“未编辑 structured、单项编辑只追加差异”的验收，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：未编辑链已修正：UI 以 `promptDirty` 标记 structured/manual，route 也只在 `requestedPromptOverride` 非空时记录 manual source，默认完整 prompt 不再错误标为人工覆盖。但单项差异仍未实现；完整 compiled prompt 尾部只追加一个光照短语时，canonical 与 Regional contract 做项级差集后产生 21 项、约 529 字符 editorial layer，`onlyEdit=false`。因此默认来源问题通过，增量预算和去重仍失败，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 再复核（2026-08-09）：UI 已新增 `promptDirty` 和单人 `promptEditorialDiff`，未编辑时请求 source=structured，只追加一个光照逗号项时 UI 会只发送该差异，默认交互路径通过。但 API/canonical 仍接受“完整 compiled prompt + 尾部光照”作为 override，并相对 Regional contract 产生 21 项、约 529 字符 editorial layer，而不是识别旧 baseline 后只保留尾部差异或返回 422；这仍违反本项明确的直接 API/旧客户端验收标准，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-POSE-005 recline 计划被 sofa 关键词错误标记为 seated kind
 
@@ -637,4 +643,27 @@
 - 诊断 Agent 复核结论：结构化动作计划与 recipe kind 的确定性冲突已复现，创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 删除 sofa 快捷覆盖或将其限制为静态兜底，并补充三类对照断言。
 - 诊断 Agent 最终复核（2026-08-09）：中景纯函数矩阵确认 `reclining against the sofa back` 得到 primaryAction=recline、template=`single_recline_v2`、kind=`single_action_recline_v1`；lying on sofa 与 sitting on sofa 分别得到 lie/seated，三者一致且 safety 有效。原 sofa 覆盖 recline 的确定性冲突已消除，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。此次修改引入的 wide/full kind 折叠已单独将 `ISSUE-POSE-003` 标记为 `regression`，不混入本项关闭结论。
+- 诊断 Agent 再复核（2026-08-09）：medium/wide 双景别矩阵中 sitting/reclining/lying on sofa 分别保持 seated/recline/lie 的 primaryAction、templateId 和 kind，且 safety 有效；wide 动作也不再被折叠为通用 full-body kind。`ISSUE-POSE-005` 维持 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+
+## ISSUE-TEST-001 OpenPose v2 测试夹具继承旧镜头与旧 kind 语义
+
+- 优先级：P2
+- 状态：fixed_pending_review
+- 来源问题：诊断 Agent 复核本轮修复时，绕过本机 tsx userInfo 环境故障后运行完整 Studio 测试发现；与 `ISSUE-POSE-003/005` 的生成代码验收分开记录。
+- 用户报告：用户要求在修复 Agent 完成后重新诊断；完整回归套件必须能区分真实代码失败和陈旧断言。
+- 已确认事实：测试“近景坐姿 OpenPose”直接 spread 当前内存库首格但没有覆盖 camera；该 fixture 实际为 `camera=远景`、`cameraEn=medium shot`，按当前优先级正确得到 full_body，却断言 upper_body。测试“单人全景启用完整四肢”同样继承首格现有 visual/action 状态，当前进入 action-specific `single_action_write_tool_v2` 且 framing=full_body、18 点完整，却仍断言旧的通用 `single_full_body_v1`。
+- 高概率原因：数据库迁移后的默认首格内容和 OpenPose v2 的“动作 kind 与 framing 正交”决策已变化，旧测试没有构造自包含 shot，也把完整全身 framing 错当成必须使用通用静态 kind。
+- 未验证假设：其他依赖 `getStudioData(1).episode.pages[0].shots[0]` 的测试是否也存在隐式 fixture 漂移尚未全量审计；当前两项已稳定复现。
+- 反证或冲突：独立显式 medium/wide 矩阵证明当前 framing 与动作 kind 数据流正确；这两项失败不能用于退回 `ISSUE-POSE-003/005`。
+- 复现步骤：以 `STUDIO_DB_PATH=:memory:` 运行 `pnpm test`；检查测试 20 和 45，并打印首格 camera/action/visualSpec。当前完整结果为 54/59，其中这两项属于陈旧测试，另外三项属于 `ISSUE-UMBRELLA-001`。
+- 涉及文件：`tests/studio.test.ts` 的“近景坐姿 OpenPose”与“单人全景启用完整四肢 OpenPose 模板”用例，以及测试 fixture 构造。
+- 影响范围：回归套件持续红灯，掩盖真实雨伞失败并可能错误退回已经正确的 action-kind/framing 逻辑。
+- 建议方案：两个测试都显式构造 camera、action、description、visualSpecConfirmed/visualSpec 和 characterLooks；全景用例断言 `framingMode=full_body`、hiddenJointIndices 为空、18 点与下肢可见，不强制动作镜头使用静态 kind。
+- 验收标准：显式近景坐姿得到 upper_body 并隐藏下肢；显式全景静态人物得到 `single_full_body_v1`；显式全景工具动作保留 tool kind 且 framing=full_body、18 点完整。程序逻辑验收，不生成图片。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待解决 Agent修正自包含 fixture 后运行完整 Studio 套件。
+- 残余风险：数据库默认种子继续变化时，其他非自包含测试也可能漂移；建议逐步清理共享首格依赖。
+- 诊断 Agent 复核证据：当前内存首格打印为 `id=6,camera=远景,cameraEn=medium shot,actionEn=natural storytelling action`；测试 20 实际 full_body，测试 45 实际 action-specific kind。显式独立矩阵均通过。
+- 诊断 Agent 复核结论：两条回归断言与当前架构决策确定冲突，创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 后续处理：解决 Agent修正测试 fixture 与断言，不修改已通过的 action-kind/framing 生产逻辑。
 

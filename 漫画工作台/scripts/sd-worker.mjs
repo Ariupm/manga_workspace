@@ -403,7 +403,8 @@ try {
   const propInteraction=recipe.generationSpec?.repairPasses?.propInteraction;
   const propInteractions=recipe.generationSpec?.repairPasses?.propInteractions || (propInteraction ? [propInteraction] : []);
   recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", status: index === 0 ? "executing" : "queued_for_followup_pass" }));
-  if(propInteraction?.required && response.images?.[0]) {
+  for (const propInteraction of propInteractions.filter((item) => item?.required)) {
+  if(propInteraction.required && response.images?.[0]) {
     if(status()==="cancelled")process.exit(0);
     const width=recipe.width,height=recipe.height;
     const centerX=width*Math.max(.12,Math.min(.88,propInteraction.objectCenter?.x??.5));
@@ -506,6 +507,7 @@ try {
         response={...response,images:[gazeResponse.images[0]]};
       }catch(error){const warning=`视线校正失败，已保留手部与道具校正结果：${error instanceof Error?error.message:String(error)}`;postprocessWarnings.push(warning);update(phase==="draft"?"draft_running":"final_running",97,"",warning);}
     }
+  }
   }
   if (recipe.generationSpec?.repairPasses?.handoff && response.images?.[0]) {
     if (status() === "cancelled") process.exit(0);
