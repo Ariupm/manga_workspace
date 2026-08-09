@@ -486,7 +486,7 @@ try {
       const gazeMask=(await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
       recipe.debugMasks = recipe.debugMasks || [];
       recipe.faceRefinementPasses = recipe.faceRefinementPasses || [];
-      const gazeTrace={type:"gaze",order:recipe.faceRefinementPasses.length+1,characterId:propInteraction.characterId,centerX:gazePlan.center.x,centerY:gazePlan.center.y,targetCenter:propInteraction.objectCenter||null,vector:gazeGeometry.vector,direction:gazeGeometry.direction,maskBounds:gazeGeometry.bounds,containsTarget:gazeGeometry.containsTarget,sourceX:gazePlan.center.sourceX,sourceY:gazePlan.center.sourceY,denoisingStrength:gazePlan.denoisingStrength,identityControl:gazePlan.identityControl};
+      const gazeTrace={type:"gaze",order:recipe.faceRefinementPasses.length+1,characterId:propInteraction.characterId,centerX:gazePlan.center.x,centerY:gazePlan.center.y,targetCenter:propInteraction.objectCenter||null,vector:gazeGeometry.vector,direction:gazeGeometry.direction,maskBounds:gazeGeometry.bounds,cropBounds:gazeGeometry.crop,targetBox:gazeGeometry.targetBox,containsTarget:gazeGeometry.containsTarget,sourceX:gazePlan.center.sourceX,sourceY:gazePlan.center.sourceY,denoisingStrength:gazePlan.denoisingStrength,identityControl:gazePlan.identityControl};
       recipe.debugMasks.push(gazeTrace);
       recipe.faceRefinementPasses.push(gazeTrace);
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);

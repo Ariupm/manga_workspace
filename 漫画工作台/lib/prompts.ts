@@ -457,7 +457,7 @@ export function buildCanonicalNegativePrompt(shot: Shot, contractNegative: strin
       : "";
   const contract = sanitizeEnglishPrompt(contractNegative);
   const editorial = extractPromptEditorialDiff(contractNegative, editableNegative);
-  return compactPrompt([contract, framing, editorial].filter(Boolean).join(", "), 72);
+  return compactPrompt([contract, framing, editorial].filter(Boolean).join(", "), 140);
 }
 
 /** Return only terms added by an edited prompt relative to its structured baseline. */
@@ -1224,7 +1224,8 @@ export function buildGenerationPrompt(
             `${look.hairStyleEn.replace(/\bhair\b/gi, "")} ${look.hairColorEn.replace(/\bhair\b/gi, "")} hair`,
           )}:1.2)`
         : clean(`${look.hairStyleEn} ${look.hairColorEn}`);
-    const interaction=interactionContracts.find((item)=>item.characterId===id) || deriveInteractionContract(shot,id);
+    const interactionsForCharacter = allInteractionContracts.filter((item) => item.characterId === id);
+    const interaction=interactionsForCharacter[0] || deriveInteractionContract(shot,id);
     return unique([
       look.positionEn,
       `(${stripTraits(character.appearanceEn)}:1.12)`,
@@ -1241,11 +1242,11 @@ export function buildGenerationPrompt(
         : "coherent adult outfit",
       resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) ||
         "matching practical footwear",
-      canonicalActionForInteraction(look.actionEn, interaction),
+      interactionsForCharacter.map((item) => canonicalActionForInteraction(look.actionEn, item)).join(", "),
       expressionPrompt(look.expressionEn),
       `(${look.gazeEn}, head and pupils aligned toward the action target:1.28)`,
       look.handsEn,
-      ...interaction.positive,
+      ...interactionsForCharacter.flatMap((item) => item.positive),
       shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.hair || "" : "",
       shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.bag || "" : "",
       shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.accessories.join(", ") || "" : "",
@@ -1454,7 +1455,7 @@ export function buildRegionalPrompt(
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
   const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60)) + ", deep shadow across eyes";
   const regionPrompts = characterRegions.map((region) => region.prompt);
-  const characterInteractionContracts = shot.characterIds.map((id) => deriveInteractionContract(shot, id));
+  const characterInteractionContracts = shot.characterIds.flatMap((id) => deriveInteractionContracts(shot, id));
   const poseControl = risk.poseRequired
     ? buildPoseControlV2(
         shot,

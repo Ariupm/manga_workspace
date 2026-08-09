@@ -348,20 +348,23 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
   const people = shot.characterIds.map((characterId, index) => {
     const text = textForCharacter(shot, characterId);
     const primaryText = primaryTextForCharacter(shot, characterId);
-    const interaction = interactions.find((item) => item.characterId === characterId);
+    const characterInteractions = interactions.filter((item) => item.characterId === characterId);
+    const interaction = characterInteractions.find((item) => item.required) || characterInteractions[0];
     const primaryDetected = unique(actionRules.filter(([, pattern]) => pattern.test(primaryText)).map(([family]) => family));
     const detected = unique([
       ...primaryDetected,
       ...actionRules.filter(([, pattern]) => pattern.test(text)).map(([family]) => family),
     ]);
-    if (interaction?.required) {
-      if (["read", "watch", "inspect", "capture", "scan", "call"].includes(interaction.purpose)) detected.push("read_phone");
-      else if (["carry", "offer"].includes(interaction.purpose)) detected.push("hold_carry");
-      else if (interaction.purpose === "place") detected.push("pick_place");
-      else if (interaction.purpose === "drink") detected.push("drink_eat");
-      else if (interaction.purpose === "operate") detected.push("write_tool");
+    for (const relation of characterInteractions) {
+      if (relation.required) {
+        if (["read", "watch", "inspect", "capture", "scan", "call"].includes(relation.purpose)) detected.push("read_phone");
+        else if (["carry", "offer"].includes(relation.purpose)) detected.push("hold_carry");
+        else if (relation.purpose === "place") detected.push("pick_place");
+        else if (relation.purpose === "drink") detected.push("drink_eat");
+        else if (relation.purpose === "operate") detected.push("write_tool");
+      }
     }
-    if (interaction?.purpose === "operate") {
+    if (characterInteractions.some((relation) => relation.purpose === "operate")) {
       for (const family of ["point", "hold_carry", "read_phone"] as const) {
         const index = detected.indexOf(family);
         if (index >= 0) detected.splice(index, 1);
@@ -391,8 +394,8 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
           : actions.includes("operate_environment")
             ? "left" as const
             : "right" as const,
-      handMode: interaction?.handMode || (/both hands|two hands|双手/i.test(text) ? "two" : "one"),
-      activeHand: (interaction?.handMode === "two" ? "both" : (/left hand|左手/i.test(text) ? "left" : "right")) as PosePersonPlanV2["activeHand"],
+      handMode: characterInteractions.some((relation) => relation.handMode === "two") ? "two" : interaction?.handMode || (/both hands|two hands|双手/i.test(text) ? "two" : "one"),
+      activeHand: (characterInteractions.some((relation) => relation.handMode === "two") ? "both" : (/left hand|左手/i.test(text) ? "left" : "right")) as PosePersonPlanV2["activeHand"],
       facing: target ? (target.x < anchorX ? "left" as const : "right" as const) : count === 2 ? (index === 0 ? "right" as const : "left" as const) : "front" as const,
       anchor: { x: anchorX, y: 0.5 },
       scale: framingMode === "full_body" ? 1 : 0.94,
@@ -538,8 +541,8 @@ function buildDoublePeople(plan: PoseScenePlanV2): PosePoint[][] {
   };
   switch (plan.interactionKind) {
     case "handover":
-      setArm(left, "inner", { x: target.x - 0.1, y: target.y - 0.07 }, { x: target.x - 0.035, y: target.y }, 0);
-      setArm(right, "inner", { x: target.x + 0.1, y: target.y - 0.06 }, { x: target.x + 0.035, y: target.y }, 1);
+      setArm(left, "inner", { x: target.x - 0.1, y: target.y - 0.07 }, { x: target.x - 0.025, y: target.y }, 0);
+      setArm(right, "inner", { x: target.x + 0.1, y: target.y - 0.06 }, { x: target.x + 0.025, y: target.y }, 1);
       break;
     case "shared_prop":
       setArm(left, "inner", { x: target.x - 0.13, y: target.y - 0.05 }, { x: target.x - 0.035, y: target.y }, 0);
