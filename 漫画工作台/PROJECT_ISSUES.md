@@ -453,7 +453,7 @@
 ## ISSUE-GAZE-003 视线局部重绘裁剪区不包含剧情目标
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：open
 - 来源问题：用户提交最新 job 403 效果图并要求重新审查视线架构；与 `ISSUE-GAZE-001/002` 的文字约束、身份分支和脸部中心定位不同，本项针对视线目标的空间几何是否进入 gaze pass。
 - 用户报告：人物仍直视镜头，没有低头看双手中的手机；最终图中手机实际落在前景桌面，脸部与目标相距很远。
 - 已确认事实：job 403 的 face/gaze center 为 `(0.50,0.16)`，手机契约中心为 `(0.38,0.58)`。close gaze mask 半径约为 `rx=0.14W`、`ry=0.1792H`，worker 使用 `inpaint_full_res=true`、padding 48；512 图的高分辨率裁剪纵向最多约覆盖 y=0..222px，而手机中心约 y=297px，目标不在重绘裁剪上下文中。`gazePayload` 只写“看向 smartphone”的文字，没有把 face→target 向量、上下左右方向或目标坐标编码进请求。
@@ -475,6 +475,7 @@
 - 诊断 Agent 本轮最终复核（2026-08-09）：本轮新增 face→target vector、角度、八方向、距离 trace，实际白色 inpaint mask 已缩回脸部，padding 也会随距离扩大，属于实质性进展；但 worker 的方向提示把“target at normalized coordinates”写成 `gazePlan.center`（人脸坐标），而不是 `propInteraction.objectCenter`。`containsTarget` 仅为 `Boolean(target)`，不验证实际 full-res crop：在 768×512、face.x=0.12、target.x=0.88 的合法横向镜头中，动态 crop 右边界约 469.76px，目标位于 675.84px，实际不包含却记录为 true。目标坐标和边缘景别上下文仍错误，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 再复核（2026-08-09）：独立左下、右下、正下、侧方矩阵确认 vector/direction/angle/distance 已产生不同结果，且白色重绘 mask 只覆盖脸部，这是有效修复；但实际 `gazePayload.prompt` 仍把 `gazePlan.center` 人脸坐标写成 target coordinates，recipe 的 `containsTarget` 仍仅等于 `Boolean(target)`，不验证扩大后的 full-res crop 是否包含远端目标。宽画幅边缘目标可继续在 crop 外却记录 true，因此保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 增量复核（2026-08-09）：修复 Agent 最新提交未改变上述两个失败点；当前 worker 第 495 行仍输出人脸中心为 target coordinates，`gazeMaskGeometry.containsTarget` 仍是 `Boolean(target)`。状态维持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 本次复核（2026-08-09）：最新源码仍以 `gazePlan.center`（人脸中心）填写 prompt 的 target coordinates，`gazeMaskGeometry.containsTarget` 仍只判断 target 对象是否存在，不计算动态 full-res crop 的实际包含关系。方向向量和脸部 mask 修复有效，但目标坐标与边缘宽画幅审计仍错误，状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-VISUALSPEC-002 已确认旧视觉规格绕过生成时规范化与校验
 
@@ -502,7 +503,7 @@
 ## ISSUE-INTERACTION-001 复数 interactions 在编译和后处理层被折叠为单一关系
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：open
 - 来源问题：用户要求覆盖手机、伞和全部工具关系并重新评估组件配合；关联 `ISSUE-VISUALSPEC-001` 的复数 schema 决策。
 - 用户报告：复杂镜头里道具/工具只偶尔正确出现，交接、持物和操作关系不能同时稳定落实。
 - 已确认事实：`deriveInteractionContract` 对每个 actor 使用 `.find(...)` 只取第一条带 propId 的 relation；`buildRegionalPrompt` 仅生成 `interactionContracts=characterIds.map(...)`，`repairPasses.propInteraction` 又用 `.find(required)` 只保留全镜头第一份；worker 也只执行单数 `propInteraction`。同一人物先看手机再拿工具、同时持伞和包、一个镜头多个物件或一个 actor 多个接触关系都会丢掉后续 relation。
@@ -524,6 +525,7 @@
 - 诊断 Agent 本轮最终复核（2026-08-09）：关系现有稳定 `relationId`，recipe 也保留全部 `propInteractions`，但执行链仍未升级。单 actor 的 smartphone+screwdriver 推导会产生两条 relationId，pose 仍由 `characterIds.map(deriveInteractionContract)` 只消费 smartphone，动作仅含 `read_phone`；worker 仅给数组建立 `relationTraces`，把第二条标为 `queued_for_followup_pass`，随后仍以单数 `propInteraction` 进入唯一一次 prop/gaze 修复，代码中不存在 follow-up loop。第二 required relation 仍未执行，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 再复核（2026-08-09）：同 actor smartphone+screwdriver 独立推导得到两条稳定 relationId，`repairPasses.propInteractions` 也保留两条；但 pose 仍只取 smartphone，worker 把第二条写成 `queued_for_followup_pass` 后只执行单数 `propInteraction`，没有任何后续循环或逐关系 QA 结果。记录 queued 不能替代执行，第二条 required relation 仍被截断，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 增量复核（2026-08-09）：最新 worker 已新增 `for (const propInteraction of propInteractions.filter(required))`，每条 required relation 的 prop/gaze pass 会顺序执行，旧的“第二条完全不执行”缺陷得到实质修复。但 pose 仍由每人物首条 contract 驱动，semantic review 仍以单数 `propInteraction` 汇总；`relationTraces` 只在循环前写 executing/queued，成功、失败和循环结束均不更新状态，第二条实际执行后仍永久显示 queued。未满足逐关系 pose/QA/完成证据验收，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 本次复核（2026-08-09）：逐 relation worker 循环继续存在并会执行全部 required 道具/视线 pass；但 `relationTraces` 仍只在循环前写第一条 `executing`、其余 `queued_for_followup_pass`，成功、失败与结束均不更新，实际已执行的后续关系仍被永久审计为 queued。pose 与 semantic review 也仍以每人物首条/单数关系为主，未形成逐关系 pose/QA 闭环，状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-TOOL-001 单手工具契约在 OpenPose v2 中变成双手聚集
 
@@ -553,7 +555,7 @@
 ## ISSUE-UMBRELLA-001 雨伞交接修复的 mask 与伞面结构引导空间断裂
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：open
 - 来源问题：用户明确要求重新排查雨伞类工具；本项针对 handoff worker 的实际 mask/guide 几何。
 - 用户报告：雨伞容易缺失、伞柄断开、人物持有关系和交接手势错误。
 - 已确认事实：handoff inpaint mask 固定为 x=34%..66%、y=31%..74%；Canny 伞面引导却位于约 x=37%..70%、y=11%..25%，伞轴从 y=18% 延伸到 52%。同一个 handoffMask 还作为 `effective_region_mask` 传给 Canny，因此整个伞面和伞轴上段都在有效 mask 外，结构控制最多作用于下半段伞轴。坐标不读取 `PoseScenePlan.interactionTarget`、人物 region、腕点、景别或实际伞位置。
@@ -575,6 +577,7 @@
 - 诊断 Agent 本轮最终复核（2026-08-09）：`umbrellaGeometry` 已对 canopy 和 bounds 做画布裁切，左缘、右缘和宽间距三组 512 输入均完全落在画布内，旧越界路径已消除。但 worker 仍硬编码 `maskGuideIntersection:true`，没有真正的关键部件覆盖拒绝分支；handoff prompt 仍固定“right-side giver / left-side receiver”，不消费 `swapRoles` 或结构化 actor/target。双人 handover 仍把双方腕点设为完全相同坐标，Studio 的 `receiverWrist.x < giverWrist.x` 断言继续失败。边缘几何通过，角色交换、接触分离和安全检查未通过，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 再复核（2026-08-09）：左缘、右缘、宽间距的 canopy/shaft/bounds 均已落在 512 画布内，UI `swapRoles` 也会改变 worker 递出/接收侧文案，属于有效进展。但 `maskGuideIntersection` 仍是无计算的硬编码 true；默认角色仍由固定左右侧而非结构化 actor/target 决定。双人 handover 腕点现从完全重合改为目标两侧 ±0.045，距离 0.09，却超过 `validatePosePeople` 的 0.08 接触闭合阈值，导致 handover safety=false；完整 Studio 测试中的区域递伞、通用 handover、接触闭合三项因此失败。安全检查、角色泛化和接触几何未闭环，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 深入复核（2026-08-09）：进一步按 worker 实际椭圆 mask 而非矩形 bounds 做点包含检查，原 mask/guide 空间断裂仍直接存在。center/wide 输入的 canopy 左右端点均在椭圆外，left/right 边缘输入也有多个 canopy/shaft 点在椭圆外；四组输入的 shaftBottom 全部超出 bounds 和椭圆。也就是说“bounds 在画布内”不等于关键 guide 被 effective mask 覆盖，而硬编码 `maskGuideIntersection:true` 会掩盖该失败。此证据继续归入 `ISSUE-UMBRELLA-001`，状态保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 本次复核（2026-08-09）：worker 仍用矩形 bounds 的内接椭圆作为 inpaint/ControlNet effective mask，并继续硬编码 `maskGuideIntersection:true`；canopy 端点与 shaftBottom 的真实覆盖失败没有拒绝分支。通用工具递交反向用例虽正确分类为 `offer/handover`，但双腕固定在 target±0.045，接触误差 0.09 超过安全阈值 0.08，`safety.valid=false`；完整 Studio 套件剩余 3 项均稳定落在交接几何。状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-CONTROL-001 depthGuideRequired 只记录风险但没有任何执行组件
 
@@ -602,7 +605,7 @@
 ## ISSUE-PROMPT-001 默认“编辑后生成”把完整旧提示词重复塞入 editorial layer
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：open
 - 来源问题：job 403 实际请求与 UI 状态链审查。
 - 用户报告：提示词看起来很完整，但画面仍像通用人物摆拍，关键动作被环境、服装和重复描述稀释。
 - 已确认事实：单人 UI 的 `editablePositive` 默认就是旧 `buildGenerationPrompt` 的完整 prompt；`generateEditedPrompt` 无论用户是否修改都把它作为 `promptOverride` 并标记 `manual_override`。canonical 层随后把结构化 Regional contract 作为主层，再把该完整旧 prompt 的前 28 个逗号项作为 editorial layer 追加。job 403 的 requested override 长 2447 字符，最终 applied prompt 长 4203 字符；相同开头片段在最终请求中出现两次，promptSource 为 manual_override，即使默认内容本身并不是用户差异。
@@ -623,6 +626,7 @@
 - 诊断 Agent 最终复核（2026-08-09）：服务端会把与 `compiled.prompt` 完全相等的默认 override 清空，canonical 层也不再 first-N 截断，尾部合法编辑能够保留，属于有效部分修复。但 UI 未编辑时仍固定发送 `promptMode:"manual_override"`，route 的 `promptSource` 直接信任该值，因此 recipe 仍错误标记为 manual_override。更重要的是，只在完整旧 prompt 尾部追加一个光照短语时，服务端把整份旧 prompt 交给 Regional contract 做逐逗号项差集；独立推导中一个新增短语产生约 529 字符 editorial layer，而不是只追加该光照差异。缺少基线 dirty/diff 数据流，未满足“未编辑 structured、单项编辑只追加差异”的验收，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮最终复核（2026-08-09）：未编辑链已修正：UI 以 `promptDirty` 标记 structured/manual，route 也只在 `requestedPromptOverride` 非空时记录 manual source，默认完整 prompt 不再错误标为人工覆盖。但单项差异仍未实现；完整 compiled prompt 尾部只追加一个光照短语时，canonical 与 Regional contract 做项级差集后产生 21 项、约 529 字符 editorial layer，`onlyEdit=false`。因此默认来源问题通过，增量预算和去重仍失败，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 再复核（2026-08-09）：UI 已新增 `promptDirty` 和单人 `promptEditorialDiff`，未编辑时请求 source=structured，只追加一个光照逗号项时 UI 会只发送该差异，默认交互路径通过。但 API/canonical 仍接受“完整 compiled prompt + 尾部光照”作为 override，并相对 Regional contract 产生 21 项、约 529 字符 editorial layer，而不是识别旧 baseline 后只保留尾部差异或返回 422；这仍违反本项明确的直接 API/旧客户端验收标准，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 本次复核（2026-08-09）：当前默认 UI dirty/source 路径继续有效；但按 route 的真实两层输入复测，旧客户端提交 `compiled.prompt + soft amber rim lighting` 时，Regional contract 差集仍产生 21 个 editorial 项、503 字符，而不是仅保留 1 个 23 字符的光照差异，也没有返回 422。直接 API/旧客户端兼容验收仍失败，状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-POSE-005 recline 计划被 sofa 关键词错误标记为 seated kind
 
@@ -674,7 +678,7 @@
 ## ISSUE-TOOL-002 工具操作被 hand/work point 文本误路由为 offer/point
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：verified
 - 来源问题：用户要求继续诊断；在复核 `ISSUE-TOOL-001` 已修复的腕点几何能否从真实 prompt 链到达时发现。
 - 用户报告：工具仍可能缺失、用途错误或呈现成递交/指向姿势，即使单双手腕点映射已经修正。
 - 已确认事实：`deriveInteractionContract` 在工具 operate 分支之前执行 `/offer|hand(?:ing)?|give|pass/`；其中 `hand(?:ing)?` 没有单词边界，普通 `right hand`、`left hand`、`hands` 都会命中并把 screwdriver/hammer/scissors/brush 的 purpose 改成 `offer`、gazeMode 改成 `target`。同时 OpenPose v2 的通用 text source 包含 `gazeEn=eyes focused on the work point`，actionRules 的 `\bpoint\b` 会把“工作点”误认为指向动作，且 primaryOrder 让 point 优先于 interaction 补入的 write_tool。
@@ -692,11 +696,12 @@
 - 诊断 Agent 复核证据：独立纯函数矩阵中 screwdriver/right、hammer/left、scissors/right、brush/right 全部 purpose=offer；pose 分别出现 point/hold_carry，而不是稳定 operate/write_tool。无 hand 文本时 purpose 恢复 operate，但 `work point` 仍让 pose primary kind 变成 point。
 - 诊断 Agent 复核结论：工具契约在到达已修复的腕点构建器前被两层词法误分类，创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 修正用途和动作字段的优先级与词边界，并补充真实递交反例。
+- 诊断 Agent 最终复核（2026-08-09）：独立四工具×左右手矩阵确认 screwdriver、hammer、scissors、brush 均得到 `purpose=operate`、`gazeMode=work_point`、`kind=single_action_write_tool_v2`，`right/left hand` 不再触发 offer，`work point` 不再触发 point。反向用例 `handing over a screwdriver to another person` 仍得到 `purpose=offer`、`gazeMode=target`、双人 `interactionKind=handover`，说明词边界修复没有破坏真实递交语义。原两层词法误路由已消除，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收；具体工具 strike/cut/turn/paint 子动作仍作为产品扩展风险保留。
 
 ## ISSUE-PROMPT-002 仅编辑负向提示词时 recipe 仍标记 structured 且丢失编辑溯源
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：open
 - 来源问题：用户要求继续诊断；从 `ISSUE-PROMPT-001` 的 dirty/source 修复继续检查负向编辑分支时发现。
 - 用户报告：生成配方需要准确说明用户是否手工修改提示词，不能把人工负向约束伪装成纯结构化生成。
 - 已确认事实：单人只修改 `editableNegative` 时，UI 的 `promptDirty=true`，但 `promptEditorialDiff` 基于未改的正向 prompt 得到空字符串；请求因此发送 `promptOverride=""`、修改后的 `negativePromptOverride` 和 `promptMode=manual_override`。route 的 `promptSource` 只检查 `requestedPromptOverride`，结果仍为 `structured`；generationSpec 只保存正向 `promptOverride` trace，没有 requested/applied negative override trace。
@@ -714,4 +719,5 @@
 - 诊断 Agent 复核证据：UI 与 route 数据流静态推导为 `promptDirty=true → promptEditorialDiff="" → requestedPromptOverride="" → promptSource=structured`，同时 `requestedNegativeOverride` 实际参与 `buildCanonicalNegativePrompt` 但没有进入 provenance trace。
 - 诊断 Agent 复核结论：实际请求与 recipe 来源字段确定性不一致，创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 为负向提示词建立独立 diff 与溯源，并让 source 同时消费正负 accepted override。
+- 诊断 Agent 最终复核（2026-08-09）：route 现以 `negativeOverrideAccepted` 参与 `promptSource`，只改负向时会标为 `manual_override`；recipe 也新增 requested/applied/accepted 记录，原“伪装 structured 且无 trace”已实质修复。但 UI 仍发送整份 `editableNegative`，recipe 的 requested 保存整份旧负向而非准确差异；`buildCanonicalNegativePrompt(..., 72)` 对 72 项合法基线加尾部编辑的纯函数用例稳定丢弃尾部 `oversaturated cyan fog`，没有 dropped/超限告警。未满足准确 diff 与尾部编辑不丢失验收，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
