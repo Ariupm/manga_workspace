@@ -507,7 +507,7 @@
 ## ISSUE-INTERACTION-001 复数 interactions 在编译和后处理层被折叠为单一关系
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 来源问题：用户要求覆盖手机、伞和全部工具关系并重新评估组件配合；关联 `ISSUE-VISUALSPEC-001` 的复数 schema 决策。
 - 用户报告：复杂镜头里道具/工具只偶尔正确出现，交接、持物和操作关系不能同时稳定落实。
 - 已确认事实：`deriveInteractionContract` 对每个 actor 使用 `.find(...)` 只取第一条带 propId 的 relation；`buildRegionalPrompt` 仅生成 `interactionContracts=characterIds.map(...)`，`repairPasses.propInteraction` 又用 `.find(required)` 只保留全镜头第一份；worker 也只执行单数 `propInteraction`。同一人物先看手机再拿工具、同时持伞和包、一个镜头多个物件或一个 actor 多个接触关系都会丢掉后续 relation。
@@ -534,6 +534,7 @@
 - 诊断 Agent 本次复核（2026-08-09）：逐 relation worker 循环继续存在并会执行全部 required 道具/视线 pass；但 `relationTraces` 仍只在循环前写第一条 `executing`、其余 `queued_for_followup_pass`，成功、失败与结束均不更新，实际已执行的后续关系仍被永久审计为 queued。pose 与 semantic review 也仍以每人物首条/单数关系为主，未形成逐关系 pose/QA 闭环，状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 最新复核（2026-08-09）：worker 现会把每条 required relation 从 `queued` 更新为 `executing`，并在结束写为 `completed/failed`，旧的执行状态假象已修复。但 `buildRegionalPrompt` 构建 pose 时仍使用 `characterIds.map(deriveInteractionContract)`，同一 actor 只消费第一条关系；`semanticReviewContract` 也仍以单数 `repair.propInteraction` 生成 prop/gaze 期望，只显示首个道具。逐 relation worker trace 通过，但逐关系 pose 与 QA 仍未闭环，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮终审（2026-08-09）：Regional pose 已改为传入全部 `deriveInteractionContracts`，semantic review 的 interaction/gaze/prop sources 也会列出全部 relationId/object，旧的首条 QA 汇总缺陷已修复。同 actor smartphone-read+screwdriver-operate 矩阵得到 `actions=[read_phone,write_tool]`，但 `PosePersonPlanV2` 仍只有一个 `target` 和一个 `handMode`，均取第一条 smartphone relation；关节构建只按 primary `read_phone` 的 target=.42/.55 与 two-hand 几何执行，第二条 screwdriver target=.62/.58、one-hand 几何没有对应 pose 数据。动作名聚合不能替代逐关系关节目标，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 通用性复核（2026-08-09）：最新代码把全部关系写入 `PosePersonPlanV2.relationTargets`，属于有效的数据保留；但 `buildSinglePerson` 没有任何地方消费 `relationTargets`，关节仍只读取单数 `target/handMode`，因此第二关系依旧没有独立腕点与目标几何。并且 `PoseInteractionInput` 未声明 `relationId`，新映射在 `npx tsc --noEmit` 稳定触发 TS2339。保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-TOOL-001 单手工具契约在 OpenPose v2 中变成双手聚集
 
@@ -563,7 +564,7 @@
 ## ISSUE-UMBRELLA-001 雨伞交接修复的 mask 与伞面结构引导空间断裂
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：verified
 - 来源问题：用户明确要求重新排查雨伞类工具；本项针对 handoff worker 的实际 mask/guide 几何。
 - 用户报告：雨伞容易缺失、伞柄断开、人物持有关系和交接手势错误。
 - 已确认事实：handoff inpaint mask 固定为 x=34%..66%、y=31%..74%；Canny 伞面引导却位于约 x=37%..70%、y=11%..25%，伞轴从 y=18% 延伸到 52%。同一个 handoffMask 还作为 `effective_region_mask` 传给 Canny，因此整个伞面和伞轴上段都在有效 mask 外，结构控制最多作用于下半段伞轴。坐标不读取 `PoseScenePlan.interactionTarget`、人物 region、腕点、景别或实际伞位置。
@@ -590,6 +591,7 @@
 - 诊断 Agent 本次复核（2026-08-09）：worker 仍用矩形 bounds 的内接椭圆作为 inpaint/ControlNet effective mask，并继续硬编码 `maskGuideIntersection:true`；canopy 端点与 shaftBottom 的真实覆盖失败没有拒绝分支。通用工具递交反向用例虽正确分类为 `offer/handover`，但双腕固定在 target±0.045，接触误差 0.09 超过安全阈值 0.08，`safety.valid=false`；完整 Studio 套件剩余 3 项均稳定落在交接几何。状态同步为 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 最新复核（2026-08-09）：handoff 已改用覆盖 bounds 的圆角矩形 mask，`maskGuideIntersection` 也会计算并在 false 时拒绝请求；双腕收紧至 target±0.035 后 contactError=0.07、基础 safety 通过，均为有效修复。但边缘矩阵 x=0.05/0.15/0.85/0.95 全部返回 `maskGuideIntersection=false`：校验使用未裁切的 `cx±spread`，实际 guide SVG 使用已裁切的 `canopy.x1/x2`，因此可见 guide 已在矩形 mask 内仍被错误拒绝。中心递伞腕距 0.07 还未满足现有区域递伞约束 `<0.06`。边缘泛化与接触几何仍有确定失败，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收；测试中要求双腕完全重合的冲突断言另建 `ISSUE-TEST-002`。
 - 诊断 Agent 本轮终审（2026-08-09）：x=.05/.15/.5/.85/.95 边缘矩阵现全部使用裁切后 canopy 端点并返回 `maskGuideIntersection=true`；圆角矩形 effective mask 覆盖 canopy/shaft，双腕 target±.025 的 contactError=.05，区域递伞 `<.06` 与 safety `<.08` 均通过。mask/guide/contact 主缺陷已修复。但 handoff worker 仍仅以 `poseControl.override.swapRoles` 决定 `right-side giver/left-side receiver`，没有从 `visualSpec.interactions[].actorCharacterId/targetCharacterId` 与 character region 推导默认左右角色；当结构化 actor 位于左侧且无人工 swap 时，`handoffPrompt` 的 actor/target 与 worker 追加的固定左右文案冲突。角色泛化验收仍未闭合，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收；当前 58/59 唯一测试失败属于独立 `ISSUE-TEST-002`。
+- 诊断 Agent 通用性复核（2026-08-09）：worker 现从 `visualSpec.interactions` 取得 actor/target，并按两者 character region 推导默认 giver 左右侧；`swapRoles` 只在该结构化结果上反转。此前已通过的边缘 canopy/shaft/mask、contactError=.05 与拒绝分支继续成立，Studio 59/59 通过。角色、边缘几何、遮罩与接触数据流闭合，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收；缺少 region 时的默认左右侧与模型实际握伞服从率作为产品运行风险保留。
 
 ## ISSUE-CONTROL-001 depthGuideRequired 只记录风险但没有任何执行组件
 
@@ -715,7 +717,7 @@
 ## ISSUE-PROMPT-002 仅编辑负向提示词时 recipe 仍标记 structured 且丢失编辑溯源
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 来源问题：用户要求继续诊断；从 `ISSUE-PROMPT-001` 的 dirty/source 修复继续检查负向编辑分支时发现。
 - 用户报告：生成配方需要准确说明用户是否手工修改提示词，不能把人工负向约束伪装成纯结构化生成。
 - 已确认事实：单人只修改 `editableNegative` 时，UI 的 `promptDirty=true`，但 `promptEditorialDiff` 基于未改的正向 prompt 得到空字符串；请求因此发送 `promptOverride=""`、修改后的 `negativePromptOverride` 和 `promptMode=manual_override`。route 的 `promptSource` 只检查 `requestedPromptOverride`，结果仍为 `structured`；generationSpec 只保存正向 `promptOverride` trace，没有 requested/applied negative override trace。
@@ -738,11 +740,12 @@
 - 诊断 Agent 最终复核（2026-08-09）：route 现以 `negativeOverrideAccepted` 参与 `promptSource`，只改负向时会标为 `manual_override`；recipe 也新增 requested/applied/accepted 记录，原“伪装 structured 且无 trace”已实质修复。但 UI 仍发送整份 `editableNegative`，recipe 的 requested 保存整份旧负向而非准确差异；`buildCanonicalNegativePrompt(..., 72)` 对 72 项合法基线加尾部编辑的纯函数用例稳定丢弃尾部 `oversaturated cyan fog`，没有 dropped/超限告警。未满足准确 diff 与尾部编辑不丢失验收，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 最新复核（2026-08-09）：单项负向尾部编辑现会相对 `compiled.negativePrompt` 提取准确 diff；`oversaturated cyan fog` 独立用例只记录该差异、进入 applied negative，并使 source=`manual_override`，原来源与单项溯源缺陷通过。但较长合法编辑仍被 `compactPrompt(...,72)` 静默截断：当前区域负向最多的镜头请求 25 个差异项时只应用 16/17 项，尾部第 25 项丢失，而 recipe 仍统一写 `accepted:true` 且无 dropped/超限信息。预算与 accepted trace 不一致，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 诊断 Agent 本轮终审（2026-08-09）：预算由 72 提升到 140 后，上一轮 25 项长编辑矩阵已全部保留；单项 diff/source/recipe 路径继续通过。但 UI/API 没有明确的负向编辑长度或 term 上限，route 也不做超限 422/dropped trace：区域负向最多的当前镜头请求 100 个合法差异项时只应用 84 项，尾部第 100 项丢失，`negativePromptOverride.accepted` 仍固定为 true。提高常量只移动静默截断边界，未消除 accepted 与实际 applied 不一致，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent 通用性复核（2026-08-09）：当前 route 仍无负向 override 长度/term 上限、422 或 dropped trace，`generationSpec.negativePromptOverride.accepted` 仍固定写 true；`compactPrompt` 到预算后直接 break。上一轮 100 项输入静默丢失尾项的路径未被修改，保持 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-TEST-002 双人递交测试要求腕点完全重合，与防融合几何约束冲突
 
 - 优先级：P2
-- 状态：fixed_pending_review
+- 状态：verified
 - 来源问题：诊断 Agent 复核 `ISSUE-UMBRELLA-001` 最新修复并运行完整 Studio 套件时发现；属于测试契约冲突，不与雨伞边缘 mask 的生产代码缺陷混合关闭。
 - 用户报告：用户要求继续诊断修复结果；完整测试仍有双人递交失败，需要区分生产逻辑失败与陈旧断言。
 - 已确认事实：`tests/studio.test.ts` 的区域递伞用例要求接收腕在递出腕左侧且横向距离 `<0.06`，handoff prompt 同时要求 `clearly separated wrists`、负向排除 `fused hands`；但“ 双人递交和握手的腕部接触点闭合”用例又要求两腕欧氏距离 `<0.001` 且 `contactError===0`。对于 handover，这两组断言无法同时成立：有序分离要求非零距离，后一组要求完全重合。
@@ -760,11 +763,12 @@
 - 诊断 Agent 复核证据：当前测试 9 要求 `receiverWrist.x < giverWrist.x`，测试 31 对同一 handover 要求腕距 `<0.001`/`contactError=0`，逻辑上不可同时满足；当前完整结果 57/59，两项失败均可由这组阈值和 `ISSUE-UMBRELLA-001` 的 0.07 腕距解释。
 - 诊断 Agent 复核结论：handover 测试契约存在确定性互斥，创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 统一 handover 非零接触区间并保留 handshake 独立语义。
+- 诊断 Agent 最终复核（2026-08-09）：测试已将 handover 与 handshake 分开：handover 要求腕距 `>0 && <.06` 且 safety contactError `<=.08`，handshake 保留完全接触语义。当前生产 handover 腕距 .05，同时满足区域递伞、通用模板和安全阈值；Studio 59/59 通过。互斥断言已消除，标记 `verified`。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-GAZE-004 看手机目标未驱动头部骨架且正脸身份控制重复压制视线
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 来源问题：用户提交最新 `job 404` 效果图并要求彻底排查“看手机动作做不出来、人物一直看镜头”；关联已关闭的 `ISSUE-GAZE-001`、`ISSUE-IDENTITY-001` 和 `ISSUE-PIPELINE-001`，但本项针对最新 OpenPose v2 头部几何与三阶段身份控制之间仍存在的确定性冲突。
 - 用户报告：人物没有低头看手机，而是保持正脸并与观众对视；同类现象在连续多次生成中重复出现。
 - 已确认事实：`job 404` 的结构化目标为 smartphone `(0.38,0.58)`，pose plan 也记录 `facing=left`、`primaryAction=read_phone`，但实际 COCO 头部点为 nose `(0.50,0.12)`、双眼 `(0.475,0.11)/(0.525,0.11)`、双耳 `(0.455,0.12)/(0.545,0.12)`，是完全对称的正脸。`lib/pose-v2.ts` 的 `facePoints` 永远围绕 nose 对称生成；`facing` 只有 `turn` 分支才会改变 nose，`read_phone` 不消费 target 来生成头部朝向。该任务还因 smile 命中 `head_gesture`，contact 阶段把 nose.y 从 `0.16` 减到 `0.12`，即目标在下方时反而向上移动头点。基础 txt2img、identity inpaint、gaze inpaint 三个阶段均携带同一张正脸身份参考；基础权重 0.8，后两次权重 0.78，control mode 均为 `ControlNet is more important`。最终 PNG 元数据证明 gaze pass 虽写入 `down-left target at 0.38,0.58` 和禁止镜头视线，但仍携带该正脸 face IP-Adapter，成图继续正视观众。
@@ -782,11 +786,13 @@
 - 诊断 Agent 复核证据：`job 400` 至 `job 404` 的现有生成图均保持正视观众；`job 404` 是最新代码路径且明确使用结构化 smartphone relation、方向化 gaze prompt 和正确 crop，因此重复失败与上述正脸骨架/身份控制冲突一致。纯函数矩阵运行受本机 `tsx` 的 `uv_os_get_passwd/ENOMEM` 阻断，但实际 recipe 坐标和静态代码路径已提供确定性证据。
 - 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收；已提供的 job 404 图片仅作为运行失败证据，修复验收以请求与几何数据流为准。
 - 后续处理：解决 Agent 先修方向化头部 pose 与 head_gesture 合成，再调整 off-camera 身份 conditioner 的阶段策略并补齐请求 trace。
+- 诊断 Agent 通用性复核（2026-08-09）：纯函数对 read_phone、write_tool 与 read_phone+head_gesture 执行 left/right/down/down-left 矩阵，nose/neck 已随 target 产生不同横纵偏移；下方目标叠加 head_gesture 时 nose 继续下移，不再反向抬头。off-camera 的基础、identity、gaze 三阶段身份单元也已降为实际 weight<=.68 且 control mode=Balanced，属于实质修复。但 `requestTrace` 仍只保存 prompt/negative，不保存基础 ControlNet units；identity/gaze trace 记录的是 `faceRefinementPassPlan.identityControl.weight`（最多 .78），而实际 payload 又二次截为 .68，recipe 与真实请求不一致，也没有专门测试覆盖这些新分支。方向几何通过、三阶段审计未闭合，标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent job 405 运行证据（2026-08-09）：最新图中人物已明显低头，recipe nose 从 job 404 的 `(0.50,0.12)` 变为 `(0.4496,0.2808)`，最终 PNG parameters 使用 `direction=down`、target `(0.38,0.58)`、实际 identity weight=.68/Control Mode=Balanced；旧“持续看镜头”的主要运行症状得到改善。由于 recipe 的 face trace 仍写 weight=.78 且基础 control units 仍未记录，状态保持 `partially_fixed`。程序逻辑验收未完全通过，未由 Agent 生成图片或执行视觉效果验收；job 405 仅作为用户提供的运行证据。
 
 ## ISSUE-PROP-003 手机结构未进入基础生成且道具 pass 将协议成功误记为动作完成
 
 - 优先级：P0
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 来源问题：用户提交 `job 404` 最新效果图；与已关闭的 `ISSUE-PROP-002` 不同，本项不讨论人工审批门，而是排查“看手机动作为什么生成不出来”的基础生成、局部修复和执行审计链。
 - 用户报告：最新图中完全没有手机，双手退化为在裙前交叠，因而不存在“拿手机并阅读”的剧情动作。
 - 已确认事实：`job 404` 的结构化 relation、prompt、negative、OpenPose 双腕目标和 prop repair contract 均正确识别 smartphone，故不是关键词或 visualSpec 漏识别。`scripts/sd-worker.mjs` 的基础 txt2img `controlUnits` 只加入身份 reference 与 OpenPose；smartphone 的 portrait Canny guide 不在基础生成中，而是在 identity inpaint 之后才进入单独的 prop img2img。OpenPose 只把两个 wrist 放在 `(0.335,0.58)/(0.425,0.58)`，不表达手机实体、屏幕面、朝向或手指握持。prop 请求只要 HTTP 2xx 且返回任意图片就把 `relationTraces.status` 写成 `completed`；不检查手机是否存在、是否竖持、双手是否接触，也不保存该阶段输出或无 base64 的实际 payload trace。`job 404` 最终没有手机、`postprocessWarnings=[]`、relation 却为 `completed`。
@@ -804,4 +810,72 @@
 - 诊断 Agent 复核证据：job 404 的 `propInteraction.required=true`、`object=smartphone`、`orientation=portrait`、Canny model 存在，但基础 request trace 无 prop control，最终成图无手机而 relation status=`completed`；该状态与实际动作结果确定性不一致。
 - 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 将手机/手物结构前移到基础 conditioning，并修正 relation trace 状态语义与可审计证据。
+- 诊断 Agent 通用性复核（2026-08-09）：首个 required relation 的结构 guide 已进入基础 ControlNet，后处理状态也改为 `request_succeeded` 后落到 `semantic_pending`，不再伪造语义 completed，属于实质修复。但基础阶段使用 `.find(required)` 只消费第一条关系，且无论 smartphone、tool、umbrella、bag 均只按 orientation 画矩形，不消费后处理已有的 `shape` 几何；多道具和非矩形道具仍未通用覆盖。`requestTrace` 也未保存 initial prop unit、mask/guide 摘要或阶段输出路径。标记 `partially_fixed`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 诊断 Agent job 405 运行证据（2026-08-09）：手机已按基础 guide 出现在 target `(0.38,0.58)` 且为 portrait，relation status 也诚实保留为 `semantic_pending`，证明前移结构与状态语义修复实际生效；但手机成为前景独立立牌，人物双手未接触。二维位置/朝向命中不能证明 hand-object relation 成立，剩余接触拓扑缺陷另建 `ISSUE-PROP-004`，本项继续保持 `partially_fixed`。
+
+## ISSUE-BUILD-002 relationTargets 读取未声明的 relationId 导致 TypeScript 编译失败
+
+- 优先级：P0
+- 状态：fixed_pending_review
+- 来源问题：诊断 Agent 通用性复核 `ISSUE-INTERACTION-001` 最新修复并运行完整类型检查时发现。
+- 用户报告：用户要求核查修复是否站在通用性角度；当前新增的多关系 pose 数据在静态类型层无法通过项目编译。
+- 已确认事实：`lib/pose-v2.ts` 的 `PoseInteractionInput` 只声明 characterId、required、object、purpose、handMode、objectCenter、region 和可选 gazeMode，没有 `relationId`；同文件构建 `relationTargets` 时读取 `relation.relationId`。`npx tsc --noEmit` 稳定报告 `lib/pose-v2.ts(404,128): TS2339 Property 'relationId' does not exist on type 'PoseInteractionInput'`。
+- 高概率原因：实现 `relationTargets` 时只扩展了 `PosePersonPlanV2` 输出类型，没有同步扩展 pose 输入接口；运行测试由 tsx 转译且不做完整类型检查，因此 59/59 绿灯未发现该错误。
+- 未验证假设：Next build 是否会在当前配置下同样阻断尚未单独运行；TypeScript 检查已足以确认源码契约不一致。
+- 反证或冲突：上游 `InteractionContract` 已有稳定 relationId，问题不是运行数据缺失，而是 pose 接口类型未同步。
+- 复现步骤：在项目根目录运行 `npx tsc --noEmit`，观察上述 TS2339；或比较 `PoseInteractionInput` 声明与第 404 行读取。
+- 涉及文件：`lib/pose-v2.ts`、`lib/prompts.ts`、多关系 pose 测试。
+- 影响范围：所有调用 `buildPoseControlV2` 的构建、类型检查和编辑器类型推导；阻断多关系修复的可靠交接。
+- 建议方案：在 `PoseInteractionInput` 中声明并贯通可选或必需的 relationId，并确保所有构造点传入稳定 ID；新增类型/运行矩阵，避免仅在输出层保存 relationId。
+- 验收标准：`npx tsc --noEmit` 通过；所有 PoseInteractionInput 构造点的 relationId 策略一致，legacy 输入有明确回退；多关系 pose 测试验证 ID 不丢失。程序逻辑验收，不生成图片。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待解决 Agent 运行类型检查与多关系 ID 矩阵。
+- 残余风险：即使类型通过，`relationTargets` 当前仍未被关节构建消费；该执行缺口继续归入 `ISSUE-INTERACTION-001`，不得用本项关闭。
+- 诊断 Agent 复核证据：Studio 59/59、worker 8/8 和台账 3/3 均通过，但随后类型检查稳定失败，证明现有测试缺少编译契约覆盖。
+- 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 后续处理：解决 Agent 同步 pose 输入类型与所有调用点；修复后独立复核，但继续保留多关系几何问题。
+
+## ISSUE-PROP-004 道具局部重绘覆盖双手却丢失腕点、接触与深度关系
+
+- 优先级：P0
+- 状态：fixed_pending_review
+- 来源问题：用户提交最新 `job 405` 效果图并要求继续诊断；关联 `ISSUE-PROP-003`，但本项针对结构 guide 已成功生成手机后，人物仍未持握且手机变成前景陈列物的新失败机制。
+- 用户报告：人物虽然低头了，手机也出现了，但手机独立竖立在画面前景，尺寸和透视像展示牌，双手没有拿手机，仍不是“看手机”的动作。
+- 已确认事实：job 405 的 smartphone target 为 `(0.38,0.58)`，OpenPose 双腕为 `(0.335,0.58)/(0.425,0.58)`，最终手机中心与竖向尺寸基本命中基础 Canny guide，说明坐标和 portrait shape 已执行。后置 prop mask 同时覆盖物体矩形和一至两个手部圆区，但 prop img2img 的 ControlNet 只携带物体 Canny guide，不再携带原 OpenPose 人体/腕点控制；draft denoise=.54 会重绘整个手物区。`InteractionContract` 只有 `objectCenter/shape/handMode/orientation/viewerSurface`，没有左右手接触锚点、人物相对尺度、持握深度平面、物体与躯干的遮挡关系。job 405 因此得到二维位置正确、三维关系错误的独立前景手机，relation 正确停留在 `semantic_pending`。
+- 高概率原因：基础阶段的 OpenPose 与手机 Canny 只通过相同二维中心松散叠加；后置局部重绘又在覆盖双手的 mask 内仅保留物体轮廓控制，确定丢失腕点约束。提示词还同时要求“人物可读”和“screen surface readable to viewer/通知对观众可见”，在没有深度与接触几何时容易把手机解释为面向观众的前景展示物。
+- 未验证假设：手机是在基础阶段已经独立竖立，还是 prop pass 擦除了原有手部接触，当前无法精确归因，因为 worker 不保存各阶段图片和无 base64 payload；两阶段均缺少完整 hand-object-depth plan 是确定事实。
+- 反证或冲突：这次不是手机缺失、横竖方向错误、目标坐标错误或视线仍看镜头；这些环节已分别命中。失败点明确收敛为人物—手—物体的接触拓扑、相对尺度与深度平面没有进入结构控制。
+- 复现步骤：读取 job 405 recipe 和最终图；核对手机中心/尺寸与 `(0.38,0.58)` guide 一致、腕点也位于两侧但成图无接触。检查 `scripts/sd-worker.mjs` prop payload，mask 包含手区而 `alwayson_scripts.ControlNet.args` 只有 canny 单元，没有 poseImageBase64/OpenPose 单元。
+- 涉及文件：`lib/prompts.ts` 的 `InteractionContract`，`lib/pose-v2.ts` 的腕点/target 计划，`scripts/sd-worker.mjs` 的 initial prop 与 prop img2img，recipe pass trace。
+- 影响范围：手机、书本、杯子、包、工具等所有必须与手或身体形成物理关系的道具；也影响递交、阅读、操作、饮食和持物场景。二维目标相同但前后景不同的镜头尤其高风险。
+- 建议方案：建立共享 `PropInteractionGeometry`，至少包含 object box/scale、depth plane、actor-relative anchor、left/right hand contact anchors、active/support hand 和遮挡顺序；基础 pose、基础 prop guide、后置 mask 与后置 ControlNet 共用它。prop pass 覆盖手区时必须同时携带对应 OpenPose/接触 guide，不能只保留物体 Canny；提示词区分“viewer 可辨认”与“正对观众陈列”。保存每阶段输出和去 base64 的实际控制摘要。
+- 验收标准：phone/book/cup/tool/bag 的单手、双手、胸前、膝上、侧方和递交矩阵均生成可审计的 object scale/depth/contact anchors；prop mask 覆盖腕手时 payload 同时包含与同一 relationId 对应的 pose/contact 与 shape control；不同景别的对象尺寸由人物/手部尺度推导，不使用固定全图比例；阶段 trace 可证明基础与修复请求没有丢失接触拓扑。程序逻辑验收，不生成图片。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待解决 Agent 增加跨道具、手数、景别、深度平面和 pass 控制单元矩阵。
+- 残余风险：手指细节和屏幕文字仍有模型随机性，但不得再出现程序控制只保证孤立物体轮廓、无法表达人物持握的结构缺口。
+- 诊断 Agent 复核证据：job 405 最终手机位于正确二维 target 且竖向轮廓清楚，但与人物双手完全分离；PNG 最终 gaze pass 已正确看向该目标，排除了视线导致关系失败。worker prop pass 覆盖手物区却只发 Canny，是可复现的程序数据流缺陷。
+- 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收；用户提供的 job 405 仅作运行失败证据。
+- 后续处理：解决 Agent 统一 hand/object/depth 几何并让 prop pass 保留腕点控制，不能再用独立矩形轮廓代替持握关系。
+
+## ISSUE-POSE-006 复合坐姿动作只改 seated 标签但未应用坐姿基础骨架
+
+- 优先级：P0
+- 状态：fixed_pending_review
+- 来源问题：用户提交 job 405 后核对人物为何跪在地面而不是坐在视觉规格指定的 sofa；关联已关闭的 `ISSUE-POSE-004/005`，但本项针对 base pose 与 upper-body action 的复合规则。
+- 用户报告：场景要求人物坐在沙发看手机，最新图却变成人物跪在地面，recipe 仍显示 `single_action_seated_v1`。
+- 已确认事实：job 405 的 actions 为 `[read_phone,seated,hold_carry,head_gesture]`、primaryAction=`read_phone`、kind=`single_action_seated_v1`。`buildSinglePerson` 只有 `plan.primaryAction === "seated"` 才写入坐姿髋膝踝；当 seated 只是复合 actions 成员时保留默认直立下肢。`kindForSingle` 又因 sourceText 含 sofa 直接返回 seated kind，导致标签声称坐姿、实际关节仍非坐姿。纯函数 full-body 矩阵证明 `read_phone+seated` 与 `read_phone_only` 的髋膝踝完全相同，而 `primaryAction=seated` 才得到不同的弯曲坐姿；`write_tool+seated` 同样失败。
+- 高概率原因：单个 `primaryAction` 同时承担基础身体状态和上身剧情动作，且 `primaryText` 优先选择 read_phone；后续 actions 虽检测到 seated，却没有独立的 basePose 消费者。kind 标签又使用 sofa 关键词补丁，与真实骨架选择逻辑分裂。
+- 未验证假设：job 405 的具体跪姿有多少由隐藏下肢、景别和模型随机性共同造成无法量化；但 recipe falsely labeled seated 和复合坐姿未进入关节构建是确定性程序缺陷。
+- 反证或冲突：OpenPose 已正确控制低头和双腕目标，故不能把整个失败归因于 OpenPose 未启用；缺失的是坐姿身体基座，而不是上身手机动作。
+- 复现步骤：构造 full-body `actions=[read_phone,seated]`、primary=`read_phone` 与 primary=`seated` 两个 `PoseScenePlanV2`，调用 `buildPoseControlFromPlan`。前者 hips/knees/ankles 与 read_phone-only 完全一致，后者才使用 seated 坐标；两者 kind 都可显示 `single_action_seated_v1`。
+- 涉及文件：`lib/pose-v2.ts` 的 primary action 选择、`buildSinglePerson` 与 `kindForSingle`，相关复合动作测试和 recipe/UI 标签。
+- 影响范围：坐着看手机、坐着读书、坐着写字、坐着使用工具、坐着吃喝等所有“身体基础姿态 + 上身动作”组合；同类架构风险也适用于 crouch/recline/lie 与上身动作的组合。
+- 建议方案：把 `basePose`（standing/seated/crouch/recline/lie）与 `upperBodyActions[]` 分离，先构建身体基座，再叠加手臂、头部和道具动作；kind/source/reason 必须由实际采用的组合计划生成，不得仅凭 sofa 文本改标签。定义冲突优先级和 framing 裁切后的可审计关节。
+- 验收标准：seated+phone/book/write/tool/eat 五类组合均保留同一坐姿髋膝骨架并叠加各自上身动作；standing/crouch/recline/lie 组合具有不同基础拓扑；kind、basePose、actions 和最终关节一致，不能出现 seated 标签配直立骨架；close/medium 隐藏下肢时 recipe 仍记录裁切前 base pose 证据。程序逻辑验收，不生成图片。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待解决 Agent 增加 basePose×upperBodyAction×framing 组合矩阵。
+- 残余风险：近景隐藏下肢后模型仍可能根据环境把坐姿误画为跪姿；应保留人工 pose 复核，但程序必须先提供一致的坐姿基座与标签。
+- 诊断 Agent 复核证据：job 405 recipe 明确 actions 含 seated、primary read_phone、kind seated；实际 `people` 使用默认 hips `(0.445/0.555,0.52)`、knees `(0.425/0.575,1.24 after upper-body hiding)`，没有进入 seated 分支。独立 full-body 矩阵进一步排除 framing 干扰。
+- 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 后续处理：解决 Agent 解耦基础姿态与上身动作，移除 kind 的 sofa 关键词伪装路径。
 

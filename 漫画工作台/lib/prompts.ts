@@ -1150,6 +1150,7 @@ function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContrac
 }
 
 const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
+  relationId: interaction.relationId,
   characterId: interaction.characterId,
   required: interaction.required,
   object: interaction.object,

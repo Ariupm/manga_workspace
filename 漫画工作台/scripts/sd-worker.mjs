@@ -454,6 +454,9 @@ try {
     const guideSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="none" stroke="white" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round">${shapeMarkup}</g></svg>`);
     const guide=(await sharp(guideSvg).png().toBuffer()).toString("base64");
     const cannyModel=recipe.generationSpec?.structureControl?.cannyModel;
+    const propControlUnits = [];
+    if (poseImageBase64 && poseControl?.model) propControlUnits.push({ enabled:true, module:poseControl.module || "none", model:poseControl.model, weight:Math.min(.78, poseControl.weight ?? .82), image:poseImageBase64, effective_region_mask:mask, resize_mode:"Just Resize", low_vram:true, processor_res:512, guidance_start:0, guidance_end:.82, control_mode:"Balanced", pixel_perfect:false, relationId });
+    if (cannyModel) propControlUnits.push({enabled:true,module:"canny",model:cannyModel,weight:.82,image:guide,effective_region_mask:mask,resize_mode:"Just Resize",low_vram:true,processor_res:512,threshold_a:64,threshold_b:128,guidance_start:0,guidance_end:.8,control_mode:"ControlNet is more important",pixel_perfect:false,relationId});
     update(phase==="draft"?"draft_running":"final_running",95,"",`正在校正手部与剧情道具：${propInteraction.object}`);
     const payload={
       prompt:["masterpiece, best quality, anime illustration",...(propInteraction.positive||[]),`one coherent ${propInteraction.object}, ${propInteraction.orientation} orientation, ${propInteraction.viewerSurface} surface readable to viewer, ${propInteraction.handMode}-hand interaction`,"anatomically credible hands, only fingers required by the grip remain visible, physically credible object contact"].join(", "),
@@ -463,7 +466,7 @@ try {
       denoising_strength:phase==="draft"?0.54:0.42,
       sampler_name:recipe.sampler,scheduler:recipe.scheduler,batch_size:1,n_iter:1,
       mask_blur:10,inpainting_fill:1,inpaint_full_res:true,inpaint_full_res_padding:64,send_images:true,
-      ...(cannyModel?{alwayson_scripts:{ControlNet:{args:[{enabled:true,module:"canny",model:cannyModel,weight:.82,image:guide,effective_region_mask:mask,resize_mode:"Just Resize",low_vram:true,processor_res:512,threshold_a:64,threshold_b:128,guidance_start:0,guidance_end:.8,control_mode:"ControlNet is more important",pixel_perfect:false}]}}}:{}),
+      ...(propControlUnits.length?{alwayson_scripts:{ControlNet:{args:propControlUnits}}}:{}),
     };
     try {
       const result=await postJson(recipe.endpoint.replace(/\/txt2img$/,"/img2img"),payload);

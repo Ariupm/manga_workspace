@@ -42,6 +42,7 @@ export type PoseInteractionKindV2 =
   | "confrontation";
 
 export type PoseInteractionInput = {
+  relationId?: string;
   characterId: string;
   required: boolean;
   object: string;
@@ -55,6 +56,7 @@ export type PoseInteractionInput = {
 export type PosePersonPlanV2 = {
   characterId: string;
   actions: PoseActionFamilyV2[];
+  basePose: "standing" | "seated" | "crouch_kneel" | "recline" | "lie";
   primaryAction: PoseActionFamilyV2;
   templateId: string;
   variantId: number;
@@ -373,6 +375,7 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
       detected.push("write_tool");
     }
     const actions = unique(detected.length ? detected : ["static" as const]);
+    const basePose: PosePersonPlanV2["basePose"] = ([("lie"), ("recline"), ("crouch_kneel"), ("seated")] as const).find((family) => actions.includes(family)) || "standing";
     const primaryAction = primaryOrder.find((family) => primaryDetected.includes(family))
       || primaryOrder.find((family) => actions.includes(family))
       || "static";
@@ -383,6 +386,7 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
     return {
       characterId,
       actions,
+      basePose,
       primaryAction,
       templateId: templateForFamily(primaryAction),
       variantId: (Math.abs(shot.id) + index) % 3,
@@ -448,21 +452,22 @@ function buildSinglePerson(plan: PosePersonPlanV2): PosePoint[] {
     { x: cx + 0.055, y: 0.52 }, { x: cx + 0.075, y: 0.7 }, { x: cx + 0.085, y: 0.9 },
     ...facePoints(nose),
   ];
-  if (plan.primaryAction === "seated") {
+  const basePose = plan.basePose || (plan.primaryAction === "seated" ? "seated" : "standing");
+  if (basePose === "seated") {
     points[8] = { x: cx - 0.055, y: 0.54 }; points[9] = { x: cx - 0.18, y: 0.59 }; points[10] = { x: cx - 0.18, y: 0.84 };
     points[11] = { x: cx + 0.055, y: 0.54 }; points[12] = { x: cx + 0.18, y: 0.59 }; points[13] = { x: cx + 0.18, y: 0.84 };
-  } else if (plan.primaryAction === "crouch_kneel") {
+  } else if (basePose === "crouch_kneel") {
     points[8] = { x: cx - 0.06, y: 0.5 }; points[9] = { x: cx - 0.17, y: 0.65 }; points[10] = { x: cx - 0.03, y: 0.78 };
     points[11] = { x: cx + 0.06, y: 0.5 }; points[12] = { x: cx + 0.13, y: 0.7 }; points[13] = { x: cx + 0.25, y: 0.73 };
-  } else if (plan.primaryAction === "locomotion") {
+  } else if (basePose === "standing" && plan.primaryAction === "locomotion") {
     const stride = 0.18 * intensityFactor(plan.intensity);
     points[4] = { x: cx - 0.2, y: 0.49 }; points[7] = { x: cx + 0.2, y: 0.31 };
     points[9] = { x: cx - stride * 0.75, y: 0.68 }; points[10] = { x: cx - stride * 1.25, y: 0.88 };
     points[12] = { x: cx + stride * 0.85, y: 0.68 }; points[13] = { x: cx + stride * 1.3, y: 0.86 };
-  } else if (plan.primaryAction === "lie") {
+  } else if (basePose === "lie") {
     nose = { x: cx - 0.26, y: 0.45 }; neck = { x: cx - 0.17, y: 0.48 };
     points = [nose, neck, { x: cx - 0.17, y: 0.41 }, { x: cx - 0.06, y: 0.39 }, { x: cx + 0.03, y: 0.4 }, { x: cx - 0.16, y: 0.55 }, { x: cx - 0.04, y: 0.58 }, { x: cx + 0.06, y: 0.58 }, { x: cx + 0.07, y: 0.45 }, { x: cx + 0.22, y: 0.43 }, { x: cx + 0.34, y: 0.46 }, { x: cx + 0.08, y: 0.56 }, { x: cx + 0.23, y: 0.6 }, { x: cx + 0.36, y: 0.58 }, ...facePoints(nose)];
-  } else if (plan.primaryAction === "recline") {
+  } else if (basePose === "recline") {
     nose = { x: cx - 0.12, y: 0.21 }; neck = { x: cx - 0.07, y: 0.31 };
     points = [nose, neck, { x: cx - 0.14, y: 0.32 }, { x: cx - 0.16, y: 0.44 }, { x: cx - 0.1, y: 0.54 }, { x: cx + 0.01, y: 0.31 }, { x: cx + 0.08, y: 0.43 }, { x: cx + 0.13, y: 0.54 }, { x: cx - 0.01, y: 0.56 }, { x: cx - 0.1, y: 0.72 }, { x: cx - 0.19, y: 0.86 }, { x: cx + 0.09, y: 0.58 }, { x: cx + 0.19, y: 0.72 }, { x: cx + 0.27, y: 0.85 }, ...facePoints(nose)];
   }
@@ -630,7 +635,7 @@ export function validatePosePeople(people: PosePoint[][], plan?: PoseScenePlanV2
 
 const kindForSingle = (person: PosePersonPlanV2, framingMode: PoseFramingModeV2) => {
   if (person.primaryAction === "static" && framingMode === "full_body") return "single_full_body_v1";
-  if (person.primaryAction !== "recline" && person.primaryAction !== "lie" && /sofa|couch|沙发/i.test(person.sourceText)) return "single_action_seated_v1";
+  if (person.basePose === "seated") return "single_action_seated_v1";
   return ({
     seated: "single_action_seated_v1", locomotion: "single_action_moving_v1", point: "single_action_point_v1",
     self_touch: "single_action_self_touch_v1", operate_environment: "single_action_operate_environment_v1",
