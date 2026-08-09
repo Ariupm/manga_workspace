@@ -234,7 +234,7 @@ const actionRules: Array<[PoseActionFamilyV2, RegExp]> = [
   ["seated", /\b(?:sit|sits|sitting|seated)\b|sofa|couch|chair|坐|沙发|椅子/i],
   ["locomotion", /\b(?:walk|walking|walks|walked|run|running|runs|ran|stride|striding|step|stepping|enter|entering|exit|exiting|leave|leaving|approach|approaching)\b|走|跑|迈步|进入|离开|出门|走向/i],
   ["self_touch", /rub(?:bing|s)? .*?(?:eye|eyes|face)|touch(?:ing|es)? .*?(?:eye|eyes|face|forehead)|cover(?:ing|s)? .*?(?:face|eyes)|揉眼|揉脸|摸脸|捂脸|扶额/i],
-  ["point", /\bpoint(?:ing|s|ed)?\b|gesture(?:s|d|ing)? toward|指向|指着|指给/i],
+  ["point", /\bpoint(?:ing|s|ed)?\s+(?:toward|at|to)\b|gesture(?:s|d|ing)? toward|指向|指着|指给/i],
   ["operate_environment", /turn(?:ing|s|ed)? (?:off|on)|switch(?:ing|es|ed)?|press(?:ing|es|ed)? .*?(?:switch|button)|开灯|关灯|开关|按(?:下)?按钮/i],
   ["push_pull", /\b(?:push|pushing|pull|pulling|drag|dragging)\b|推|拉|拖/i],
   ["pick_place", /\b(?:pick(?:ing)? up|take|taking|remove|removing|place|placing|put|putting|set down)\b|拿起|取出|放下|摆放/i],
@@ -360,6 +360,13 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
       else if (interaction.purpose === "place") detected.push("pick_place");
       else if (interaction.purpose === "drink") detected.push("drink_eat");
       else if (interaction.purpose === "operate") detected.push("write_tool");
+    }
+    if (interaction?.purpose === "operate") {
+      for (const family of ["point", "hold_carry", "read_phone"] as const) {
+        const index = detected.indexOf(family);
+        if (index >= 0) detected.splice(index, 1);
+      }
+      detected.push("write_tool");
     }
     const actions = unique(detected.length ? detected : ["static" as const]);
     const primaryAction = primaryOrder.find((family) => primaryDetected.includes(family))

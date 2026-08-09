@@ -710,6 +710,7 @@ export async function POST(request: Request) {
       regionalSpec.negativePrompt || negative,
       requestedNegativeOverride,
     );
+    const negativeOverrideAccepted = Boolean(requestedNegativeOverride && requestedNegativeOverride.trim() !== compiled.negativePrompt.trim());
     const poseOverride =
       typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
         ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")
@@ -771,6 +772,9 @@ export async function POST(request: Request) {
               repairs: canonicalPrompt.repairs,
             }
           : null,
+        negativePromptOverride: negativeOverrideAccepted
+          ? { requested: requestedNegativeOverride, applied: effectiveNegativePrompt, accepted: true }
+          : null,
         characterRegions: regionalSpec.characterRegions.map((region, index) => ({
           ...region,
           prompt: regionalCharacterPrompts[index],
@@ -824,7 +828,7 @@ export async function POST(request: Request) {
         processHeight: 512,
       },
       promptSource:
-        requestedPromptOverride
+        (requestedPromptOverride || negativeOverrideAccepted)
           ? (typeof body.promptMode === "string" ? body.promptMode : "manual_override")
           : "structured",
       finalReferences,
