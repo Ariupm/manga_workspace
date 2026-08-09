@@ -538,8 +538,8 @@ function buildDoublePeople(plan: PoseScenePlanV2): PosePoint[][] {
   };
   switch (plan.interactionKind) {
     case "handover":
-      setArm(left, "inner", { x: target.x - 0.1, y: target.y - 0.07 }, { x: target.x - 0.045, y: target.y }, 0);
-      setArm(right, "inner", { x: target.x + 0.1, y: target.y - 0.06 }, { x: target.x + 0.045, y: target.y }, 1);
+      setArm(left, "inner", { x: target.x - 0.1, y: target.y - 0.07 }, { x: target.x - 0.035, y: target.y }, 0);
+      setArm(right, "inner", { x: target.x + 0.1, y: target.y - 0.06 }, { x: target.x + 0.035, y: target.y }, 1);
       break;
     case "shared_prop":
       setArm(left, "inner", { x: target.x - 0.13, y: target.y - 0.05 }, { x: target.x - 0.035, y: target.y }, 0);

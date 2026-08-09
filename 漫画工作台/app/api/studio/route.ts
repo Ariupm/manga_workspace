@@ -41,6 +41,7 @@ import {
   buildRegionalPrompt,
   buildCanonicalGenerationPrompt,
   buildCanonicalNegativePrompt,
+  extractPromptEditorialDiff,
   containsCjk,
   classifyOutfitConditioning,
   deriveInteractionContract,
@@ -669,7 +670,7 @@ export async function POST(request: Request) {
       ? body.promptOverride.trim()
       : "";
     const requestedPromptOverride = rawPromptOverride && rawPromptOverride.trim() !== compiled.prompt.trim()
-      ? rawPromptOverride
+      ? extractPromptEditorialDiff(compiled.prompt, rawPromptOverride)
       : "";
     const canonicalPrompt = buildCanonicalGenerationPrompt(
       shot,
@@ -702,15 +703,18 @@ export async function POST(request: Request) {
             prompt: appliedPrompt,
           }
         : null;
-    const requestedNegativeOverride = typeof body.negativePromptOverride === "string" && body.negativePromptOverride.trim()
+    const rawNegativeOverride = typeof body.negativePromptOverride === "string" && body.negativePromptOverride.trim()
       ? body.negativePromptOverride.trim()
+      : "";
+    const requestedNegativeOverride = rawNegativeOverride
+      ? extractPromptEditorialDiff(compiled.negativePrompt, rawNegativeOverride)
       : "";
     const effectiveNegativePrompt = buildCanonicalNegativePrompt(
       shot,
       regionalSpec.negativePrompt || negative,
       requestedNegativeOverride,
     );
-    const negativeOverrideAccepted = Boolean(requestedNegativeOverride && requestedNegativeOverride.trim() !== compiled.negativePrompt.trim());
+    const negativeOverrideAccepted = Boolean(requestedNegativeOverride);
     const poseOverride =
       typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
         ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")

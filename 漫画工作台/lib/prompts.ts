@@ -455,7 +455,20 @@ export function buildCanonicalNegativePrompt(shot: Shot, contractNegative: strin
     : framingKind(shot) === "close_or_medium"
       ? "full body, full-length figure, visible legs, visible shoes, standing portrait"
       : "";
-  return compactPrompt([sanitizeEnglishPrompt(contractNegative), framing, sanitizeEnglishPrompt(editableNegative)].filter(Boolean).join(", "), 72);
+  const contract = sanitizeEnglishPrompt(contractNegative);
+  const editorial = extractPromptEditorialDiff(contractNegative, editableNegative);
+  return compactPrompt([contract, framing, editorial].filter(Boolean).join(", "), 72);
+}
+
+/** Return only terms added by an edited prompt relative to its structured baseline. */
+export function extractPromptEditorialDiff(base = "", edited = "") {
+  const baseTerms = new Set(splitPromptTerms(sanitizeEnglishPrompt(base)).map((term) => promptFingerprint(term)));
+  return splitPromptTerms(sanitizeEnglishPrompt(edited))
+    .filter((term) => {
+      const fingerprint = promptFingerprint(term);
+      return fingerprint && !baseTerms.has(fingerprint);
+    })
+    .join(", ");
 }
 
 function canonicalActionForInteraction(action: string, interaction: InteractionContract) {

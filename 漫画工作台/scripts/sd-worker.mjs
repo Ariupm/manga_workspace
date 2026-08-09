@@ -402,8 +402,15 @@ try {
   }
   const propInteraction=recipe.generationSpec?.repairPasses?.propInteraction;
   const propInteractions=recipe.generationSpec?.repairPasses?.propInteractions || (propInteraction ? [propInteraction] : []);
-  recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", status: index === 0 ? "executing" : "queued_for_followup_pass" }));
+  recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", status: item?.required ? "queued" : "not_required" }));
+  const updateRelationTrace = (relationId, status, error = "") => {
+    const trace = recipe.relationTraces.find((item) => item.relationId === relationId);
+    if (trace) Object.assign(trace, { status, ...(error ? { error } : {}) });
+  };
   for (const propInteraction of propInteractions.filter((item) => item?.required)) {
+  const relationId = propInteraction.relationId || `legacy:${propInteractions.indexOf(propInteraction) + 1}`;
+  updateRelationTrace(relationId, "executing");
+  let relationFailed = false;
   if(propInteraction.required && response.images?.[0]) {
     if(status()==="cancelled")process.exit(0);
     const width=recipe.width,height=recipe.height;
@@ -455,6 +462,7 @@ try {
       if(!repaired.images?.[0])throw new Error("没有返回图片");
       response={...response,images:[repaired.images[0]]};
     } catch(error) {
+      relationFailed = true;
       const warning=`剧情道具与手部校正失败，已保留上一阶段图片：${error instanceof Error?error.message:String(error)}`;
       postprocessWarnings.push(warning);
       update(phase==="draft"?"draft_running":"final_running",96,"",warning);
@@ -468,7 +476,9 @@ try {
       const poseNose=recipe.poseControl?.people?.[characterIndex>=0?characterIndex:0]?.[0];
       const identityReference=identityReferenceForCharacter(identityReferences,propInteraction.characterId,characterIndex>=0?characterIndex:0);
       const gazePlan=faceRefinementPassPlan({phase,pass:"gaze",shotSize:cameraText,poseNose,region:characterRegion?.region,identityReference,gazeText:propInteraction.gaze});
-      const gazeGeometry=gazeMaskGeometry({width,height,face:{x:gazePlan.center.x,y:gazePlan.center.y,radiusXRatio:gazePlan.radiusXRatio,radiusYRatio:gazePlan.radiusYRatio},target:propInteraction.objectCenter});
+      const gazeDistance=Math.hypot((propInteraction.objectCenter?.x ?? .5) - gazePlan.center.x, (propInteraction.objectCenter?.y ?? .58) - gazePlan.center.y);
+      const gazePadding=Math.max(48,Math.round(gazeDistance * Math.max(width,height) + Math.max(width,height) * .12));
+      const gazeGeometry=gazeMaskGeometry({width,height,face:{x:gazePlan.center.x,y:gazePlan.center.y,radiusXRatio:gazePlan.radiusXRatio,radiusYRatio:gazePlan.radiusYRatio},target:propInteraction.objectCenter,inpaintPadding:gazePadding});
       const faceCenterX=gazeGeometry.face.cx;
       const faceCenterY=gazeGeometry.face.cy;
       const faceRadiusX=gazeGeometry.face.rx,faceRadiusY=gazeGeometry.face.ry;
@@ -492,12 +502,12 @@ try {
         resize_mode:"Crop and Resize",low_vram:true,processor_res:512,guidance_start:0,guidance_end:1,control_mode:"ControlNet is more important",pixel_perfect:true,
       }:null;
       const gazePayload={
-        prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,`head, irises, and pupils visibly converge ${gazeGeometry.direction === "independent" ? "with the surrounding action" : `toward the ${gazeGeometry.direction} target at normalized coordinates ${gazePlan.center.x.toFixed(2)},${gazePlan.center.y.toFixed(2)} (${gazeGeometry.vector.distance.toFixed(2)} distance)`}`,propInteraction.gazeMode==="object"?`the ${propInteraction.object} is the gaze target`:propInteraction.gazeMode==="work_point"?"the tool contact point is the gaze target":"the interaction target is the gaze target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
+        prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,`head, irises, and pupils visibly converge ${gazeGeometry.direction === "independent" ? "with the surrounding action" : `toward the ${gazeGeometry.direction} target at normalized coordinates ${propInteraction.objectCenter?.x?.toFixed(2) ?? "0.50"},${propInteraction.objectCenter?.y?.toFixed(2) ?? "0.58"} (${gazeGeometry.vector.distance.toFixed(2)} distance)`}`,propInteraction.gazeMode==="object"?`the ${propInteraction.object} is the gaze target`:propInteraction.gazeMode==="work_point"?"the tool contact point is the gaze target":"the interaction target is the gaze target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
         negative_prompt:[recipe.negativePrompt,expressionNegativeCue(expression),"looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera, crossed eyes, mismatched pupils, malformed eyes"].filter(Boolean).join(", "),
         init_images:[response.images[0]],mask:gazeMask,width,height,
         steps:phase==="draft"?12:14,cfg_scale:6.4,denoising_strength:gazePlan.denoisingStrength,
         sampler_name:recipe.sampler,scheduler:recipe.scheduler,batch_size:1,n_iter:1,
-        mask_blur:8,inpainting_fill:1,inpaint_full_res:true,inpaint_full_res_padding:Math.max(48,Math.round(48 + gazeGeometry.vector.distance * height * .7)),send_images:true,
+        mask_blur:8,inpainting_fill:1,inpaint_full_res:true,inpaint_full_res_padding:gazePadding,send_images:true,
         ...(gazeIdentityUnit?{alwayson_scripts:{ControlNet:{args:[gazeIdentityUnit]}}}:{}),
       };
       try {
@@ -505,9 +515,10 @@ try {
         if(gazeResult.status<200||gazeResult.status>=300)throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0,180)}`);
         const gazeResponse=JSON.parse(gazeResult.body);if(!gazeResponse.images?.[0])throw new Error("没有返回图片");
         response={...response,images:[gazeResponse.images[0]]};
-      }catch(error){const warning=`视线校正失败，已保留手部与道具校正结果：${error instanceof Error?error.message:String(error)}`;postprocessWarnings.push(warning);update(phase==="draft"?"draft_running":"final_running",97,"",warning);}
+      }catch(error){relationFailed = true; const warning=`视线校正失败，已保留手部与道具校正结果：${error instanceof Error?error.message:String(error)}`;postprocessWarnings.push(warning);update(phase==="draft"?"draft_running":"final_running",97,"",warning);}
     }
   }
+  updateRelationTrace(relationId, relationFailed ? "failed" : "completed");
   }
   if (recipe.generationSpec?.repairPasses?.handoff && response.images?.[0]) {
     if (status() === "cancelled") process.exit(0);
@@ -523,7 +534,7 @@ try {
     const maskWidth = Math.round(umbrella.bounds.width);
     const maskHeight = Math.round(umbrella.bounds.height);
     const handoffMaskSvg = Buffer.from(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${maskX + maskWidth / 2}" cy="${maskY + maskHeight / 2}" rx="${maskWidth / 2}" ry="${maskHeight / 2}" fill="white"/></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><rect x="${maskX}" y="${maskY}" width="${maskWidth}" height="${maskHeight}" rx="${Math.min(maskWidth, maskHeight) * .12}" fill="white"/></svg>`,
     );
     const handoffMask = (await sharp(handoffMaskSvg).png().toBuffer()).toString("base64");
     update(
@@ -573,7 +584,12 @@ try {
       });
     }
     recipe.debugMasks = recipe.debugMasks || [];
-    recipe.debugMasks.push({ type: "umbrella_handoff", bounds: umbrella.bounds, canopy: umbrella.canopy, shaft: umbrella.shaft, maskGuideIntersection: true });
+    recipe.debugMasks.push({ type: "umbrella_handoff", bounds: umbrella.bounds, canopy: umbrella.canopy, shaft: umbrella.shaft, maskGuideIntersection: umbrella.maskGuideIntersection });
+    if (!umbrella.maskGuideIntersection) {
+      const warning = "雨伞结构引导未被有效遮罩完整覆盖，已拒绝交接局部修复";
+      postprocessWarnings.push(warning);
+      update(phase === "draft" ? "draft_running" : "final_running", 97, "", warning);
+    } else {
     const handoffPayload = {
       prompt: [
         "masterpiece, best quality, anime illustration",
@@ -613,6 +629,7 @@ try {
     const handoffResponse = JSON.parse(handoffResult.body);
     if (!handoffResponse.images?.[0]) throw new Error("手部与伞柄校正没有返回图片");
     response = { ...response, images: [handoffResponse.images[0]] };
+    }
   }
   let info = {};
   try {

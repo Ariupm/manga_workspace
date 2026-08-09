@@ -9,7 +9,7 @@ export function gazeMaskCenter({ width, height, poseNose, region = { xStart: 0, 
   return { x: Math.max(.12, Math.min(.88, poseNose?.x ?? regionCenter)), y: Math.max(.12, Math.min(.5, poseNose?.y ?? (close ? .3 : medium ? .27 : .23))), sourceX: poseNose ? "pose_nose" : "region", sourceY: poseNose?.y == null ? "shot_size" : "pose_nose" };
 }
 
-export function gazeMaskGeometry({ width, height, face, target = null }) {
+export function gazeMaskGeometry({ width, height, face, target = null, inpaintPadding = 48, targetRadius = { x: .1, y: .1 } }) {
   const fx = width * face.x, fy = height * face.y;
   const rx = width * (face.radiusXRatio || .1), ry = height * (face.radiusYRatio || .13);
   const tx = target ? width * target.x : fx, ty = target ? height * target.y : fy;
@@ -20,15 +20,30 @@ export function gazeMaskGeometry({ width, height, face, target = null }) {
   const dx = target ? target.x - face.x : 0, dy = target ? target.y - face.y : 0;
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   const direction = !target ? "independent" : Math.abs(dx) < .08 && dy > .08 ? "down" : Math.abs(dx) < .08 && dy < -.08 ? "up" : dx > .08 && Math.abs(dy) <= .2 ? "right" : dx < -.08 && Math.abs(dy) <= .2 ? "left" : dx > 0 && dy > 0 ? "down-right" : dx < 0 && dy > 0 ? "down-left" : dx > 0 ? "up-right" : "up-left";
-  return { face: { cx: fx, cy: fy, rx, ry }, target: target ? { cx: tx, cy: ty } : null, vector: { x: dx, y: dy, distance: Math.hypot(dx, dy), angle }, direction, bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY }, containsTarget: Boolean(target) };
+  const maskBounds = { x: Math.max(0, fx - rx), y: Math.max(0, fy - ry), width: Math.min(width, fx + rx) - Math.max(0, fx - rx), height: Math.min(height, fy + ry) - Math.max(0, fy - ry) };
+  const crop = {
+    x: Math.max(0, maskBounds.x - inpaintPadding),
+    y: Math.max(0, maskBounds.y - inpaintPadding),
+    width: Math.min(width, maskBounds.x + maskBounds.width + inpaintPadding) - Math.max(0, maskBounds.x - inpaintPadding),
+    height: Math.min(height, maskBounds.y + maskBounds.height + inpaintPadding) - Math.max(0, maskBounds.y - inpaintPadding),
+  };
+  const targetBox = target ? { x: tx - width * targetRadius.x, y: ty - height * targetRadius.y, width: width * targetRadius.x * 2, height: height * targetRadius.y * 2 } : null;
+  const containsTarget = Boolean(targetBox && targetBox.x >= crop.x && targetBox.y >= crop.y && targetBox.x + targetBox.width <= crop.x + crop.width && targetBox.y + targetBox.height <= crop.y + crop.height);
+  return { face: { cx: fx, cy: fy, rx, ry }, target: target ? { cx: tx, cy: ty } : null, vector: { x: dx, y: dy, distance: Math.hypot(dx, dy), angle }, direction, bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY }, crop, targetBox, containsTarget };
 }
 
 export function umbrellaGeometry({ width, height, target = { x: .5, y: .48 }, anchors = [] } = {}) {
   const cx = width * target.x, contactY = height * target.y;
   const spread = Math.min(width * .42, Math.max(width * .22, Math.abs((anchors[1]?.x || .7) - (anchors[0]?.x || .3)) * width * .34));
   const canopyY = Math.max(height * .08, contactY - height * .34);
-  const bounds = { x: Math.max(0, cx - spread), y: canopyY - height * .06, width: Math.min(width, spread * 2), height: Math.min(height - (canopyY - height * .06), contactY - canopyY + height * .22) };
-  return { center: { x: cx, y: contactY }, canopy: { x1: Math.max(0, cx - spread), x2: Math.min(width, cx + spread), y: canopyY }, shaft: { x1: cx, y1: canopyY, x2: cx, y2: contactY + height * .18 }, bounds: { x: Math.max(0, bounds.x), y: Math.max(0, bounds.y), width: Math.min(width - Math.max(0, bounds.x), bounds.width), height: Math.min(height - Math.max(0, bounds.y), bounds.height) } };
+  const bounds = { x: Math.max(0, cx - spread), y: canopyY - height * .18, width: Math.min(width, spread * 2), height: Math.min(height - (canopyY - height * .18), contactY - canopyY + height * .4) };
+  const clippedBounds = { x: Math.max(0, bounds.x), y: Math.max(0, bounds.y), width: Math.min(width - Math.max(0, bounds.x), bounds.width), height: Math.min(height - Math.max(0, bounds.y), bounds.height) };
+  const points = [
+    [cx - spread, canopyY], [cx, canopyY - height * .13], [cx + spread, canopyY],
+    [cx, canopyY], [cx, contactY + height * .18],
+  ];
+  const maskGuideIntersection = points.every(([x, y]) => x >= clippedBounds.x && x <= clippedBounds.x + clippedBounds.width && y >= clippedBounds.y && y <= clippedBounds.y + clippedBounds.height);
+  return { center: { x: cx, y: contactY }, canopy: { x1: Math.max(0, cx - spread), x2: Math.min(width, cx + spread), y: canopyY }, shaft: { x1: cx, y1: canopyY, x2: cx, y2: contactY + height * .18 }, bounds: clippedBounds, maskGuideIntersection };
 }
 
 export function compositionDepthPlan({ width = 512, height = 512, shotSize = "", characterCount = 1, available = false } = {}) {
