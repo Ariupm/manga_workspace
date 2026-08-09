@@ -457,7 +457,8 @@ export function buildCanonicalNegativePrompt(shot: Shot, contractNegative: strin
       : "";
   const contract = sanitizeEnglishPrompt(contractNegative);
   const editorial = extractPromptEditorialDiff(contractNegative, editableNegative);
-  return compactPrompt([contract, framing, editorial].filter(Boolean).join(", "), 140);
+  const contractLayer = compactPrompt([contract, framing].filter(Boolean).join(", "), 72);
+  return [contractLayer, editorial].filter(Boolean).join(", ");
 }
 
 /** Return only terms added by an edited prompt relative to its structured baseline. */

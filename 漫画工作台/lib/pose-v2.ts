@@ -67,6 +67,7 @@ export type PosePersonPlanV2 = {
   anchor: PosePoint;
   scale: number;
   target: PosePoint | null;
+  relationTargets: Array<{ relationId?: string; object: string; target: PosePoint; handMode: "one" | "two" }>;
   mirror: boolean;
   sourceText: string;
 };
@@ -400,6 +401,7 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
       anchor: { x: anchorX, y: 0.5 },
       scale: framingMode === "full_body" ? 1 : 0.94,
       target,
+      relationTargets: characterInteractions.filter((relation) => relation.required).map((relation) => ({ relationId: relation.relationId, object: relation.object, target: { x: clamp(relation.objectCenter.x, 0.1, 0.9), y: clamp(relation.objectCenter.y, 0.2, 0.85) }, handMode: relation.handMode })),
       mirror: false,
       sourceText: text,
     };
@@ -476,6 +478,12 @@ function buildSinglePerson(plan: PosePersonPlanV2): PosePoint[] {
     points[5] = { x: points[5].x - 0.03, y: points[5].y - 0.02 };
   }
   const target = plan.target || { x: plan.facing === "left" ? cx - 0.28 : cx + 0.28, y: 0.48 };
+  if (plan.target && plan.primaryAction !== "static") {
+    const dx = clamp(target.x - points[0].x, -0.2, 0.2);
+    const dy = clamp(target.y - points[0].y, -0.16, 0.24);
+    points[0] = { x: points[0].x + dx * 0.42, y: points[0].y + dy * 0.42 };
+    points[1] = { x: points[1].x + dx * 0.2, y: points[1].y + dy * 0.2 };
+  }
   const activeRight = plan.handedness === "right" || plan.handedness === "both";
   const activeWrist = activeRight ? 4 : 7;
   const activeElbow = activeRight ? 3 : 6;
@@ -518,7 +526,9 @@ function buildSinglePerson(plan: PosePersonPlanV2): PosePoint[] {
     points[6] = { x: (points[5].x + points[7].x) / 2, y: (points[5].y + points[7].y) / 2 };
   }
   if (plan.actions.includes("head_gesture")) {
-    points[0] = { x: points[0].x, y: plan.phase === "follow_through" ? points[0].y + 0.035 : points[0].y - 0.04 };
+    const targetDeltaY = target.y - points[0].y;
+    const gestureDelta = plan.phase === "follow_through" ? 0.035 : targetDeltaY > 0.04 ? 0.02 : -0.02;
+    points[0] = { x: points[0].x, y: points[0].y + gestureDelta };
   }
   points.splice(14, 4, ...facePoints(points[0]));
   if (plan.mirror) {

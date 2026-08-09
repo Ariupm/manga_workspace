@@ -119,6 +119,7 @@ try {
   );
   const controlUnits = [];
   const allReferences = recipe.references || [];
+  const offCameraGaze = (recipe.generationSpec?.repairPasses?.propInteractions || (recipe.generationSpec?.repairPasses?.propInteraction ? [recipe.generationSpec.repairPasses.propInteraction] : [])).some((item) => item?.gazeMode && item.gazeMode !== "independent");
   const initialReferences =
     recipe.characterCount > 1 && recipe.identityRefinement?.enabled
       ? allReferences.filter((reference) => reference.role === "identity")
@@ -146,7 +147,7 @@ try {
         enabled: true,
         module: reference.module,
         model: reference.model,
-        weight: reference.weight,
+        weight: offCameraGaze && reference.role === "identity" ? Math.min(reference.weight, 0.68) : reference.weight,
         image: fs.readFileSync(referencePath).toString("base64"),
         ...(effectiveRegionMask
           ? { effective_region_mask: effectiveRegionMask }
@@ -158,10 +159,7 @@ try {
         threshold_b: 0.5,
         guidance_start: 0,
         guidance_end: reference.role === "outfit" ? 0.8 : 1,
-        control_mode:
-          reference.role === "identity"
-            ? "ControlNet is more important"
-            : "Balanced",
+        control_mode: reference.role === "identity" && !offCameraGaze ? "ControlNet is more important" : "Balanced",
         pixel_perfect: true,
       });
   }
@@ -180,6 +178,18 @@ try {
       control_mode: "ControlNet is more important",
       pixel_perfect: false,
     });
+  }
+  const initialPropInteraction = recipe.generationSpec?.repairPasses?.propInteractions?.find((item) => item?.required)
+    || recipe.generationSpec?.repairPasses?.propInteraction;
+  const initialCannyModel = recipe.generationSpec?.structureControl?.cannyModel;
+  if (initialPropInteraction?.required && initialCannyModel) {
+    const px = recipe.width * Math.max(.12, Math.min(.88, initialPropInteraction.objectCenter?.x ?? .5));
+    const py = recipe.height * Math.max(.3, Math.min(.78, initialPropInteraction.objectCenter?.y ?? .58));
+    const pw = recipe.width * (initialPropInteraction.orientation === "portrait" ? .13 : .2);
+    const ph = recipe.height * (initialPropInteraction.orientation === "portrait" ? .24 : .13);
+    const propGuideSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${recipe.width}" height="${recipe.height}"><rect width="100%" height="100%" fill="black"/><rect x="${px - pw / 2}" y="${py - ph / 2}" width="${pw}" height="${ph}" rx="${Math.min(pw, ph) * .12}" fill="none" stroke="white" stroke-width="${Math.max(6, recipe.width * .012)}"/></svg>`);
+    const propMaskSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${recipe.width}" height="${recipe.height}"><rect width="100%" height="100%" fill="black"/><rect x="${px - pw * .8}" y="${py - ph * .8}" width="${pw * 1.6}" height="${ph * 1.6}" rx="${Math.min(pw, ph) * .18}" fill="white"/></svg>`);
+    controlUnits.push({ enabled: true, module: "canny", model: initialCannyModel, weight: .72, image: (await sharp(propGuideSvg).png().toBuffer()).toString("base64"), effective_region_mask: (await sharp(propMaskSvg).png().toBuffer()).toString("base64"), resize_mode: "Just Resize", low_vram: true, processor_res: 512, threshold_a: 64, threshold_b: 128, guidance_start: 0, guidance_end: .72, control_mode: "Balanced", pixel_perfect: false, relationId: initialPropInteraction.relationId || "legacy:1", stage: "initial_prop_structure" });
   }
   let polling = false;
   const progressUrl = new URL(
@@ -362,7 +372,7 @@ try {
                 enabled: true,
                 module: reference.module,
                 model: reference.model,
-                weight: refinementPlan.identityControl.weight,
+                weight: offCameraGaze ? Math.min(refinementPlan.identityControl.weight, 0.68) : refinementPlan.identityControl.weight,
                 image: fs.readFileSync(referencePath).toString("base64"),
                 effective_region_mask: mask,
                 resize_mode: "Crop and Resize",
@@ -370,7 +380,7 @@ try {
                 processor_res: 512,
                 guidance_start: 0,
                 guidance_end: 1,
-                control_mode: "ControlNet is more important",
+                control_mode: offCameraGaze ? "Balanced" : "ControlNet is more important",
                 pixel_perfect: true,
               },
             ],
@@ -402,7 +412,7 @@ try {
   }
   const propInteraction=recipe.generationSpec?.repairPasses?.propInteraction;
   const propInteractions=recipe.generationSpec?.repairPasses?.propInteractions || (propInteraction ? [propInteraction] : []);
-  recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", status: item?.required ? "queued" : "not_required" }));
+  recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", required: Boolean(item?.required), orientation: item.orientation || "", handMode: item.handMode || "", targetCenter: item.objectCenter || null, status: item?.required ? "queued" : "not_required" }));
   const updateRelationTrace = (relationId, status, error = "") => {
     const trace = recipe.relationTraces.find((item) => item.relationId === relationId);
     if (trace) Object.assign(trace, { status, ...(error ? { error } : {}) });
@@ -461,6 +471,7 @@ try {
       const repaired=JSON.parse(result.body);
       if(!repaired.images?.[0])throw new Error("没有返回图片");
       response={...response,images:[repaired.images[0]]};
+      updateRelationTrace(relationId, "request_succeeded");
     } catch(error) {
       relationFailed = true;
       const warning=`剧情道具与手部校正失败，已保留上一阶段图片：${error instanceof Error?error.message:String(error)}`;
@@ -496,10 +507,10 @@ try {
         enabled:true,
         module:gazePlan.identityControl.module,
         model:gazePlan.identityControl.model,
-        weight:gazePlan.identityControl.weight,
+        weight:offCameraGaze ? Math.min(gazePlan.identityControl.weight, 0.68) : gazePlan.identityControl.weight,
         image:fs.readFileSync(gazeIdentityPath).toString("base64"),
         effective_region_mask:gazeMask,
-        resize_mode:"Crop and Resize",low_vram:true,processor_res:512,guidance_start:0,guidance_end:1,control_mode:"ControlNet is more important",pixel_perfect:true,
+        resize_mode:"Crop and Resize",low_vram:true,processor_res:512,guidance_start:0,guidance_end:1,control_mode:offCameraGaze?"Balanced":"ControlNet is more important",pixel_perfect:true,
       }:null;
       const gazePayload={
         prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,`head, irises, and pupils visibly converge ${gazeGeometry.direction === "independent" ? "with the surrounding action" : `toward the ${gazeGeometry.direction} target at normalized coordinates ${propInteraction.objectCenter?.x?.toFixed(2) ?? "0.50"},${propInteraction.objectCenter?.y?.toFixed(2) ?? "0.58"} (${gazeGeometry.vector.distance.toFixed(2)} distance)`}`,propInteraction.gazeMode==="object"?`the ${propInteraction.object} is the gaze target`:propInteraction.gazeMode==="work_point"?"the tool contact point is the gaze target":"the interaction target is the gaze target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
@@ -518,7 +529,7 @@ try {
       }catch(error){relationFailed = true; const warning=`视线校正失败，已保留手部与道具校正结果：${error instanceof Error?error.message:String(error)}`;postprocessWarnings.push(warning);update(phase==="draft"?"draft_running":"final_running",97,"",warning);}
     }
   }
-  updateRelationTrace(relationId, relationFailed ? "failed" : "completed");
+  updateRelationTrace(relationId, relationFailed ? "failed" : "semantic_pending");
   }
   if (recipe.generationSpec?.repairPasses?.handoff && response.images?.[0]) {
     if (status() === "cancelled") process.exit(0);
@@ -526,8 +537,14 @@ try {
     const height = recipe.height;
     const scenePlan = recipe.poseControl?.scenePlan;
     const swapped = Boolean(recipe.poseControl?.override?.swapRoles);
-    const giverSide = swapped ? "left-side giver" : "right-side giver";
-    const receiverSide = swapped ? "right-side receiver" : "left-side receiver";
+    const handoffRelation = (recipe.generationSpec?.visualSpec?.interactions || []).find((item) => /handover|offer|递|交/i.test(`${item.type || ""} ${item.action || ""}`)) || null;
+    const regionFor = (characterId) => recipe.generationSpec?.characterRegions?.find((item) => item.characterId === characterId)?.region || null;
+    const actorRegion = handoffRelation ? regionFor(handoffRelation.actorCharacterId) : null;
+    const targetRegion = handoffRelation ? regionFor(handoffRelation.targetCharacterId) : null;
+    const actorIsLeft = actorRegion && targetRegion ? (actorRegion.xStart + actorRegion.xEnd) / 2 < (targetRegion.xStart + targetRegion.xEnd) / 2 : false;
+    const giverLeft = swapped ? !actorIsLeft : actorIsLeft;
+    const giverSide = giverLeft ? "left-side giver" : "right-side giver";
+    const receiverSide = giverLeft ? "right-side receiver" : "left-side receiver";
     const umbrella = umbrellaGeometry({ width, height, target: scenePlan?.interactionTarget || { x: .5, y: .48 }, anchors: scenePlan?.people?.map((person) => person.anchor) || [] });
     const maskX = Math.round(umbrella.bounds.x);
     const maskY = Math.round(umbrella.bounds.y);
