@@ -4,6 +4,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import sharp from "sharp";
+import { faceRefinementPassPlan, gazeMaskGeometry, identityReferenceForCharacter, semanticApprovalCoversItems, semanticReviewContract, umbrellaGeometry } from "./sd-worker-logic.mjs";
 
 const root = process.cwd();
 const jobId = Number(process.argv[2]);
@@ -265,6 +266,12 @@ try {
         : {}),
       override_settings_restore_afterwards: true,
     };
+    recipe.requestTrace = {
+      prompt: requestPayload.prompt,
+      negativePrompt: requestPayload.negative_prompt,
+      regionalPrompterEnabled: Boolean(recipe.regionalPrompter?.enabled),
+      recordedAt: new Date().toISOString(),
+    };
     if (phase === "final") {
       const draftPath = path.resolve(
         root,
@@ -301,22 +308,26 @@ try {
       const width = recipe.width;
       const height = recipe.height;
       const region = reference.region || { xStart: 0, xEnd: 1 };
-      const poseNose = recipe.poseControl?.people?.[identityIndex]?.[0];
-      const regionCenter = (poseNose?.x ?? ((region.xStart + region.xEnd) / 2)) * width;
+      const characterRegions = recipe.generationSpec?.characterRegions || [];
+      const characterIndex = characterRegions.findIndex((item) => item.characterId === reference.characterId);
+      const poseIndex = characterIndex >= 0 ? characterIndex : identityIndex;
+      const poseNose = recipe.poseControl?.people?.[poseIndex]?.[0];
       const cameraText = `${recipe.generationSpec?.visualSpec?.camera?.shotSize || ""} ${recipe.prompt || ""}`;
-      const close = /close-up|extreme close|特写|近景/i.test(cameraText);
-      const medium = /medium shot|waist-up|中景/i.test(cameraText);
-      const faceWidthRatio = close ? 0.28 : medium ? 0.2 : 0.15;
-      const faceHeightRatio = faceWidthRatio * 1.28;
-      const faceCenterY = height * (close ? 0.3 : medium ? 0.27 : 0.23);
-      const maskWidth = Math.max(64, Math.round(width * faceWidthRatio));
-      const maskHeight = Math.max(82, Math.round(height * faceHeightRatio));
-      const x = Math.max(0, Math.round(regionCenter - maskWidth / 2));
-      const y = Math.max(0, Math.round(faceCenterY - maskHeight / 2));
+      const gazeText=reference.characterPrompt||"";
+      const refinementPlan=faceRefinementPassPlan({phase,pass:"identity",shotSize:cameraText,poseNose,region,identityReference:reference,gazeText});
+      const maskWidth = Math.max(64, Math.round(width * refinementPlan.radiusXRatio * 2));
+      const maskHeight = Math.max(82, Math.round(height * refinementPlan.radiusYRatio * 2));
+      const x = Math.max(0, Math.round(width * refinementPlan.center.x - maskWidth / 2));
+      const y = Math.max(0, Math.round(height * refinementPlan.center.y - maskHeight / 2));
       const maskSvg = Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${x + maskWidth / 2}" cy="${y + maskHeight / 2}" rx="${maskWidth / 2}" ry="${maskHeight / 2}" fill="white"/></svg>`,
       );
       const mask = (await sharp(maskSvg).png().toBuffer()).toString("base64");
+      recipe.debugMasks = recipe.debugMasks || [];
+      recipe.faceRefinementPasses = recipe.faceRefinementPasses || [];
+      const identityTrace={type:"identity",order:recipe.faceRefinementPasses.length+1,characterId:reference.characterId,centerX:refinementPlan.center.x,centerY:refinementPlan.center.y,sourceX:refinementPlan.center.sourceX,sourceY:refinementPlan.center.sourceY,denoisingStrength:refinementPlan.denoisingStrength,identityControl:refinementPlan.identityControl};
+      recipe.debugMasks.push(identityTrace);
+      recipe.faceRefinementPasses.push(identityTrace);
       const referencePath = path.resolve(root, reference.path);
       update(
         phase === "draft" ? "draft_running" : "final_running",
@@ -324,10 +335,9 @@ try {
         "",
         `正在精修第 ${identityIndex + 1}/${identityReferences.length} 个人物脸部与身份`,
       );
-      const gazeText=reference.characterPrompt||"";
-      const allowsCameraGaze=!/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(gazeText)&&/(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(gazeText);
+      const {allowsCameraGaze,preservesOffCameraGaze}=refinementPlan.gazePlan;
       const refinePayload = {
-        prompt: `${reference.characterPrompt || recipe.prompt}, detailed facial features, symmetrical readable eyes, defined pupils, defined nose and lips, clean facial contour, preserve the specified head direction and eye target, soft frontal fill light, both eyes fully visible, unobstructed face`,
+        prompt: `${reference.characterPrompt || recipe.prompt}, detailed facial features, symmetrical readable eyes, defined pupils, defined nose and lips, clean facial contour, preserve the specified head direction and eye target, ${preservesOffCameraGaze ? "natural directional lighting, preserve the off-camera gaze and head angle, do not rotate the face toward the viewer" : "soft frontal fill light, both eyes fully visible"}, unobstructed face`,
         negative_prompt: `blurry face, featureless face, melted facial features, asymmetrical eyes, mismatched eyes, crossed eyes, malformed pupils, pointed ears, elf ears, animal ears, face hidden by hair, face covered by prop, deep shadow across eyes, wrong identity, wrong hair color, wrong eye color, duplicate face${allowsCameraGaze?"":", looking at viewer, eye contact with camera, front-facing portrait gaze"}`,
         init_images: [currentImage],
         mask,
@@ -335,9 +345,7 @@ try {
         height,
         steps: phase === "draft" ? 12 : 16,
         cfg_scale: 6,
-        denoising_strength: phase === "draft"
-          ? recipe.identityRefinement?.draftDenoisingStrength ?? 0.38
-          : recipe.identityRefinement?.finalDenoisingStrength ?? 0.32,
+        denoising_strength: refinementPlan.denoisingStrength,
         sampler_name: recipe.sampler,
         scheduler: recipe.scheduler,
         batch_size: 1,
@@ -354,7 +362,7 @@ try {
                 enabled: true,
                 module: reference.module,
                 model: reference.model,
-                weight: Math.max(reference.weight, 0.85),
+                weight: refinementPlan.identityControl.weight,
                 image: fs.readFileSync(referencePath).toString("base64"),
                 effective_region_mask: mask,
                 resize_mode: "Crop and Resize",
@@ -393,6 +401,8 @@ try {
     response = { ...response, images: [currentImage] };
   }
   const propInteraction=recipe.generationSpec?.repairPasses?.propInteraction;
+  const propInteractions=recipe.generationSpec?.repairPasses?.propInteractions || (propInteraction ? [propInteraction] : []);
+  recipe.relationTraces = propInteractions.map((item, index) => ({ relationId: item.relationId || `legacy:${index + 1}`, characterId: item.characterId || "", object: item.object || "", status: index === 0 ? "executing" : "queued_for_followup_pass" }));
   if(propInteraction?.required && response.images?.[0]) {
     if(status()==="cancelled")process.exit(0);
     const width=recipe.width,height=recipe.height;
@@ -455,21 +465,39 @@ try {
       const characterIndex=regions.findIndex((item)=>item.characterId===propInteraction.characterId);
       const characterRegion=characterIndex>=0?regions[characterIndex]:regions[0];
       const poseNose=recipe.poseControl?.people?.[characterIndex>=0?characterIndex:0]?.[0];
-      const regionCenter=((characterRegion?.region?.xStart??0)+(characterRegion?.region?.xEnd??1))/2;
-      const faceCenterX=width*Math.max(.12,Math.min(.88,poseNose?.x??regionCenter));
-      const faceCenterY=height*(close?.3:medium?.27:.23);
-      const faceRadiusX=width*(close?.14:medium?.1:.075),faceRadiusY=faceRadiusX*1.28;
+      const identityReference=identityReferenceForCharacter(identityReferences,propInteraction.characterId,characterIndex>=0?characterIndex:0);
+      const gazePlan=faceRefinementPassPlan({phase,pass:"gaze",shotSize:cameraText,poseNose,region:characterRegion?.region,identityReference,gazeText:propInteraction.gaze});
+      const gazeGeometry=gazeMaskGeometry({width,height,face:{x:gazePlan.center.x,y:gazePlan.center.y,radiusXRatio:gazePlan.radiusXRatio,radiusYRatio:gazePlan.radiusYRatio},target:propInteraction.objectCenter});
+      const faceCenterX=gazeGeometry.face.cx;
+      const faceCenterY=gazeGeometry.face.cy;
+      const faceRadiusX=gazeGeometry.face.rx,faceRadiusY=gazeGeometry.face.ry;
       const gazeMaskSvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="${Math.max(36,faceRadiusX)}" ry="${Math.max(46,faceRadiusY)}" fill="white"/></svg>`);
       const gazeMask=(await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
+      recipe.debugMasks = recipe.debugMasks || [];
+      recipe.faceRefinementPasses = recipe.faceRefinementPasses || [];
+      const gazeTrace={type:"gaze",order:recipe.faceRefinementPasses.length+1,characterId:propInteraction.characterId,centerX:gazePlan.center.x,centerY:gazePlan.center.y,targetCenter:propInteraction.objectCenter||null,vector:gazeGeometry.vector,direction:gazeGeometry.direction,maskBounds:gazeGeometry.bounds,containsTarget:gazeGeometry.containsTarget,sourceX:gazePlan.center.sourceX,sourceY:gazePlan.center.sourceY,denoisingStrength:gazePlan.denoisingStrength,identityControl:gazePlan.identityControl};
+      recipe.debugMasks.push(gazeTrace);
+      recipe.faceRefinementPasses.push(gazeTrace);
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);
       const expression = recipe.characterLooks?.[propInteraction.characterId]?.expressionEn || recipe.generationSpec?.visualSpec?.characters?.find((item) => item.characterId === propInteraction.characterId)?.expression || "";
+      const gazeIdentityPath=identityReference?.path?path.resolve(root,identityReference.path):"";
+      const gazeIdentityUnit=gazePlan.identityControl&&gazeIdentityPath&&fs.existsSync(gazeIdentityPath)?{
+        enabled:true,
+        module:gazePlan.identityControl.module,
+        model:gazePlan.identityControl.model,
+        weight:gazePlan.identityControl.weight,
+        image:fs.readFileSync(gazeIdentityPath).toString("base64"),
+        effective_region_mask:gazeMask,
+        resize_mode:"Crop and Resize",low_vram:true,processor_res:512,guidance_start:0,guidance_end:1,control_mode:"ControlNet is more important",pixel_perfect:true,
+      }:null;
       const gazePayload={
-        prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,propInteraction.gazeMode==="object"?`head, irises, and pupils visibly converge on the ${propInteraction.object}`:propInteraction.gazeMode==="work_point"?"head, irises, and pupils visibly converge on the tool contact point":"head, irises, and pupils visibly converge on the interaction target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
+        prompt:["masterpiece, best quality, anime illustration, consistent established face",expressionCue(expression),propInteraction.gaze,`head, irises, and pupils visibly converge ${gazeGeometry.direction === "independent" ? "with the surrounding action" : `toward the ${gazeGeometry.direction} target at normalized coordinates ${gazePlan.center.x.toFixed(2)},${gazePlan.center.y.toFixed(2)} (${gazeGeometry.vector.distance.toFixed(2)} distance)`}`,propInteraction.gazeMode==="object"?`the ${propInteraction.object} is the gaze target`:propInteraction.gazeMode==="work_point"?"the tool contact point is the gaze target":"the interaction target is the gaze target","natural eyelids, symmetrical detailed eyes, no eye contact with viewer"].join(", "),
         negative_prompt:[recipe.negativePrompt,expressionNegativeCue(expression),"looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera, crossed eyes, mismatched pupils, malformed eyes"].filter(Boolean).join(", "),
         init_images:[response.images[0]],mask:gazeMask,width,height,
-        steps:phase==="draft"?12:14,cfg_scale:6.4,denoising_strength:phase==="draft"?.36:.28,
+        steps:phase==="draft"?12:14,cfg_scale:6.4,denoising_strength:gazePlan.denoisingStrength,
         sampler_name:recipe.sampler,scheduler:recipe.scheduler,batch_size:1,n_iter:1,
-        mask_blur:8,inpainting_fill:1,inpaint_full_res:true,inpaint_full_res_padding:48,send_images:true,
+        mask_blur:8,inpainting_fill:1,inpaint_full_res:true,inpaint_full_res_padding:Math.max(48,Math.round(48 + gazeGeometry.vector.distance * height * .7)),send_images:true,
+        ...(gazeIdentityUnit?{alwayson_scripts:{ControlNet:{args:[gazeIdentityUnit]}}}:{}),
       };
       try {
         const gazeResult=await postJson(recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
@@ -483,10 +511,15 @@ try {
     if (status() === "cancelled") process.exit(0);
     const width = recipe.width;
     const height = recipe.height;
-    const maskX = Math.round(width * 0.34);
-    const maskY = Math.round(height * 0.31);
-    const maskWidth = Math.round(width * 0.32);
-    const maskHeight = Math.round(height * 0.43);
+    const scenePlan = recipe.poseControl?.scenePlan;
+    const swapped = Boolean(recipe.poseControl?.override?.swapRoles);
+    const giverSide = swapped ? "left-side giver" : "right-side giver";
+    const receiverSide = swapped ? "right-side receiver" : "left-side receiver";
+    const umbrella = umbrellaGeometry({ width, height, target: scenePlan?.interactionTarget || { x: .5, y: .48 }, anchors: scenePlan?.people?.map((person) => person.anchor) || [] });
+    const maskX = Math.round(umbrella.bounds.x);
+    const maskY = Math.round(umbrella.bounds.y);
+    const maskWidth = Math.round(umbrella.bounds.width);
+    const maskHeight = Math.round(umbrella.bounds.height);
     const handoffMaskSvg = Buffer.from(
       `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${maskX + maskWidth / 2}" cy="${maskY + maskHeight / 2}" rx="${maskWidth / 2}" ry="${maskHeight / 2}" fill="white"/></svg>`,
     );
@@ -516,7 +549,7 @@ try {
       : [];
     if (poseControl?.cannyModel) {
       const guideSvg = Buffer.from(
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="black"/><path d="M ${width * 0.37} ${height * 0.25} Q ${width * 0.52} ${height * 0.11} ${width * 0.70} ${height * 0.25}" fill="none" stroke="white" stroke-width="8"/><path d="M ${width * 0.52} ${height * 0.18} L ${width * 0.52} ${height * 0.52}" fill="none" stroke="white" stroke-width="7" stroke-linecap="round"/></svg>`,
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="black"/><path d="M ${umbrella.canopy.x1} ${umbrella.canopy.y} Q ${umbrella.center.x} ${umbrella.canopy.y-height*.13} ${umbrella.canopy.x2} ${umbrella.canopy.y}" fill="none" stroke="white" stroke-width="${Math.max(6,width*.012)}"/><path d="M ${umbrella.shaft.x1} ${umbrella.shaft.y1} L ${umbrella.shaft.x2} ${umbrella.shaft.y2}" fill="none" stroke="white" stroke-width="${Math.max(6,width*.011)}" stroke-linecap="round"/></svg>`,
       );
       const guideImage = (await sharp(guideSvg).png().toBuffer()).toString("base64");
       handoffControlUnits.push({
@@ -537,13 +570,15 @@ try {
         pixel_perfect: false,
       });
     }
+    recipe.debugMasks = recipe.debugMasks || [];
+    recipe.debugMasks.push({ type: "umbrella_handoff", bounds: umbrella.bounds, canopy: umbrella.canopy, shaft: umbrella.shaft, maskGuideIntersection: true });
     const handoffPayload = {
       prompt: [
         "masterpiece, best quality, anime illustration",
         recipe.generationSpec.repairPasses.handoffPrompt,
         "two anatomically correct adult female hands approaching the same umbrella handle",
-        "the right-side giver firmly holds the umbrella shaft while extending the handle",
-        "the left-side receiver reaches with an open hand before grasping",
+        `the ${giverSide} firmly holds the umbrella shaft while extending the handle`,
+        `the ${receiverSide} reaches with an open hand before grasping`,
         "clearly separated wrists, natural elbows, five distinct fingers on each visible hand",
         "continuous umbrella shaft connected to the canopy",
       ].join(", "),
@@ -587,20 +622,24 @@ try {
     ? Number(info.seed)
     : undefined;
   let pixelQa={status:"blocked",blockers:["pixel_decode_failed"],warnings:[],checkedAt:new Date().toISOString()};
+  let semanticQa={status:"blocked",blockers:["semantic_decode_failed"],labels:[],warnings:[],checkedAt:new Date().toISOString()};
   try {
     const imageBuffer=Buffer.from(response.images?.[0]||"","base64");
     const meta=await sharp(imageBuffer).metadata();
     const blockers=[];
     if(!meta.width||!meta.height||meta.width<256||meta.height<256) blockers.push("image_dimensions_below_256px");
     if(imageBuffer.length<20_000) blockers.push("image_payload_suspiciously_small");
-    pixelQa={status:blockers.length?"blocked":"manual_required",blockers,warnings:["semantic checks (expression, hands, prop, identity and outfit) require visual review"],width:meta.width,height:meta.height,checkedAt:new Date().toISOString()};
-  } catch(error) { pixelQa={status:"blocked",blockers:[`pixel_decode_failed:${error instanceof Error?error.message:String(error)}`],warnings:[],checkedAt:new Date().toISOString()}; }
+    pixelQa={status:blockers.length?"blocked":"passed",blockers,warnings:[],width:meta.width,height:meta.height,checkedAt:new Date().toISOString()};
+    const reviewContract=semanticReviewContract({generationSpec:recipe.generationSpec,references:recipe.references||[],adapterStatus:recipe.adapterStatus||{},characterLooks:recipe.characterLooks||{},environment:recipe.environment||{}});
+    semanticQa={status:reviewContract.items.length?"manual_required":"passed",blockers:[],labels:reviewContract.labels,items:reviewContract.items,version:reviewContract.version,warnings:reviewContract.items.length?["No pixel-level semantic detector is configured; these are review requirements, not detected failures"]:[],checkedAt:new Date().toISOString()};
+  } catch(error) { pixelQa={status:"blocked",blockers:[`pixel_decode_failed:${error instanceof Error?error.message:String(error)}`],warnings:[],checkedAt:new Date().toISOString()}; semanticQa={status:"blocked",blockers:["semantic_decode_failed"],labels:[],warnings:[],checkedAt:new Date().toISOString()}; }
   payload.recipe = {
     ...recipe,
     actualSeed,
     actualSeeds: Array.isArray(info.all_seeds) ? info.all_seeds : undefined,
     postprocessWarnings,
     pixelQa,
+    semanticQa,
   };
   if (phase === "draft") {
     const filename = `sd-draft-job-${jobId}-${randomUUID()}.png`;
@@ -613,7 +652,7 @@ try {
     db.prepare(
       "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
     ).run(JSON.stringify(payload), jobId);
-    const draftStatus = postprocessWarnings.length || pixelQa.status === "blocked" ? "draft_blocked" : "awaiting_draft_approval";
+    const draftStatus = postprocessWarnings.length || pixelQa.status === "blocked" || semanticQa.status === "blocked" ? "draft_blocked" : "awaiting_draft_approval";
     db.prepare("UPDATE shots SET status=? WHERE id=?").run(draftStatus === "draft_blocked" ? "draft" : "awaiting_draft_approval", row.shot_id);
     update(draftStatus, 100, [...postprocessWarnings,...pixelQa.blockers].join("；"), draftStatus === "draft_blocked" ? "视觉质检阻断" : "图片已生成，等待人工视觉质检");
     process.exit(0);
@@ -621,7 +660,7 @@ try {
   db.prepare(
     "UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
   ).run(JSON.stringify(payload), jobId);
-  if (postprocessWarnings.length || pixelQa.status === "blocked") {
+  if (postprocessWarnings.length || pixelQa.status === "blocked" || !semanticApprovalCoversItems(semanticQa.items || [], recipe.semanticApproval)) {
     db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
     update("failed", 100, [...postprocessWarnings,...pixelQa.blockers].join("；"), "正式成品质检失败，未写入候选");
     process.exit(0);

@@ -18,6 +18,7 @@ import {
   duplicateTextLayer,
   getAssets,
   getCharacters,
+  getGenerationJobRecord,
   getShotGenerationInput,
   getStudioData,
   moveShot,
@@ -34,10 +35,14 @@ import {
   updateTextLayer,
   upgradeLatestStoryStructure,
 } from "@/lib/db";
+import { normalizeSemanticReviewItems, validateSemanticReviewSubmission, type SemanticReviewItem, type SemanticReviewSubmission } from "@/lib/semantic-review";
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
+  buildCanonicalGenerationPrompt,
+  buildCanonicalNegativePrompt,
   containsCjk,
+  classifyOutfitConditioning,
   deriveInteractionContract,
   expressionPrompt,
   reconcileFinalPrompt,
@@ -45,6 +50,8 @@ import {
   resolveCharacterAssetDescription,
   sanitizeEnglishPrompt,
 } from "@/lib/prompts";
+import { applyPoseControlOverride, type PoseControlV2 } from "@/lib/pose-v2";
+import { normalizeShotSpec, validateVisualIds } from "@/lib/visual-planning";
 import {
   createGenerationJob,
   updateGenerationJob,
@@ -250,12 +257,18 @@ export async function POST(request: Request) {
         );
       return NextResponse.json({ ok: true, data: getStudioData(projectId) });
     }
-    if (body.visualReviewConfirmed !== true)
+    const approvalJob = getGenerationJobRecord(jobId);
+    let semanticItems: SemanticReviewItem[] = [];
+    try {
+      semanticItems = normalizeSemanticReviewItems(JSON.parse(approvalJob?.payload || "{}").recipe?.semanticQa);
+    } catch {}
+    const semanticValidation = validateSemanticReviewSubmission(semanticItems, body.semanticReview);
+    if (!semanticValidation.valid)
       return NextResponse.json(
-        { error: "请先完成画面视觉质检，再批准草稿", code: "VISUAL_REVIEW_REQUIRED" },
+        { error: semanticValidation.errors.join("；"), code: "SEMANTIC_REVIEW_INCOMPLETE", reviewItems: semanticItems },
         { status: 422 },
       );
-    const approved = approveSdDraft(projectId, jobId);
+    const approved = approveSdDraft(projectId, jobId, body.semanticReview as SemanticReviewSubmission | undefined);
     if (!approved)
       return NextResponse.json(
         { error: "草稿尚未完成或缺少草稿图片" },
@@ -274,7 +287,7 @@ export async function POST(request: Request) {
       },
       { status: 409 },
     );
-  const shot = getShotGenerationInput(Number(body.shotId));
+  let shot = getShotGenerationInput(Number(body.shotId));
   if (shot.locked)
     return NextResponse.json(
       { error: "该分格已锁定，请先解锁后再生成。", code: "SHOT_LOCKED" },
@@ -282,6 +295,17 @@ export async function POST(request: Request) {
     );
   const assets = getAssets();
   const characters = getCharacters();
+  let visualMigrationTrace: { applied: boolean; fromVersion: number; toVersion: string; warnings: string[] } | null = null;
+  if (shot.visualSpecConfirmed) {
+    const before = shot.visualSpec;
+    const fromVersion = shot.visualSpecVersion || 0;
+    const normalized = normalizeShotSpec(before || {}, shot);
+    const validation = validateVisualIds(normalized, characters, assets);
+    if (validation.errors.length)
+      return NextResponse.json({ error: `已确认视觉规格无法通过当前契约校验：${validation.errors.join("；")}`, code: "VISUAL_SPEC_REQUIRES_RECONFIRMATION", validation }, { status: 422 });
+    shot = { ...shot, visualSpec: normalized, visualSpecVersion: 1 };
+    visualMigrationTrace = { applied: JSON.stringify(before) !== JSON.stringify(normalized), fromVersion, toVersion: normalized.schemaVersion, warnings: validation.warnings };
+  }
   const compiled = buildGenerationPrompt(shot, assets, characters);
   let targetWidth = Number(body.width || shot.generationWidth || 512);
   let targetHeight = Number(body.height || shot.generationHeight || 512);
@@ -570,18 +594,22 @@ export async function POST(request: Request) {
           : null;
       })
       .filter(Boolean);
-    const framingUsesOutfitReference = /远景|全景/.test(shot.camera) || /wide shot|full shot/i.test(shot.cameraEn);
-    const outfitReferences = outfits
-      .filter((entry) =>
-        framingUsesOutfitReference &&
-        entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag)),
-      )
-      .map((entry) => ({
+    const outfitPlans = outfits.map((entry) => {
+      const isolated = entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag));
+      return {
+        entry: entry!,
+        isolated,
+        decision: classifyOutfitConditioning(shot.cameraEn || shot.camera, isolated, outfitAdapter.validFile),
+      };
+    });
+    const outfitReferences = outfitPlans
+      .filter((plan) => plan.decision.controlApplied)
+      .map(({ entry }) => ({
       role: "outfit",
-      characterId: entry!.characterId,
-      assetId: entry!.asset.id,
-      name: entry!.asset.name,
-      path: entry!.asset.path,
+      characterId: entry.characterId,
+      assetId: entry.asset.id,
+      name: entry.asset.name,
+      path: entry.asset.path,
       module: outfitAdapter.module,
       model: outfitAdapter.model,
       weight: shot.characterIds.length > 1 ? 0.48 : 0.42,
@@ -637,6 +665,29 @@ export async function POST(request: Request) {
         { error: "Regional 分区提示词必须全部为英文。", code: "REGIONAL_PROMPT_NOT_ENGLISH" },
         { status: 422 },
       );
+    const rawPromptOverride = typeof body.promptOverride === "string" && body.promptOverride.trim()
+      ? body.promptOverride.trim()
+      : "";
+    const requestedPromptOverride = rawPromptOverride && rawPromptOverride.trim() !== compiled.prompt.trim()
+      ? rawPromptOverride
+      : "";
+    const canonicalPrompt = buildCanonicalGenerationPrompt(
+      shot,
+      regionalCombinedPrompt,
+      requestedPromptOverride,
+      quality.characterCount,
+    );
+    promptRepairs.push(...canonicalPrompt.repairs);
+    if (!canonicalPrompt.validation.valid)
+      return NextResponse.json(
+        {
+          error: `最终提示词缺少结构化生成契约：${canonicalPrompt.validation.errors.join("；")}`,
+          code: "PROMPT_INVARIANT_CONFLICT",
+          validation: canonicalPrompt.validation,
+        },
+        { status: 422 },
+      );
+    const appliedPrompt = canonicalPrompt.prompt;
     const regionalPrompter =
       shot.characterIds.length > 1 && regionalPrompterAvailable
         ? {
@@ -648,30 +699,39 @@ export async function POST(request: Request) {
             useCommon: true,
             commonPrompt: regionalCommonPrompt,
             characterPrompts: regionalCharacterPrompts,
-            prompt: regionalCombinedPrompt,
+            prompt: appliedPrompt,
           }
         : null;
-    const effectiveNegativePrompt =
-      typeof body.negativePromptOverride === "string" && body.negativePromptOverride.trim()
-        ? body.negativePromptOverride.trim()
-        : shot.characterIds.length > 1
-          ? regionalSpec.negativePrompt
-          : negative;
+    const requestedNegativeOverride = typeof body.negativePromptOverride === "string" && body.negativePromptOverride.trim()
+      ? body.negativePromptOverride.trim()
+      : "";
+    const effectiveNegativePrompt = buildCanonicalNegativePrompt(
+      shot,
+      regionalSpec.negativePrompt || negative,
+      requestedNegativeOverride,
+    );
     const poseOverride =
       typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
         ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")
         : "";
+    const automaticPoseControl = regionalSpec.poseControl;
+    const resolvedPoseControl = automaticPoseControl && "posePlanVersion" in automaticPoseControl
+      ? applyPoseControlOverride(automaticPoseControl as PoseControlV2, body.poseControlOverride)
+      : automaticPoseControl;
+    const hasStructuredPoseOverride = Boolean(
+      resolvedPoseControl && "override" in resolvedPoseControl && resolvedPoseControl.override,
+    );
     const poseControl =
-      regionalSpec.poseControl && openPoseAvailable
+      resolvedPoseControl && openPoseAvailable
         ? {
-            ...regionalSpec.poseControl,
+            ...resolvedPoseControl,
             enabled: true,
             model: openPoseModel,
             module: "none",
-            weight: 0.9,
-            guidanceStart: 0,
-            guidanceEnd: 0.82,
-            source: poseOverride ? "user_override" : "automatic_template",
+            weight: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.weight : 0.9,
+            guidanceStart: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.guidanceStart : 0,
+            guidanceEnd: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.guidanceEnd : 0.82,
+            source: poseOverride || hasStructuredPoseOverride ? "user_override" : resolvedPoseControl.source || "automatic_template",
             image: poseOverride || null,
             cannyModel: cannyModel || null,
           }
@@ -693,15 +753,24 @@ export async function POST(request: Request) {
       targetHeight,
       seed,
       batchSize: 1,
-      prompt: regionalPrompter?.prompt || prompt,
+      prompt: appliedPrompt,
       negativePrompt: effectiveNegativePrompt,
       references,
       regionalPrompter,
       generationSpec: {
         compilerVersion: "sd15-staged-identity-v2",
         visualSpec: shot.visualSpecConfirmed ? shot.visualSpec : null,
+        visualSpecMigration: visualMigrationTrace,
         visualSpecVersion: shot.visualSpecVersion,
         commonPrompt: regionalCommonPrompt,
+        appliedPrompt,
+        promptOverride: requestedPromptOverride
+          ? {
+              requested: requestedPromptOverride,
+              appliedAsEditorialLayer: canonicalPrompt.overrideApplied,
+              repairs: canonicalPrompt.repairs,
+            }
+          : null,
         characterRegions: regionalSpec.characterRegions.map((region, index) => ({
           ...region,
           prompt: regionalCharacterPrompts[index],
@@ -710,7 +779,7 @@ export async function POST(request: Request) {
         assetBindings: regionalSpec.assetBindings,
         assetWarnings: regionalSpec.assetWarnings,
         poseControl,
-        structureControl: { cannyModel: cannyModel || null },
+        structureControl: { cannyModel: cannyModel || null, depth: { enabled: false, status: "unavailable_manual_required" } },
         repairPasses: regionalSpec.repairPasses,
         riskProfile: regionalSpec.repairPasses?.risk || null,
         qualityGate: {
@@ -721,13 +790,26 @@ export async function POST(request: Request) {
           warnings: [
             ...([...new Set(promptRepairs)].length ? [`服务端已按动作契约自动修复最终提示词：${[...new Set(promptRepairs)].join("；")}`] : []),
             ...regionalSpec.assetWarnings,
-            ...outfits
-              .filter((entry) => !entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag)))
-              .map((entry) => `${entry!.asset.name} 不是去人脸纯服装参考，本次仅使用其结构化文字，避免身份和构图污染`),
+            ...(shot.characterIds.length > 2 && regionalSpec.repairPasses?.risk?.poseRequired
+              ? ["三人以上镜头不自动套用双人骨架，必须使用人工 OpenPose 编辑或上传姿势图"]
+              : []),
+            ...((resolvedPoseControl && "scenePlan" in resolvedPoseControl)
+              ? resolvedPoseControl.scenePlan.warnings
+              : []),
+            ...outfitPlans
+              .filter((plan) => !plan.isolated)
+              .map((plan) => `${plan.entry.asset.name} 不是去人脸纯服装参考，本次仅使用其结构化文字，避免身份和构图污染`),
+            ...(outfits.length && !outfitReferences.length ? ["服装参考未进入 ControlNet：当前镜头仅使用服装文字，必须人工复核服装一致性"] : []),
             ...(/雨|rain|umbrella|伞/i.test(`${shot.scene} ${shot.description}`)
               ? ["雨伞、刘海和逆光可能遮挡面部；已启用面部补光与局部身份精修"]
               : []),
           ],
+          outfitConditioning: outfitPlans.map((plan) => ({
+            characterId: plan.entry.characterId,
+            assetId: plan.entry.asset.id,
+            selected: true,
+            ...plan.decision,
+          })),
         },
       },
       poseControl,
@@ -742,11 +824,9 @@ export async function POST(request: Request) {
         processHeight: 512,
       },
       promptSource:
-        typeof body.promptMode === "string"
-          ? body.promptMode
-          : body.promptOverride
-            ? "manual_override"
-            : "structured",
+        requestedPromptOverride
+          ? (typeof body.promptMode === "string" ? body.promptMode : "manual_override")
+          : "structured",
       finalReferences,
       characterCount: quality.characterCount,
       promptQuality: quality,
@@ -756,10 +836,13 @@ export async function POST(request: Request) {
         identity: faceAdapter.validFile
           ? "ip-adapter-plus-face_sd15"
           : "reference_only",
-        outfit: outfitAdapter.validFile
+        outfit: outfitReferences.length && outfitAdapter.validFile
           ? "ip-adapter-plus_sd15"
-          : "reference_only",
+          : outfits.length
+            ? "text_only_manual_review"
+            : "not_selected",
         pose: openPoseAvailable ? "control_sd15_openpose" : "unavailable",
+        depth: "unavailable_manual_required",
         fallbackReason:
           faceAdapter.validFile && outfitAdapter.validFile && (!regionalSpec.poseControl || openPoseAvailable)
             ? null
@@ -771,7 +854,7 @@ export async function POST(request: Request) {
       "sd-webui",
       {
         phase: "draft",
-        prompt: regionalPrompter?.prompt || prompt,
+        prompt: appliedPrompt,
         negativePrompt: effectiveNegativePrompt,
         outputDirectory: "workspace/generated",
         recipe,

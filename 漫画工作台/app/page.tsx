@@ -53,10 +53,17 @@ import type {
   TextLayerType,
 } from "@/lib/types";
 import type { StoryAnalysis } from "@/lib/analysis";
+import { normalizeSemanticReviewItems, type SemanticReviewSubmission } from "@/lib/semantic-review";
+import { poseDisplayDetails } from "@/lib/pose-display";
+import {
+  applyPoseControlOverride,
+  posePresetCatalog,
+  type PoseControlOverrideV1,
+  type PoseControlV2,
+} from "@/lib/pose-v2";
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
-  renderOpenPoseSvg,
   suggestPromptFixes,
 } from "@/lib/prompts";
 import type { PosePoint } from "@/lib/prompts";
@@ -85,33 +92,6 @@ const poseEditorColors = [
 ];
 const clonePosePeople = (people: PosePoint[][] = []) =>
   people.map((person) => person.map((point) => ({ ...point })));
-const svgToPngDataUrl = (svg: string, width: number, height: number) =>
-  new Promise<string>((resolve, reject) => {
-    const source = URL.createObjectURL(
-      new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
-    );
-    const image = new Image();
-    image.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("浏览器无法创建姿势图画布。");
-        context.drawImage(image, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/png"));
-      } catch (error) {
-        reject(error);
-      } finally {
-        URL.revokeObjectURL(source);
-      }
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(source);
-      reject(new Error("姿势图转换失败。"));
-    };
-    image.src = source;
-  });
 const formatLocalDateTime = (value: string) => {
   if (!value) return "时间未知";
   const normalized = /Z$|[+-]\d\d:\d\d$/.test(value)
@@ -319,6 +299,7 @@ export default function Studio() {
         characterPrompts: string[];
       };
       poseImageOverride?: string;
+      poseControlOverride?: PoseControlOverrideV1;
       width?: number;
       height?: number;
     } = {},
@@ -393,12 +374,13 @@ export default function Studio() {
     action: "approveDraft" | "rejectDraft",
     jobId: number,
     shotId: number,
+    semanticReview?: SemanticReviewSubmission,
   ) => {
     setBusy(true);
     const response = await fetch("/api/studio", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, jobId, projectId: data?.project.id, visualReviewConfirmed: action === "approveDraft" }),
+      body: JSON.stringify({ action, jobId, projectId: data?.project.id, semanticReview }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -1569,6 +1551,7 @@ function PanelEditor({
         characterPrompts: string[];
       };
       poseImageOverride?: string;
+      poseControlOverride?: PoseControlOverrideV1;
       width?: number;
       height?: number;
     },
@@ -1577,6 +1560,7 @@ function PanelEditor({
     action: "approveDraft" | "rejectDraft",
     jobId: number,
     shotId: number,
+    semanticReview?: SemanticReviewSubmission,
   ) => void;
   upload: (id: number, file: File) => void;
   mutate: (
@@ -1638,6 +1622,7 @@ function PanelEditor({
     regionalCompiled.regionPrompts,
   );
   const [poseImageOverride, setPoseImageOverride] = useState("");
+  const [poseControlOverride, setPoseControlOverride] = useState<PoseControlOverrideV1 | null>(null);
   const [poseEditorOpen, setPoseEditorOpen] = useState(false);
   const [poseEditorSaving, setPoseEditorSaving] = useState(false);
   const [draggingPosePoint, setDraggingPosePoint] = useState<{
@@ -1647,6 +1632,12 @@ function PanelEditor({
   const [editablePosePeople, setEditablePosePeople] = useState<PosePoint[][]>(
     () => clonePosePeople(regionalCompiled.poseControl?.people),
   );
+  const automaticPoseControlV2 = regionalCompiled.poseControl && "posePlanVersion" in regionalCompiled.poseControl
+    ? regionalCompiled.poseControl as PoseControlV2
+    : null;
+  const effectivePoseControl = automaticPoseControlV2 && poseControlOverride
+    ? applyPoseControlOverride(automaticPoseControlV2, poseControlOverride)
+    : regionalCompiled.poseControl;
   useEffect(() => {
     setEditablePositive(positive);
     setEditableNegative(
@@ -1657,6 +1648,7 @@ function PanelEditor({
     setEditableCommon(regionalCompiled.commonPrompt);
     setEditableRegions(regionalCompiled.regionPrompts);
     setPoseImageOverride("");
+    setPoseControlOverride(null);
     setPoseEditorOpen(false);
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   }, [shot.id, positive, negativePrompt, regionalCompiled.prompt, regionalCompiled.negativePrompt, shot.characterIds.length]);
@@ -1664,10 +1656,16 @@ function PanelEditor({
     shot.characterIds.length > 1
       ? [editableCommon, ...editableRegions].join(" BREAK ")
       : editablePositive;
+  const promptDirty = shot.characterIds.length > 1
+    ? effectivePositive.trim() !== regionalCompiled.prompt.trim() || editableNegative.trim() !== regionalCompiled.negativePrompt.trim()
+    : effectivePositive.trim() !== positive.trim() || editableNegative.trim() !== negativePrompt.trim();
+  const promptEditorialDiff = shot.characterIds.length === 1 && promptDirty
+    ? editablePositive.split(/\s*,\s*/).filter((term) => term.trim() && !positive.toLowerCase().includes(term.trim().toLowerCase())).join(", ")
+    : "";
   const prompt = `${effectivePositive}\n\nNegative: ${editableNegative}`;
   const posePreview = poseImageOverride ||
-    (regionalCompiled.poseControl
-      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(regionalCompiled.poseControl.svg)}`
+    (effectivePoseControl
+      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(effectivePoseControl.svg)}`
       : "");
   const draftJob = jobs.find(
     (job) =>
@@ -1677,11 +1675,52 @@ function PanelEditor({
   );
   let draftPayload: {
     draftImagePath?: string;
-    recipe?: { actualSeed?: number; characterCount?: number };
+    recipe?: { actualSeed?: number; characterCount?: number; semanticQa?: unknown };
   } = {};
   try {
     if (draftJob) draftPayload = JSON.parse(draftJob.payload);
   } catch {}
+  const semanticReviewItems = normalizeSemanticReviewItems(draftPayload.recipe?.semanticQa);
+  const [semanticVerdicts, setSemanticVerdicts] = useState<Record<string, "pass" | "fail">>({});
+  const [semanticReviewNotes, setSemanticReviewNotes] = useState("");
+  useEffect(() => {
+    setSemanticVerdicts({});
+    setSemanticReviewNotes("");
+  }, [draftJob?.id]);
+  const semanticReviewReady = semanticReviewItems.every((item) => !item.required || semanticVerdicts[item.id] === "pass");
+  const poseDisplay = effectivePoseControl
+    ? poseDisplayDetails(effectivePoseControl.kind, effectivePoseControl.source, effectivePoseControl.selectorReason, effectivePoseControl.framingMode)
+    : null;
+  const availablePosePresets = automaticPoseControlV2
+    ? posePresetCatalog.filter((preset) => preset.peopleCount === automaticPoseControlV2.people.length)
+    : [];
+  const updatePoseParameters = (patch: Partial<PoseControlOverrideV1>) => {
+    if (!automaticPoseControlV2) return;
+    const next: PoseControlOverrideV1 = {
+      schemaVersion: "pose-override-v1",
+      ...(poseControlOverride || {}),
+      ...patch,
+      people: undefined,
+      editMode: "parameter_edit",
+    };
+    const rebuilt = applyPoseControlOverride(automaticPoseControlV2, next);
+    setPoseControlOverride(next);
+    setPoseImageOverride("");
+    setEditablePosePeople(clonePosePeople(rebuilt.people));
+  };
+  const restoreAutomaticPose = () => {
+    setPoseImageOverride("");
+    setPoseControlOverride(null);
+    setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
+  };
+  const restoreSelectedTemplate = () => {
+    if (!automaticPoseControlV2 || !poseControlOverride) return restoreAutomaticPose();
+    const next = { ...poseControlOverride, people: undefined, editMode: "parameter_edit" as const };
+    const rebuilt = applyPoseControlOverride(automaticPoseControlV2, next);
+    setPoseControlOverride(next);
+    setPoseImageOverride("");
+    setEditablePosePeople(clonePosePeople(rebuilt.people));
+  };
   const copyPrompt = async () => {
     await navigator.clipboard.writeText(prompt);
     setCopied(true);
@@ -1733,7 +1772,7 @@ function PanelEditor({
     );
   };
   const openCurrentPoseEditor = () => {
-    const people=clonePosePeople(regionalCompiled.poseControl?.people);
+    const people=clonePosePeople(effectivePoseControl?.people);
     if(!people.length||people.some((person)=>person.length<18)) {
       window.alert("当前姿态模板没有可编辑的骨骼节点，请重新生成视觉规格后再试。");
       return;
@@ -1743,18 +1782,17 @@ function PanelEditor({
     setPoseEditorOpen(true);
   };
   const applyEditedPose = async () => {
-    const poseControl = regionalCompiled.poseControl;
+    const poseControl = effectivePoseControl;
     if (!poseControl) return;
     setPoseEditorSaving(true);
     try {
-      const svg = renderOpenPoseSvg(
-        editablePosePeople,
-        poseControl.width,
-        poseControl.height,
-      );
-      setPoseImageOverride(
-        await svgToPngDataUrl(svg, poseControl.width, poseControl.height),
-      );
+      setPoseControlOverride({
+        schemaVersion: "pose-override-v1",
+        ...(poseControlOverride || {}),
+        people: clonePosePeople(editablePosePeople),
+        editMode: "joint_edit",
+      });
+      setPoseImageOverride("");
       setPoseEditorOpen(false);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "保存姿势图失败。");
@@ -1777,7 +1815,7 @@ function PanelEditor({
     )
       return;
     generate(shot.id, {
-      promptOverride: effectivePositive,
+      promptOverride: shot.characterIds.length === 1 ? promptEditorialDiff : effectivePositive,
       negativePromptOverride: editableNegative,
       regionalPromptOverride:
         shot.characterIds.length > 1
@@ -1787,8 +1825,9 @@ function PanelEditor({
             }
           : undefined,
       poseImageOverride: poseImageOverride || undefined,
+      poseControlOverride: poseControlOverride || undefined,
       force: true,
-      promptMode: "manual_override",
+      promptMode: promptDirty ? "manual_override" : "structured",
       width: shot.generationWidth,
       height: shot.generationHeight,
     });
@@ -1845,6 +1884,7 @@ function PanelEditor({
             }
           : undefined,
       poseImageOverride: poseImageOverride || undefined,
+      poseControlOverride: poseControlOverride || undefined,
       force: true,
       promptMode: "auto_repaired",
       width: shot.generationWidth,
@@ -2077,6 +2117,31 @@ function PanelEditor({
                 src={fileUrl(draftPayload.draftImagePath)}
                 alt="SD 构图草稿"
               />
+              {semanticReviewItems.length > 0 && (
+                <section className="semantic-review-checklist">
+                  <header>
+                    <b>逐项语义质检</b>
+                    <small>所有项目必须明确通过；任一失败请放弃草稿并修改设定</small>
+                  </header>
+                  {semanticReviewItems.map((item) => (
+                    <article key={item.id} className={semanticVerdicts[item.id] === "fail" ? "failed" : semanticVerdicts[item.id] === "pass" ? "passed" : ""}>
+                      <div>
+                        <span>{item.priority}</span>
+                        <b>{item.label}</b>
+                        <small>{item.expectation}</small>
+                      </div>
+                      <div className="semantic-verdicts">
+                        <button type="button" className={semanticVerdicts[item.id] === "pass" ? "active pass" : ""} onClick={() => setSemanticVerdicts((current) => ({ ...current, [item.id]: "pass" }))}>通过</button>
+                        <button type="button" className={semanticVerdicts[item.id] === "fail" ? "active fail" : ""} onClick={() => setSemanticVerdicts((current) => ({ ...current, [item.id]: "fail" }))}>失败</button>
+                      </div>
+                    </article>
+                  ))}
+                  <label>
+                    审核备注（可选）
+                    <textarea value={semanticReviewNotes} maxLength={1000} onChange={(event) => setSemanticReviewNotes(event.target.value)} placeholder="记录需要关注的细节或重做原因" />
+                  </label>
+                </section>
+              )}
               <div>
                 <button
                   disabled={busy}
@@ -2088,12 +2153,12 @@ function PanelEditor({
                 </button>
                 <button
                   className="primary"
-                  disabled={busy}
+                  disabled={busy || !semanticReviewReady}
                   onClick={() =>
-                    handleDraft("approveDraft", draftJob.id, shot.id)
+                    handleDraft("approveDraft", draftJob.id, shot.id, semanticReviewItems.length ? { version: "semantic-review-v1", verdicts: semanticVerdicts, notes: semanticReviewNotes } : undefined)
                   }
                 >
-                  {busy ? "成品生成中" : "确认构图并生成成品"}
+                  {busy ? "成品生成中" : semanticReviewReady ? "全部通过并生成成品" : "请先完成逐项质检"}
                 </button>
               </div>
             </section>
@@ -2290,11 +2355,74 @@ function PanelEditor({
                     />
                   </label>
                 </div>
-                {regionalCompiled.poseControl && (
+                {effectivePoseControl && (
                   <section className="pose-control-card">
                     <div>
-                      <b>{regionalCompiled.poseControl.people.length>1?"多人交互":"单人动作"} OpenPose</b>
-                      <span>自动模板已启用；可直接拖动当前骨骼关节点，应用后作为本格实际 ControlNet 姿势图。</span>
+                      <b>{poseDisplay?.kindLabel} OpenPose</b>
+                      <span>{poseDisplay?.sourceLabel} · {poseDisplay?.framingLabel} · {poseDisplay?.selectorReason}。可直接拖动当前骨骼关节点，应用后作为本格实际 ControlNet 姿势图。</span>
+                      {automaticPoseControlV2 && (
+                        <div className="pose-template-controls">
+                          <div className="pose-recommendation">
+                            <span>v2 自动推荐：{automaticPoseControlV2.scenePlan.people.map((person) => person.actions.join(" + ")).join(" / ")}</span>
+                            <span>置信度 {automaticPoseControlV2.scenePlan.confidence} · 变体 {effectivePoseControl.variantId + 1} · {effectivePoseControl.controlProfile.id}（{effectivePoseControl.controlProfile.weight}/{effectivePoseControl.controlProfile.guidanceEnd}）</span>
+                          </div>
+                          <label>
+                            动作模板
+                            <select
+                              value={poseControlOverride?.templateId || effectivePoseControl.presetId}
+                              onChange={(event) => updatePoseParameters({ templateId: event.target.value })}
+                            >
+                              {availablePosePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.category} · {preset.label}</option>)}
+                            </select>
+                          </label>
+                          <label>
+                            动作阶段
+                            <select value={poseControlOverride?.phase || automaticPoseControlV2.scenePlan.people[0]?.phase || "contact"} onChange={(event) => updatePoseParameters({ phase: event.target.value as PoseControlOverrideV1["phase"] })}>
+                              <option value="anticipation">准备</option>
+                              <option value="contact">接触／动作中</option>
+                              <option value="follow_through">完成／随动</option>
+                            </select>
+                          </label>
+                          <label>
+                            力度
+                            <select value={poseControlOverride?.intensity || automaticPoseControlV2.scenePlan.people[0]?.intensity || "normal"} onChange={(event) => updatePoseParameters({ intensity: event.target.value as PoseControlOverrideV1["intensity"] })}>
+                              <option value="calm">轻微</option>
+                              <option value="normal">正常</option>
+                              <option value="dynamic">强动态</option>
+                            </select>
+                          </label>
+                          <label>
+                            主动手
+                            <select value={poseControlOverride?.handedness || automaticPoseControlV2.scenePlan.people[0]?.handedness || "right"} onChange={(event) => updatePoseParameters({ handedness: event.target.value as PoseControlOverrideV1["handedness"] })}>
+                              <option value="left">左手</option>
+                              <option value="right">右手</option>
+                              <option value="both">双手</option>
+                            </select>
+                          </label>
+                          <label>
+                            目标方向
+                            <select value={poseControlOverride?.targetDirection || "center"} onChange={(event) => updatePoseParameters({ targetDirection: event.target.value as PoseControlOverrideV1["targetDirection"] })}>
+                              <option value="left">左侧</option>
+                              <option value="center">中央</option>
+                              <option value="right">右侧</option>
+                              <option value="up">上方</option>
+                              <option value="down">下方</option>
+                            </select>
+                          </label>
+                          {effectivePoseControl.people.length === 2 && (
+                            <label>
+                              人物间距
+                              <select value={poseControlOverride?.spacing || "normal"} onChange={(event) => updatePoseParameters({ spacing: event.target.value as PoseControlOverrideV1["spacing"] })}>
+                                <option value="close">靠近</option>
+                                <option value="normal">正常</option>
+                                <option value="wide">拉开</option>
+                              </select>
+                            </label>
+                          )}
+                          <button type="button" onClick={() => updatePoseParameters({ mirror: !(poseControlOverride?.mirror ?? automaticPoseControlV2.scenePlan.people[0]?.mirror) })}>水平镜像</button>
+                          {effectivePoseControl.people.length === 2 && <button type="button" onClick={() => updatePoseParameters({ swapRoles: !poseControlOverride?.swapRoles })}>交换动作角色</button>}
+                        </div>
+                      )}
                       <div>
                         <button type="button" className="pose-edit-primary" onClick={openCurrentPoseEditor}>直接编辑当前骨骼</button>
                         <button type="button" onClick={openOpenPoseEditor}>打开外部 3D 编辑器</button>
@@ -2307,16 +2435,19 @@ function PanelEditor({
                               const file = event.target.files?.[0];
                               if (!file) return;
                               const reader = new FileReader();
-                              reader.onload = () => setPoseImageOverride(String(reader.result || ""));
+                              reader.onload = () => {
+                                setPoseControlOverride(null);
+                                setPoseImageOverride(String(reader.result || ""));
+                              };
                               reader.readAsDataURL(file);
                             }}
                           />
                         </label>
-                        {poseImageOverride && <button onClick={() => setPoseImageOverride("")}>恢复自动模板</button>}
+                        {(poseImageOverride || poseControlOverride) && <button type="button" onClick={restoreAutomaticPose}>恢复自动推荐</button>}
                       </div>
                     </div>
                     {posePreview && <img src={posePreview} alt="当前 OpenPose 骨骼预览" />}
-                    {poseEditorOpen && regionalCompiled.poseControl && (
+                    {poseEditorOpen && effectivePoseControl && (
                       <div className="pose-editor-backdrop" role="presentation" onPointerDown={(event) => {
                         if (event.target === event.currentTarget) setPoseEditorOpen(false);
                       }}>
@@ -2330,33 +2461,33 @@ function PanelEditor({
                           </header>
                           <svg
                             className="pose-editor-canvas"
-                            style={{aspectRatio:`${regionalCompiled.poseControl.width} / ${regionalCompiled.poseControl.height}`}}
-                            viewBox={`0 0 ${regionalCompiled.poseControl.width} ${regionalCompiled.poseControl.height}`}
+                            style={{aspectRatio:`${effectivePoseControl.width} / ${effectivePoseControl.height}`}}
+                            viewBox={`0 0 ${effectivePoseControl.width} ${effectivePoseControl.height}`}
                             onPointerMove={movePosePoint}
                             onPointerUp={() => setDraggingPosePoint(null)}
                             onPointerCancel={() => setDraggingPosePoint(null)}
                           >
-                            <rect width={regionalCompiled.poseControl.width} height={regionalCompiled.poseControl.height} fill="#000" />
+                            <rect width={effectivePoseControl.width} height={effectivePoseControl.height} fill="#000" />
                             {editablePosePeople.map((person, personIndex) => (
                               <g key={`person-${personIndex}`}>
-                                {poseEditorLimbs.map(([start, end], limbIndex) => (
+                                {poseEditorLimbs.filter(([start,end]) => [person[start], person[end]].every((point) => point && point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)).map(([start, end], limbIndex) => (
                                   <line
                                     key={`limb-${personIndex}-${start}-${end}`}
-                                    x1={person[start].x * regionalCompiled.poseControl!.width}
-                                    y1={person[start].y * regionalCompiled.poseControl!.height}
-                                    x2={person[end].x * regionalCompiled.poseControl!.width}
-                                    y2={person[end].y * regionalCompiled.poseControl!.height}
+                                    x1={person[start].x * effectivePoseControl.width}
+                                    y1={person[start].y * effectivePoseControl.height}
+                                    x2={person[end].x * effectivePoseControl.width}
+                                    y2={person[end].y * effectivePoseControl.height}
                                     stroke={poseEditorColors[limbIndex]}
                                     strokeWidth="5"
                                     strokeLinecap="round"
                                     pointerEvents="none"
                                   />
                                 ))}
-                                {person.map((point, pointIndex) => (
+                                {person.map((point, pointIndex) => point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1 ? (
                                   <circle
                                     key={`point-${personIndex}-${pointIndex}`}
-                                    cx={point.x * regionalCompiled.poseControl!.width}
-                                    cy={point.y * regionalCompiled.poseControl!.height}
+                                    cx={point.x * effectivePoseControl.width}
+                                    cy={point.y * effectivePoseControl.height}
                                     r="8"
                                     fill={poseEditorColors[pointIndex % poseEditorColors.length]}
                                     stroke="#fff"
@@ -2367,12 +2498,12 @@ function PanelEditor({
                                       setDraggingPosePoint({ personIndex, pointIndex });
                                     }}
                                   />
-                                ))}
+                                ) : null)}
                               </g>
                             ))}
                           </svg>
                           <footer>
-                            <button type="button" onClick={() => setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people))}>恢复原始模板</button>
+                            <button type="button" onClick={restoreSelectedTemplate}>恢复当前模板</button>
                             <button type="button" onClick={() => setPoseEditorOpen(false)}>取消</button>
                             <button type="button" className="pose-editor-apply" disabled={poseEditorSaving||!editablePosePeople.length} onClick={applyEditedPose}>{poseEditorSaving ? "正在应用…" : "应用到本格"}</button>
                           </footer>

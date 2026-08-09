@@ -5,6 +5,13 @@ import type {
   EnvironmentConfig,
   Shot,
 } from "./types";
+import {
+  buildPoseControlV2,
+  derivePoseFramingModeV2,
+  renderOpenPoseSvgV2,
+  type PoseInteractionInput,
+  type PosePoint as PosePointV2,
+} from "./pose-v2";
 
 const placeholders = [
   "natural storytelling action",
@@ -51,6 +58,7 @@ export const expressionPrompt = (value: string, fallback = "readable story-appro
 const explicitlyAllowsCameraGaze=(value:string)=>!/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(value)&&/(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(value);
 
 export type InteractionContract = {
+  relationId: string;
   required: boolean;
   characterId: string;
   object: string;
@@ -75,53 +83,153 @@ export type ShotRiskProfile = {
   gazeRepairRequired: boolean;
   depthGuideRequired: boolean;
   reasons: string[];
+  actionPlan: PoseActionPlan;
 };
+
+export type PoseActionFamily =
+  | "locomotion"
+  | "point"
+  | "self_touch"
+  | "operate_environment"
+  | "reach"
+  | "seated"
+  | "recline"
+  | "lie"
+  | "turn"
+  | "bend"
+  | "head_gesture"
+  | "full_body"
+  | "static";
+
+export type PoseActionPlan = {
+  family: PoseActionFamily;
+  required: boolean;
+  source: "visual_interaction" | "visual_character" | "shot_action" | "camera" | "none";
+  reason: string;
+  sourceText: string;
+};
+
+export type PoseFramingMode = "upper_body" | "natural_body" | "full_body";
+
+export function derivePoseFramingMode(shot: Shot): PoseFramingMode {
+  return derivePoseFramingModeV2(shot);
+}
+
+export function derivePoseActionPlan(shot: Shot, characterId = shot.characterIds[0] || ""): PoseActionPlan {
+  const plannedCharacter = shot.visualSpecConfirmed
+    ? shot.visualSpec?.characters.find((item) => item.characterId === characterId)
+    : undefined;
+  const plannedRelations = shot.visualSpecConfirmed
+    ? (shot.visualSpec?.interactions || []).filter((item) => item.actorCharacterId === characterId)
+    : [];
+  const look = shot.characterLooks?.[characterId];
+  const primaryParts = [
+    ...plannedRelations.flatMap((item) => [item.type, item.action, item.phase, item.propId, item.gazeTarget, ...item.contactPoints]),
+    plannedCharacter?.action || "",
+    plannedCharacter?.actionTarget || "",
+    plannedCharacter?.gazeTarget || "",
+    plannedCharacter?.hands || "",
+    look?.actionEn || "",
+    look?.gazeEn || "",
+    look?.handsEn || "",
+    shot.actionEn,
+  ].filter(Boolean);
+  const contextParts = [
+    shot.description,
+    ...(shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts || [] : []),
+  ].filter(Boolean);
+  const sourceParts = [...primaryParts, ...contextParts];
+  const primaryText = clean(primaryParts.join("; "));
+  const sourceText = clean(sourceParts.join("; "));
+  const source = plannedRelations.length
+    ? "visual_interaction" as const
+    : plannedCharacter
+      ? "visual_character" as const
+      : clean(`${look?.actionEn || ""} ${shot.actionEn} ${shot.description}`)
+        ? "shot_action" as const
+        : "none" as const;
+  const rules: Array<[PoseActionFamily, RegExp, string]> = [
+    ["lie", /\b(?:lie|lies|lying|lay)\b|lie down|躺|卧倒|平卧/i, "lying body requires a near-horizontal torso"],
+    ["recline", /reclin|lean(?:ing|s)? back|斜靠|倚靠|半躺/i, "reclining body requires a diagonal supported torso"],
+    ["self_touch", /rub(?:bing|s)? (?:her |his |the )?(?:eye|eyes|face)|touch(?:ing|es)? (?:her |his |the )?(?:eye|eyes|face|forehead)|cover(?:ing|s)? (?:her |his )?(?:face|eyes)|揉眼|揉脸|摸脸|捂脸|扶额/i, "self-touch requires a wrist-to-face joint target"],
+    ["point", /\bpoint(?:ing|s|ed)?\b|gesture(?:s|d|ing)? toward|指向|指着|指给/i, "pointing requires an extended arm toward the story target"],
+    ["operate_environment", /turn(?:ing|s|ed)? (?:off|on)|switch(?:ing|es|ed)?|press(?:ing|es|ed)? (?:the )?(?:switch|button)|open(?:ing|s|ed)? (?:the )?(?:door|window|curtain)|clos(?:ing|es|ed) (?:the )?(?:door|window|curtain)|关灯|开灯|开关|按(?:下)?按钮|开门|关门|拉窗帘/i, "environment operation requires hand contact at the fixture"],
+    ["locomotion", /\b(?:walk|walking|walks|walked|run|running|runs|ran|stride|striding|step|stepping|enter|entering|exit|exiting|leave|leaving|approach|approaching)\b|走|跑|迈步|进入|离开|出门|走向/i, "locomotion requires opposing limb phases"],
+    ["reach", /\breach(?:ing|es|ed)?\b|extend(?:ing|s|ed)? (?:an? )?(?:arm|hand)|伸手|探手|够向/i, "reaching requires a visible extended arm"],
+    ["seated", /\b(?:sit|sits|sitting|seated)\b|sofa|couch|chair|坐|沙发|椅子/i, "seated action requires bent hips and knees"],
+    ["bend", /\b(?:bend|bends|bending|stoop|stooping)\b|lean(?:ing|s)? forward|俯身|弯腰/i, "bending requires a forward-angled torso"],
+    ["turn", /turn(?:ing|s|ed)? (?:around|back|head|body)|look(?:ing|s)? back|回头|转身|扭头/i, "turning requires asymmetric shoulders and head direction"],
+    ["head_gesture", /\b(?:nod|nods|nodding)\b|look(?:ing|s)? up|raise(?:s|d|ing)? (?:her |his |the )?head|点头|摇头|抬头|仰头/i, "head gesture requires an explicit head-to-neck angle"],
+  ];
+  const matched = rules.find(([, pattern]) => pattern.test(primaryText)) || rules.find(([, pattern]) => pattern.test(sourceText));
+  if (matched) return { family: matched[0], required: true, source, reason: matched[2], sourceText };
+  if (/wide shot|full shot|long shot|远景|全景/i.test(`${shot.cameraEn} ${shot.camera} ${shot.compositionEn}`))
+    return { family: "full_body", required: true, source: "camera", reason: "wide/full framing requires a complete body pose", sourceText };
+  return { family: "static", required: false, source: "none", reason: "no pose-sensitive action detected", sourceText };
+}
 
 export function deriveShotRiskProfile(shot: Shot): ShotRiskProfile {
   const source = `${shot.actionEn} ${shot.description} ${shot.compositionEn} ${shot.cameraEn}`.toLowerCase();
   const planned = shot.visualSpecConfirmed ? shot.visualSpec : null;
   const relations = planned?.interactions || [];
+  const actionPlan = derivePoseActionPlan(shot);
   const multi = shot.characterIds.length > 1;
   const prop = shot.characterIds.some((id) => deriveInteractionContract(shot, id).required) || relations.some((item) => Boolean(item.propId));
   const gaze = multi || relations.some((item) => item.gazeTarget.trim().length > 0) || /look|gaze|对视|看向|注视/i.test(source);
-  const contact = relations.some((item) => item.contactPoints.length > 0) || /hand|hold|reach|drink|read|递|拿|喝|接触|操作/i.test(source);
-  const fullBody = /wide|full|全身|远景|奔跑|跑步|jump|跳/i.test(source);
+  const contact = relations.some((item) => item.contactPoints.length > 0) || /hand|hold|reach|drink|read|point|rub|switch|turn off|lie|recline|递|拿|喝|接触|操作|指|揉|关灯|躺/i.test(source);
+  const fullBody = actionPlan.family === "full_body" || /jump|跳/i.test(source);
   const reasons: string[] = [];
   if (multi) reasons.push("multiple characters");
   if (contact) reasons.push("limb or contact action");
   if (fullBody) reasons.push("full-body or wide framing");
   if (prop) reasons.push("prop interaction");
   if (gaze) reasons.push("independent gaze targets");
-  return { poseRequired: multi || contact || fullBody || prop, identityRepairRequired: true, propRepairRequired: prop, gazeRepairRequired: gaze, depthGuideRequired: multi || contact || prop, reasons };
+  if (actionPlan.required) reasons.push(`action plan: ${actionPlan.family} (${actionPlan.reason})`);
+  return { poseRequired: multi || actionPlan.required || contact || fullBody || prop, identityRepairRequired: true, propRepairRequired: prop, gazeRepairRequired: gaze, depthGuideRequired: multi || contact || prop || actionPlan.required, reasons, actionPlan };
 }
 
 const interactionObjects: Array<{pattern:RegExp; object:string; affordance:string;y:number;shape:InteractionContract["shape"];handMode:InteractionContract["handMode"]}> = [
-  {pattern:/smartphone|cell ?phone|mobile phone|phone screen|texting/i,object:"smartphone",affordance:"held securely with readable hand-object contact",y:.58,shape:"portrait_rect",handMode:"two"},
+  {pattern:/smartphone|cell ?phone|mobile phone|phone screen|texting|phone|手机|移动电话|设备|device/i,object:"smartphone",affordance:"held securely with readable hand-object contact",y:.58,shape:"portrait_rect",handMode:"two"},
   {pattern:/book|novel|magazine|document|letter|page|reading/i,object:"book or document",affordance:"supported by visible hands at a readable angle",y:.6,shape:"landscape_rect",handMode:"two"},
   {pattern:/cup|mug|glass|bottle|drink|coffee|tea/i,object:"drink container",affordance:"securely held by at least one visible hand",y:.5,shape:"cylinder",handMode:"one"},
   {pattern:/package|parcel|box|delivery/i,object:"package",affordance:"supported by visible hands and clearly separated from the body",y:.62,shape:"landscape_rect",handMode:"two"},
   {pattern:/umbrella|parasol/i,object:"umbrella",affordance:"connected to a clearly visible handle held by a visible hand",y:.53,shape:"umbrella",handMode:"one"},
   {pattern:/bag|handbag|purse|backpack/i,object:"bag",affordance:"visibly carried by its handle or strap",y:.65,shape:"bag",handMode:"one"},
   {pattern:/food|meal|bowl|plate/i,object:"food container",affordance:"placed visibly near the acting hands",y:.64,shape:"dish",handMode:"two"},
-  {pattern:/tool|hammer|screwdriver|wrench|spanner|pliers|scissors|pen|pencil|brush|knife/i,object:"handheld tool",affordance:"gripped by a visible hand at its handle with the working end clearly separated from the fingers",y:.55,shape:"elongated",handMode:"one"},
+  {pattern:/tool|hammer|screwdriver|wrench|spanner|pliers|scissors|pen|pencil|brush|knife|工具|螺丝刀|扳手|剪刀|画笔/i,object:"handheld tool",affordance:"gripped by a visible hand at its handle with the working end clearly separated from the fingers",y:.55,shape:"elongated",handMode:"one"},
 ];
 
 export function deriveInteractionContract(shot: Shot, characterId?: string): InteractionContract {
   const planned=shot.visualSpecConfirmed?shot.visualSpec?.characters.find((item)=>!characterId||item.characterId===characterId):undefined;
+  const plannedInteraction = shot.visualSpecConfirmed
+    ? (shot.visualSpec?.interactions || []).find((item) => item.actorCharacterId === (characterId || shot.characterIds[0]) && item.propId)
+      || (shot.visualSpec?.interaction?.actorCharacterId === (characterId || shot.characterIds[0]) ? shot.visualSpec.interaction : null)
+    : null;
   const look=characterId?shot.characterLooks?.[characterId]:undefined;
   const source=unique([
+    plannedInteraction?.propId || "",
     look?.actionEn||"", look?.gazeEn||"", look?.handsEn||"", planned?.action||"", planned?.actionTarget||"",
     planned?.gazeTarget||"", planned?.hands||"", shot.actionEn, shot.description,
     ...(shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts||[]:[]),
   ]).join("; ");
-  const match=interactionObjects.find((entry)=>entry.pattern.test(source));
+  const structuredProp = plannedInteraction?.propId
+    || shot.visualSpec?.interaction?.propId
+    || "";
+  const match=structuredProp
+    ? interactionObjects.find((entry)=>entry.pattern.test(structuredProp))
+    : interactionObjects.find((entry)=>entry.pattern.test(source));
   const index=Math.max(0,shot.characterIds.indexOf(characterId||shot.characterIds[0]));
   const region=planned?.region||{xStart:index/Math.max(1,shot.characterIds.length),xEnd:(index+1)/Math.max(1,shot.characterIds.length)};
   const lookPosition=shot.visualSpecConfirmed
     ? planned?.position || ""
     : shot.characterLooks?.[characterId || shot.characterIds[0]]?.positionEn || "";
   const positionCenter=/left|左/i.test(lookPosition) ? .38 : /right|右/i.test(lookPosition) ? .62 : (region.xStart+region.xEnd)/2;
-  if(!match)return {required:false,characterId:characterId||"",object:"",affordance:"",region,objectCenter:{x:positionCenter,y:.58},gaze:"",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"independent",positive:[],negative:[]};
+  if(!match) {
+    if (structuredProp) {
+      return {relationId:`legacy:${characterId||""}:${structuredProp}`,required:true,characterId:characterId||"",object:structuredProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter:{x:positionCenter,y:.58},gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",positive:[`(required story prop clearly visible: ${structuredProp}:1.38)`,`(hands physically contact and operate the ${structuredProp}:1.3)`],negative:[`missing ${structuredProp}`,`hidden ${structuredProp}`,"empty hands","folded hands"]};
+    }
+    return {relationId:`none:${characterId||""}`,required:false,characterId:characterId||"",object:"",affordance:"",region,objectCenter:{x:positionCenter,y:.58},gaze:"",shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"independent",positive:[],negative:[]};
+  }
   let purpose:InteractionContract["purpose"]="inspect",orientation:InteractionContract["orientation"]="contextual",viewerSurface:InteractionContract["viewerSurface"]="contextual",gazeMode:InteractionContract["gazeMode"]="object";
   let handMode=match.handMode,shape=match.shape,y=match.y,affordance=match.affordance;
   const phone=/smartphone/.test(match.object);
@@ -147,7 +255,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const orientationText=`${orientation} orientation determined by the current action`;
   const surfaceText=viewerSurface==="contextual"?"visible surface follows camera and action geometry":`${viewerSurface} surface is the side readable to the viewer`;
   return {
-    required:true,characterId:characterId||"",object:match.object,affordance,region,
+    relationId:`prop:${characterId||""}:${structuredProp || match.object}:${purpose}`,required:true,characterId:characterId||"",object:structuredProp || match.object,affordance,region,
     objectCenter:{x:Math.max(.15,Math.min(.85,positionCenter)),y},gaze,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
     positive:[
       `(required story prop clearly visible: ${match.object}:1.38)`,
@@ -155,7 +263,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
       `(hands physically contact and operate the ${match.object}; wrists and the object-hand contact are clearly readable:1.3)`,
       gazeMode!=="independent"?`(${gaze}:1.35)`:gaze,
     ],
-    negative:[`missing ${match.object}`,`hidden ${match.object}`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
+    negative:[`missing ${structuredProp || match.object}`,`hidden ${structuredProp || match.object}`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
   };
 }
 const unique = (values: string[]) => [
@@ -256,6 +364,98 @@ export function validateFinalPrompt(prompt: string, interaction?: InteractionCon
       errors.push("read 场景最终 prompt 必须明确 smartphone");
   }
   return { valid: errors.length === 0, errors };
+}
+
+export function deriveInteractionContracts(shot: Shot, characterId?: string): InteractionContract[] {
+  const id = characterId || shot.characterIds[0] || "";
+  const planned = shot.visualSpecConfirmed ? (shot.visualSpec?.interactions || []).filter((item) => item.actorCharacterId === id && item.propId) : [];
+  if (!planned.length) return [deriveInteractionContract(shot, characterId)];
+  return planned.map((relation, index) => ({ ...deriveInteractionContract({ ...shot, visualSpec: { ...shot.visualSpec!, interactions: [relation], interaction: null } }, id), relationId: `${relation.actorCharacterId}:${relation.propId || relation.targetCharacterId || "target"}:${index + 1}` }));
+}
+
+export type CanonicalPromptPlan = {
+  prompt: string;
+  overrideApplied: boolean;
+  repairs: string[];
+  validation: FinalPromptValidation;
+};
+
+function framingKind(shot: Shot) {
+  const camera = resolveCameraPrompt(shot);
+  if (/wide shot|full shot|long shot/i.test(camera)) return "wide" as const;
+  if (/close-up|medium close-up|chest-up|head-and-shoulders|waist-up|medium shot/i.test(camera)) return "close_or_medium" as const;
+  return "other" as const;
+}
+
+function stripConflictingFraming(value: string, shot: Shot) {
+  const kind = framingKind(shot);
+  const conflicts = kind === "wide"
+    ? /\b(?:strict\s+)?(?:waist-up|chest-up|head-and-shoulders)\s+framing\b|\bno legs? or full bod(?:y|ies)\b|\bno\s+(?:waist|legs?|feet|full bod(?:y|ies))\s+(?:is\s+)?visible\b|\bstrict crop at the waist\b/gi
+    : kind === "close_or_medium"
+      ? /\bfull[- ]?(?:body|length)(?:\s+(?:figure|portrait))?\b|\bhead\s+to\s+(?:toe|feet)\b|\b(?:both\s+)?feet\s+(?:fully\s+)?visible\b|\bcomplete (?:body|figure|limbs)\b|\bvisible legs\b/gi
+      : null;
+  if (!conflicts) return { value: clean(value), changed: false };
+  const repaired = clean(value.replace(conflicts, ""));
+  return { value: repaired, changed: repaired !== clean(value) };
+}
+
+/**
+ * The regional compiler is the authoritative contract layer for every shot.
+ * Editable prompts are appended as a non-contract layer after contradictory
+ * framing phrases have been removed, so single and multi-character requests
+ * use the same camera/count/action/interaction representation.
+ */
+export function buildCanonicalGenerationPrompt(
+  shot: Shot,
+  contractPrompt: string,
+  editablePrompt = "",
+  characterCount = shot.characterIds.length,
+): CanonicalPromptPlan {
+  const contract = stripConflictingFraming(sanitizeEnglishPrompt(contractPrompt), shot);
+  const override = stripConflictingFraming(sanitizeEnglishPrompt(editablePrompt), shot);
+  const repairs = [
+    ...(contract.changed ? ["removed framing clauses that conflict inside the regional contract prompt"] : []),
+    ...(override.changed ? ["removed framing clauses that conflict with the structured camera contract"] : []),
+  ];
+  const contractTerms = new Set(splitPromptTerms(contract.value).map((term) => promptFingerprint(term)));
+  const editorialTerms = splitPromptTerms(override.value).filter((term) => !contractTerms.has(promptFingerprint(term)));
+  const editorial = override.value && override.value !== contract.value
+    ? editorialTerms.join(", ")
+    : "";
+  const kind = framingKind(shot);
+  const camera = resolveCameraPrompt(shot);
+  const framingInvariant = kind === "close_or_medium"
+    ? `${camera}, strict crop at the waist, no legs or full bodies`
+    : camera;
+  const countInvariant = characterCount === 1
+    ? "exactly one foreground adult woman, 1girl, solo"
+    : `exactly ${characterCount} clearly distinct foreground adult women`;
+  const prompt = [contract.value, framingInvariant, countInvariant, editorial ? `editorial visual details, ${editorial}` : ""].filter(Boolean).join(", ");
+  const value = prompt.toLowerCase();
+  const errors: string[] = [];
+  if (!value.includes(camera.toLowerCase().split(",")[0])) errors.push("最终 prompt 缺少结构化 camera 契约");
+  if (kind === "close_or_medium" && !/strict crop at the waist|no waist or legs visible|do not show legs or the full body/.test(value))
+    errors.push("近景/中景最终 prompt 缺少正向裁切契约");
+  if (kind === "wide" && !/complete (?:figures|bodies) visible|complete bodies visible from head to feet/.test(value))
+    errors.push("远景/全景最终 prompt 缺少完整人物景别契约");
+  if (characterCount === 1 && !/\b1girl\b|\bone adult woman\b|\bsolo\b/.test(value))
+    errors.push("单人最终 prompt 缺少人物数量契约");
+  if (characterCount > 1 && !new RegExp(`exactly ${characterCount}\\b|${characterCount}girls\\b`).test(value))
+    errors.push("多人最终 prompt 缺少人物数量契约");
+  if (kind === "close_or_medium" && /\bfull body portrait\b|\bfull-length figure\b|\bhead to (?:toe|feet)\b|\bboth feet (?:fully )?visible\b|\bcomplete (?:body|figure|limbs)\b|\bvisible legs\b/.test(value))
+    errors.push("近景/中景最终 prompt 仍包含冲突的全身景别词");
+  if (kind === "wide" && /\bstrict crop at the waist\b|\b(?:waist-up|chest-up|head-and-shoulders) framing\b|\bno waist or legs visible\b|\bno legs? or full bod(?:y|ies)\b|\bdo not show legs\b/.test(value))
+    errors.push("远景/全景最终 prompt 仍包含冲突的近景裁切词");
+  return { prompt, overrideApplied: Boolean(editorial), repairs, validation: { valid: errors.length === 0, errors } };
+}
+
+export function buildCanonicalNegativePrompt(shot: Shot, contractNegative: string, editableNegative = "") {
+  const framing = framingKind(shot) === "wide"
+    ? "cropped feet, missing legs, floating limbs, incomplete full body"
+    : framingKind(shot) === "close_or_medium"
+      ? "full body, full-length figure, visible legs, visible shoes, standing portrait"
+      : "";
+  return compactPrompt([sanitizeEnglishPrompt(contractNegative), framing, sanitizeEnglishPrompt(editableNegative)].filter(Boolean).join(", "), 72);
 }
 
 function canonicalActionForInteraction(action: string, interaction: InteractionContract) {
@@ -760,22 +960,14 @@ const openPoseLimbs = [
   [0, 15], [15, 17],
 ];
 
-export type PosePoint = { x: number; y: number };
+export type PosePoint = PosePointV2;
 
 export function renderOpenPoseSvg(
   people: PosePoint[][],
   width = 512,
   height = 512,
 ) {
-  const draw = (points: PosePoint[]) => [
-    ...openPoseLimbs.map(([a, b], index) =>
-      `<line x1="${points[a].x * width}" y1="${points[a].y * height}" x2="${points[b].x * width}" y2="${points[b].y * height}" stroke="${openPoseColors[index]}" stroke-width="5" stroke-linecap="round"/>`,
-    ),
-    ...points.map((point, index) =>
-      `<circle cx="${point.x * width}" cy="${point.y * height}" r="4" fill="${openPoseColors[index % openPoseColors.length]}"/>`,
-    ),
-  ].join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="black"/>${people.map(draw).join("")}</svg>`;
+  return renderOpenPoseSvgV2(people, width, height);
 }
 
 export type RegionalCharacterRegion = {
@@ -812,6 +1004,11 @@ export function buildUmbrellaHandoverPoseSvg(width = 512, height = 512) {
   const people = [receiver, giver];
   return {
     kind: "umbrella_handover_v1",
+    framingMode: "full_body" as const,
+    hiddenJointIndices: [] as number[],
+    source: "automatic_interaction_plan",
+    selectorReason: "structured umbrella handover requires two coordinated skeletons",
+    actionFamily: "object_transfer",
     width,
     height,
     people,
@@ -827,32 +1024,131 @@ export function buildSingleFullBodyPoseSvg(width = 512, height = 768) {
     { x: .57, y: .69 }, { x: .60, y: .90 }, { x: .47, y: .13 }, { x: .53, y: .13 },
     { x: .45, y: .14 }, { x: .55, y: .14 },
   ];
-  return {kind:"single_full_body_v1",width,height,people:[person],svg:renderOpenPoseSvg([person],width,height)};
+  return {kind:"single_full_body_v1",framingMode:"full_body" as const,hiddenJointIndices:[] as number[],source:"automatic_action_plan",selectorReason:"wide/full framing requires a complete body pose",actionFamily:"full_body" as const,width,height,people:[person],svg:renderOpenPoseSvg([person],width,height)};
 }
 
-export function buildSingleActionPoseSvg(shot:Shot,interaction:InteractionContract,width=512,height=512) {
-  const source=`${shot.actionEn} ${shot.description} ${shot.characterLooks?.[interaction.characterId]?.actionEn||""} ${shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts.join(" ")||"":""} ${shot.visualSpecConfirmed?shot.visualSpec?.characters.find((item)=>item.characterId===interaction.characterId)?.position||"":""}`;
-  const seated=/sit|seated|sofa|couch|chair|坐/i.test(source),moving=/walk|run|stride|走|跑/i.test(source);
-  const camera=resolveCameraPrompt(shot);
-  const close=/close-up|medium close-up|chest-up/i.test(camera);
+function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContract,width=512,height=512) {
+  const actionPlan=derivePoseActionPlan(shot,interaction.characterId);
+  const family:PoseActionFamily=actionPlan.required ? actionPlan.family : interaction.required ? "reach" : "static";
+  const framingMode=derivePoseFramingMode(shot);
   const position=shot.visualSpecConfirmed
     ? shot.visualSpec?.characters.find((item)=>item.characterId===interaction.characterId)?.position || ""
     : shot.characterLooks?.[interaction.characterId]?.positionEn || "";
   const positionX=/left|左/i.test(position) ? .38 : /right|右/i.test(position) ? .62 : .5;
   const cx=Math.max(.2,Math.min(.8,/left|左|right|右/i.test(position) ? positionX : (interaction.region.xStart+interaction.region.xEnd)/2));
-  const hipY=close ? 1.06 : seated ? .55 : .52;
-  const kneeY=close ? 1.24 : .7;
-  const ankleY=close ? 1.42 : .88;
   const ox=Math.max(.15,Math.min(.85,interaction.objectCenter.x)),oy=Math.max(.4,Math.min(.72,interaction.objectCenter.y));
-  const leftWrist={x:ox-.045,y:oy},rightWrist=interaction.handMode==="two"?{x:ox+.045,y:oy}:{x:cx+.16,y:seated?.66:.57};
-  const person:PosePoint[]=[
-    {x:cx,y:.16},{x:cx,y:.27},{x:cx-.09,y:.29},{x:(cx-.09+leftWrist.x)/2-.025,y:(.29+leftWrist.y)/2},{...leftWrist},
-    {x:cx+.09,y:.29},{x:(cx+.09+rightWrist.x)/2+.025,y:(.29+rightWrist.y)/2},{...rightWrist},
-    {x:cx-.055,y:hipY},{x:cx-(moving?.1:.07),y:kneeY},{x:cx-(moving?.16:.08),y:ankleY},
-    {x:cx+.055,y:hipY},{x:cx+(moving?.13:.07),y:kneeY},{x:cx+(moving?.2:.08),y:ankleY},
-    {x:cx-.025,y:.15},{x:cx+.025,y:.15},{x:cx-.045,y:.16},{x:cx+.045,y:.16},
-  ];
-  return {kind:`single_action_${seated?"seated":moving?"moving":"standing"}_v1`,width,height,people:[person],svg:renderOpenPoseSvg([person],width,height)};
+  const face=(nose:{x:number;y:number},neck:{x:number;y:number})=>[
+    nose,neck,
+  ] as PosePoint[];
+  const facial=(nose:{x:number;y:number})=>[
+    {x:nose.x-.025,y:nose.y-.01},{x:nose.x+.025,y:nose.y-.01},{x:nose.x-.045,y:nose.y},{x:nose.x+.045,y:nose.y},
+  ] as PosePoint[];
+  const uprightLegs=(legFamily:PoseActionFamily)=>{
+    if(legFamily==="seated") return [
+      {x:cx-.055,y:.54},{x:cx-.18,y:.59},{x:cx-.18,y:.84},
+      {x:cx+.055,y:.54},{x:cx+.18,y:.59},{x:cx+.18,y:.84},
+    ] as PosePoint[];
+    if(legFamily==="locomotion") return [
+      {x:cx-.055,y:.51},{x:cx-.14,y:.68},{x:cx-.23,y:.88},
+      {x:cx+.055,y:.51},{x:cx+.16,y:.68},{x:cx+.25,y:.86},
+    ] as PosePoint[];
+    if(legFamily==="bend") return [
+      {x:cx-.045,y:.57},{x:cx-.13,y:.72},{x:cx-.16,y:.9},
+      {x:cx+.065,y:.55},{x:cx+.14,y:.7},{x:cx+.18,y:.88},
+    ] as PosePoint[];
+    return [
+      {x:cx-.055,y:.52},{x:cx-.075,y:.7},{x:cx-.085,y:.9},
+      {x:cx+.055,y:.52},{x:cx+.075,y:.7},{x:cx+.085,y:.9},
+    ] as PosePoint[];
+  };
+  const applyFraming=(points:PosePoint[])=>{
+    if(framingMode!=="upper_body") return points;
+    const hiddenY:Record<number,number>={8:1.06,9:1.24,10:1.42,11:1.06,12:1.24,13:1.42};
+    return points.map((point,index)=>hiddenY[index] == null ? point : {...point,y:hiddenY[index]});
+  };
+  let person:PosePoint[];
+  let kind="single_action_standing_v1";
+  if(family==="lie") {
+    const nose={x:cx-.26,y:.45},neck={x:cx-.17,y:.48};
+    person=[...face(nose,neck),{x:cx-.17,y:.41},{x:cx-.06,y:.39},{x:cx+.03,y:.4},{x:cx-.16,y:.55},{x:cx-.04,y:.58},{x:cx+.06,y:.58},{x:cx+.07,y:.45},{x:cx+.22,y:.43},{x:cx+.34,y:.46},{x:cx+.08,y:.56},{x:cx+.23,y:.6},{x:cx+.36,y:.58},...facial(nose)];
+    kind="single_action_lie_v1";
+  } else if(family==="recline") {
+    const nose={x:cx-.12,y:.21},neck={x:cx-.07,y:.31};
+    person=[...face(nose,neck),{x:cx-.14,y:.32},{x:cx-.16,y:.44},{x:cx-.1,y:.54},{x:cx+.01,y:.31},{x:cx+.08,y:.43},{x:cx+.13,y:.54},{x:cx-.01,y:.56},{x:cx-.1,y:.72},{x:cx-.19,y:.86},{x:cx+.09,y:.58},{x:cx+.19,y:.72},{x:cx+.27,y:.85},...facial(nose)];
+    kind="single_action_recline_v1";
+  } else {
+    let nose={x:cx,y:.16},neck={x:cx,y:.27};
+    let rightShoulder={x:cx-.09,y:.29},leftShoulder={x:cx+.09,y:.29};
+    let rightElbow={x:cx-.13,y:.42},rightWrist={x:cx-.15,y:.56};
+    let leftElbow={x:cx+.13,y:.42},leftWrist={x:cx+.15,y:.56};
+    if(family==="self_touch") {
+      rightElbow={x:cx-.11,y:.24}; rightWrist={x:cx-.025,y:.155};
+      kind="single_action_self_touch_v1";
+    } else if(family==="point") {
+      const direction=ox<cx?-1:1;
+      const targetX=Math.max(.12,Math.min(.88,Math.abs(ox-cx)>.08?ox:cx+direction*.3));
+      if(direction>0){leftElbow={x:cx+.18,y:.31};leftWrist={x:targetX,y:Math.max(.24,oy-.12)};}
+      else {rightElbow={x:cx-.18,y:.31};rightWrist={x:targetX,y:Math.max(.24,oy-.12)};}
+      kind="single_action_point_v1";
+    } else if(family==="operate_environment") {
+      const targetX=Math.abs(ox-cx)>.08?ox:Math.min(.88,cx+.28);
+      leftElbow={x:(cx+.09+targetX)/2,y:.31};leftWrist={x:targetX,y:Math.max(.26,Math.min(.5,oy-.1))};
+      kind="single_action_operate_environment_v1";
+    } else if(family==="reach") {
+      const targetX=Math.abs(ox-cx)>.08?ox:Math.min(.88,cx+.26);
+      leftElbow={x:(cx+.09+targetX)/2,y:.38};leftWrist={x:targetX,y:Math.max(.34,oy)};
+      kind="single_action_reach_v1";
+    } else if(family==="locomotion") {
+      rightElbow={x:cx-.15,y:.39};rightWrist={x:cx-.2,y:.49};leftElbow={x:cx+.14,y:.37};leftWrist={x:cx+.2,y:.31};
+      kind="single_action_moving_v1";
+    } else if(family==="seated") {
+      if(interaction.required){rightWrist={x:ox-.045,y:oy};leftWrist=interaction.handMode==="two"?{x:ox+.045,y:oy}:leftWrist;}
+      kind="single_action_seated_v1";
+    } else if(family==="bend") {
+      nose={x:cx+.08,y:.27};neck={x:cx+.02,y:.34};rightShoulder={x:cx-.06,y:.32};leftShoulder={x:cx+.1,y:.38};
+      kind="single_action_bend_v1";
+    } else if(family==="turn") {
+      nose={x:cx+.055,y:.16};rightShoulder={x:cx-.12,y:.31};leftShoulder={x:cx+.06,y:.27};
+      kind="single_action_turn_v1";
+    } else if(family==="head_gesture") {
+      nose={x:cx,y:.12};neck={x:cx,y:.27};
+      kind="single_action_head_gesture_v1";
+    } else if(interaction.required) {
+      rightWrist={x:ox-.045,y:oy};leftWrist=interaction.handMode==="two"?{x:ox+.045,y:oy}:leftWrist;
+    }
+    const legs=uprightLegs(family);
+    person=[...face(nose,neck),rightShoulder,rightElbow,rightWrist,leftShoulder,leftElbow,leftWrist,...legs,...facial(nose)];
+  }
+  const framedPerson=applyFraming(person);
+  const hiddenJointIndices=framingMode==="upper_body"?[8,9,10,11,12,13]:[];
+  return {
+    kind,
+    source:"automatic_action_plan",
+    selectorReason:actionPlan.required?actionPlan.reason:"recognized prop interaction requires visible arm geometry",
+    actionFamily:family,
+    framingMode,
+    hiddenJointIndices,
+    width,
+    height,
+    people:[framedPerson],
+    svg:renderOpenPoseSvg([framedPerson],width,height),
+  };
+}
+
+const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
+  characterId: interaction.characterId,
+  required: interaction.required,
+  object: interaction.object,
+  purpose: interaction.purpose,
+  handMode: interaction.handMode,
+  objectCenter: interaction.objectCenter,
+  region: interaction.region,
+  gazeMode: interaction.gazeMode,
+});
+
+export function buildSingleActionPoseSvg(shot:Shot,interaction:InteractionContract,width=512,height=512) {
+  return buildPoseControlV2(shot, [poseInteractionInput(interaction)], width, height)
+    || buildSingleActionPoseSvgLegacy(shot, interaction, width, height);
 }
 
 export function buildGenerationPrompt(
@@ -898,6 +1194,7 @@ export function buildGenerationPrompt(
     ? unique([env.background, env.keyLight]).join(", ")
     : sceneDetails.join(", ");
   const interactionContracts=shot.characterIds.map((id)=>deriveInteractionContract(shot,id));
+  const allInteractionContracts=shot.characterIds.flatMap((id)=>deriveInteractionContracts(shot,id));
   const characterBlocks = shot.characterIds.map((id, index) => {
     const character = characters.find((item) => item.id === id);
     if (!character) return "";
@@ -914,7 +1211,7 @@ export function buildGenerationPrompt(
             `${look.hairStyleEn.replace(/\bhair\b/gi, "")} ${look.hairColorEn.replace(/\bhair\b/gi, "")} hair`,
           )}:1.2)`
         : clean(`${look.hairStyleEn} ${look.hairColorEn}`);
-    const interaction=interactionContracts[index];
+    const interaction=interactionContracts.find((item)=>item.characterId===id) || deriveInteractionContract(shot,id);
     return unique([
       look.positionEn,
       `(${stripTraits(character.appearanceEn)}:1.12)`,
@@ -1020,15 +1317,19 @@ export function buildRegionalPrompt(
   const isMulti=quality.characterCount>1;
   const camera = `${resolvedCamera}, ${isMulti?"multi-character narrative composition":"single-character narrative composition"}`;
   const mediumOrClose = /waist-up|chest-up|head-and-shoulders|close-up/i.test(resolvedCamera);
-  const plannedInteraction = shot.visualSpecConfirmed ? shot.visualSpec?.interaction : null;
-  const plannedInteractionText = plannedInteraction
-    ? [plannedInteraction.type, plannedInteraction.propId, plannedInteraction.contactPoint, plannedInteraction.phase].join(" ")
-    : "";
-  const usePlannedInteraction = Boolean(plannedInteraction && !containsCjk(plannedInteractionText));
-  const hasObjectTransfer = plannedInteraction?.type === "object_transfer" || umbrellaStory(shot);
-  const hasUmbrellaHandover = hasObjectTransfer && (!plannedInteraction?.propId || /umbrella|伞/i.test(plannedInteraction.propId));
-  const sharedInteraction = usePlannedInteraction && plannedInteraction
-    ? `${plannedInteraction.type} involving ${plannedInteraction.propId || "a story prop"}, actor ${plannedInteraction.actorCharacterId}, target ${plannedInteraction.targetCharacterId}, contact at ${plannedInteraction.contactPoint}, action phase ${plannedInteraction.phase}`
+  const plannedInteractions = shot.visualSpecConfirmed
+    ? (shot.visualSpec?.interactions?.length
+        ? shot.visualSpec.interactions
+        : shot.visualSpec?.interaction
+          ? [{...shot.visualSpec.interaction,action:"perform the described interaction",contactPoints:[shot.visualSpec.interaction.contactPoint],gazeTarget:"the interaction target",ownershipBefore:null,ownershipAfter:null}]
+          : [])
+    : [];
+  const plannedInteractionText = plannedInteractions.map((item) => [item.type,item.propId,item.actorCharacterId,item.targetCharacterId,item.action,item.phase,...item.contactPoints,item.gazeTarget].join(" ")).join("; ");
+  const usePlannedInteraction = Boolean(plannedInteractions.length && !containsCjk(plannedInteractionText));
+  const hasObjectTransfer = plannedInteractions.some((item)=>item.type === "object_transfer") || umbrellaStory(shot);
+  const hasUmbrellaHandover = hasObjectTransfer && (!plannedInteractions.some((item)=>item.propId) || plannedInteractions.some((item)=>/umbrella|伞/i.test(item.propId)));
+  const sharedInteraction = usePlannedInteraction
+    ? plannedInteractions.map((item)=>`${item.type} involving ${item.propId || "a character target"}, actor ${item.actorCharacterId}, target ${item.targetCharacterId || item.propId}, action ${item.action}, contact at ${item.contactPoints.join(" and ")}, gaze toward ${item.gazeTarget}, action phase ${item.phase}`).join("; ")
     : hasUmbrellaHandover
     ? "clear umbrella handover at the center of the frame, the woman on the right still holds the umbrella and visibly extends its handle toward the woman on the left, the woman on the left visibly reaches to accept it, their open hands approach the same handle without touching each other, both women look at each other, narrative instant before the receiver takes possession, the giver remains the sole holder of the umbrella"
     : "both people visibly performing the same shared story event, clear cause-and-response body language";
@@ -1124,21 +1425,31 @@ export function buildRegionalPrompt(
     identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
     anatomy: "deformed limbs, extra or missing limbs, fused hands, malformed wrists, extra or missing fingers",
     interaction: hasObjectTransfer ? "holding hands, linked arms, posing for camera, both people incorrectly owning the same prop, disconnected prop, unclear transfer" : "static portrait pose, unrelated actions",
-    weather: /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, no falling rain, sunny weather, umbrella edge crossing a face, deep shadow across eyes" : "",
+    weather: (hasUmbrellaHandover || /雨|rain/i.test(`${shot.scene} ${shot.description}`)) ? "dry pavement, no falling rain, sunny weather, umbrella edge crossing a face, deep shadow across eyes" : "",
     composition: quality.characterCount > 1 ? "extra foreground principal person, third detailed foreground character, crowded foreground, duplicated woman, clone, twins, split screen, collage, character sheet" : "extra person, duplicate",
     text: "child, chibi, nsfw, 3d, photorealistic, monochrome, grayscale, text, letters, watermark, logo, speech bubbles, captions",
   };
   if(characterRegions.some((region)=>!explicitlyAllowsCameraGaze(region.prompt)))negativeBlocks.composition += ", looking at viewer, eye contact with camera, front-facing portrait gaze";
   const interactionContracts=shot.characterIds.map((id)=>deriveInteractionContract(shot,id));
-  negativeBlocks.interaction=[negativeBlocks.interaction,...interactionContracts.flatMap((item)=>item.negative)].filter(Boolean).join(", ");
+  const allInteractionContracts=shot.characterIds.flatMap((id)=>deriveInteractionContracts(shot,id));
+  negativeBlocks.interaction=[negativeBlocks.interaction,...allInteractionContracts.flatMap((item)=>item.negative)].filter(Boolean).join(", ");
   const outfitNegatives = characters
     .filter((character) => shot.characterIds.includes(character.id))
     .map((character) => character.profile?.outfitNegativeEn || "")
     .filter(Boolean)
     .join(", ");
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
-  const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60));
+  const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60)) + ", deep shadow across eyes";
   const regionPrompts = characterRegions.map((region) => region.prompt);
+  const characterInteractionContracts = shot.characterIds.map((id) => deriveInteractionContract(shot, id));
+  const poseControl = risk.poseRequired
+    ? buildPoseControlV2(
+        shot,
+        characterInteractionContracts.map(poseInteractionInput),
+        512,
+        /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512,
+      )
+    : null;
   return {
     commonPrompt: basePrompt,
     basePrompt,
@@ -1149,18 +1460,13 @@ export function buildRegionalPrompt(
     negativePrompt,
     assetBindings: characterRegions.flatMap((region) => region.assetBindings),
     assetWarnings: characterRegions.flatMap((region) => region.assetWarnings),
-    poseControl: hasUmbrellaHandover
-      ? buildUmbrellaHandoverPoseSvg()
-      : risk.poseRequired && quality.characterCount===1 && interactionContracts[0]?.required
-        ? buildSingleActionPoseSvg(shot,interactionContracts[0],512,/wide shot|full shot/i.test(resolvedCamera)?768:512)
-      : risk.poseRequired && quality.characterCount===1 && /wide shot|full shot/i.test(resolvedCamera)
-        ? buildSingleFullBodyPoseSvg(512,768)
-        : null,
+    poseControl,
     repairPasses: {
       identity:risk.identityRepairRequired,
       handoff:hasUmbrellaHandover,
       handoffPrompt:hasUmbrellaHandover?sharedInteraction:"",
-      propInteraction: risk.propRepairRequired ? interactionContracts.find((item)=>item.required) || null : null,
+      propInteraction: risk.propRepairRequired ? allInteractionContracts.find((item)=>item.required) || null : null,
+      propInteractions: risk.propRepairRequired ? allInteractionContracts.filter((item)=>item.required) : [],
       risk,
       gaze: risk.gazeRepairRequired,
       depth: risk.depthGuideRequired,
@@ -1170,4 +1476,14 @@ export function buildRegionalPrompt(
 
 export function containsCjk(value: string) {
   return /[\u3400-\u9fff]/.test(value);
+}
+
+export function classifyOutfitConditioning(camera: string, isolated: boolean, adapterAvailable: boolean) {
+  const wide = /远景|全景|wide shot|full shot/i.test(camera);
+  const applied = wide && isolated && adapterAvailable;
+  return {
+    status: applied ? "control_applied" as const : "text_only" as const,
+    safety: applied ? "wide_or_full_isolated_only" as const : wide ? "text_only_reference_or_adapter_unavailable" as const : "text_only_close_or_medium" as const,
+    controlApplied: applied,
+  };
 }
