@@ -280,6 +280,7 @@ try {
       prompt: requestPayload.prompt,
       negativePrompt: requestPayload.negative_prompt,
       regionalPrompterEnabled: Boolean(recipe.regionalPrompter?.enabled),
+      controlUnits: controlUnits.map((unit) => ({ module: unit.module, model: unit.model, weight: unit.weight, control_mode: unit.control_mode, relationId: unit.relationId || null, stage: unit.stage || "initial" })),
       recordedAt: new Date().toISOString(),
     };
     if (phase === "final") {
@@ -500,7 +501,8 @@ try {
       const gazeMask=(await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
       recipe.debugMasks = recipe.debugMasks || [];
       recipe.faceRefinementPasses = recipe.faceRefinementPasses || [];
-      const gazeTrace={type:"gaze",order:recipe.faceRefinementPasses.length+1,characterId:propInteraction.characterId,centerX:gazePlan.center.x,centerY:gazePlan.center.y,targetCenter:propInteraction.objectCenter||null,vector:gazeGeometry.vector,direction:gazeGeometry.direction,maskBounds:gazeGeometry.bounds,cropBounds:gazeGeometry.crop,targetBox:gazeGeometry.targetBox,containsTarget:gazeGeometry.containsTarget,sourceX:gazePlan.center.sourceX,sourceY:gazePlan.center.sourceY,denoisingStrength:gazePlan.denoisingStrength,identityControl:gazePlan.identityControl};
+      const gazeIdentityControl = gazePlan.identityControl ? { ...gazePlan.identityControl, weight: offCameraGaze ? Math.min(gazePlan.identityControl.weight, 0.68) : gazePlan.identityControl.weight, controlMode: offCameraGaze ? "Balanced" : "ControlNet is more important" } : null;
+      const gazeTrace={type:"gaze",order:recipe.faceRefinementPasses.length+1,characterId:propInteraction.characterId,centerX:gazePlan.center.x,centerY:gazePlan.center.y,targetCenter:propInteraction.objectCenter||null,vector:gazeGeometry.vector,direction:gazeGeometry.direction,maskBounds:gazeGeometry.bounds,cropBounds:gazeGeometry.crop,targetBox:gazeGeometry.targetBox,containsTarget:gazeGeometry.containsTarget,sourceX:gazePlan.center.sourceX,sourceY:gazePlan.center.sourceY,denoisingStrength:gazePlan.denoisingStrength,identityControl:gazeIdentityControl};
       recipe.debugMasks.push(gazeTrace);
       recipe.faceRefinementPasses.push(gazeTrace);
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);
