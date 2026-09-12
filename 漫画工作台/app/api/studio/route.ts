@@ -10,6 +10,7 @@ import {
   addShotToPage,
   addTextLayer,
   approveSdDraft,
+  approveSdFinal,
   clearGeneratedReferenceCandidates,
   createPersistentGenerationJob,
   deletePage,
@@ -25,6 +26,7 @@ import {
   queueCodexPage,
   recordBelongsToProject,
   rejectSdDraft,
+  rejectSdFinal,
   retryFailedCodexJob,
   selectCandidate,
   separateRecentStoriesIntoProjects,
@@ -41,6 +43,7 @@ import {
   buildRegionalPrompt,
   buildCanonicalGenerationPrompt,
   buildCanonicalNegativePrompt,
+  buildCanonicalNegativePromptTrace,
   extractPromptEditorialDiff,
   containsCjk,
   classifyOutfitConditioning,
@@ -60,6 +63,14 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type GenerationProfile = "cpu_local_fast" | "cpu_local_complex" | "gpu_full";
+const generationProfilePlan = (profile: GenerationProfile, characterCount: number) =>
+  profile === "gpu_full"
+    ? { draftLongEdge: 512, maxTargetEdge: 1024, draftSteps: characterCount > 1 ? 16 : 12, finalSteps: 18 }
+    : profile === "cpu_local_complex"
+      ? { draftLongEdge: 512, maxTargetEdge: 640, draftSteps: 12, finalSteps: 16 }
+      : { draftLongEdge: 448, maxTargetEdge: 640, draftSteps: 10, finalSteps: 14 };
 
 function launchSdWorker(jobId: number) {
   const logDir = path.join(process.cwd(), "workspace", "sd-jobs");
@@ -232,7 +243,7 @@ export async function PATCH(request: Request) {
 export async function POST(request: Request) {
   const body = await request.json();
   if (
-    !["generate", "generateDraft", "approveDraft", "rejectDraft"].includes(
+    !["generate", "generateDraft", "approveDraft", "rejectDraft", "approveFinal", "rejectFinal"].includes(
       body.action,
     )
   )
@@ -240,14 +251,14 @@ export async function POST(request: Request) {
   const projectId = Number(body.projectId);
   if (!Number.isInteger(projectId) || projectId <= 0)
     return NextResponse.json({ error: "无效作品 ID" }, { status: 400 });
-  if (body.action === "approveDraft" || body.action === "rejectDraft") {
+  if (["approveDraft", "rejectDraft", "approveFinal", "rejectFinal"].includes(body.action)) {
     const jobId = Number(body.jobId);
     if (
       !Number.isInteger(jobId) ||
       !recordBelongsToProject("job", jobId, projectId)
     )
       return NextResponse.json(
-        { error: "草稿任务不存在或不属于当前作品" },
+        { error: "图片审核任务不存在或不属于当前作品" },
         { status: 404 },
       );
     if (body.action === "rejectDraft") {
@@ -256,6 +267,11 @@ export async function POST(request: Request) {
           { error: "该任务不在等待草稿确认状态" },
           { status: 409 },
         );
+      return NextResponse.json({ ok: true, data: getStudioData(projectId) });
+    }
+    if (body.action === "rejectFinal") {
+      if (!rejectSdFinal(projectId, jobId))
+        return NextResponse.json({ error: "该任务不在等待最终图片复核状态" }, { status: 409 });
       return NextResponse.json({ ok: true, data: getStudioData(projectId) });
     }
     const approvalJob = getGenerationJobRecord(jobId);
@@ -269,6 +285,12 @@ export async function POST(request: Request) {
         { error: semanticValidation.errors.join("；"), code: "SEMANTIC_REVIEW_INCOMPLETE", reviewItems: semanticItems },
         { status: 422 },
       );
+    if (body.action === "approveFinal") {
+      const approvedFinal = approveSdFinal(projectId, jobId, body.semanticReview as SemanticReviewSubmission | undefined);
+      if (!approvedFinal)
+        return NextResponse.json({ error: "最终图片、图片哈希或逐项复核结果无效" }, { status: 409 });
+      return NextResponse.json({ ok: true, candidateId: approvedFinal.id, data: getStudioData(projectId) });
+    }
     const approved = approveSdDraft(projectId, jobId, body.semanticReview as SemanticReviewSubmission | undefined);
     if (!approved)
       return NextResponse.json(
@@ -288,7 +310,13 @@ export async function POST(request: Request) {
       },
       { status: 409 },
     );
-  let shot = getShotGenerationInput(Number(body.shotId));
+  const requestedShotId = Number(body.shotId);
+  if (!Number.isInteger(requestedShotId) || !recordBelongsToProject("shot", requestedShotId, projectId))
+    return NextResponse.json(
+      { error: "生成分格不存在或不属于当前作品", code: "SHOT_PROJECT_MISMATCH" },
+      { status: 404 },
+    );
+  let shot = getShotGenerationInput(requestedShotId);
   if (shot.locked)
     return NextResponse.json(
       { error: "该分格已锁定，请先解锁后再生成。", code: "SHOT_LOCKED" },
@@ -308,6 +336,14 @@ export async function POST(request: Request) {
     visualMigrationTrace = { applied: JSON.stringify(before) !== JSON.stringify(normalized), fromVersion, toVersion: normalized.schemaVersion, warnings: validation.warnings };
   }
   const compiled = buildGenerationPrompt(shot, assets, characters);
+  const configuredProfile = String(body.generationProfile || process.env.SD_GENERATION_PROFILE || "cpu_local_fast");
+  const requestedProfile: GenerationProfile = ["cpu_local_fast", "cpu_local_complex", "gpu_full"].includes(configuredProfile)
+    ? configuredProfile as GenerationProfile
+    : "cpu_local_fast";
+  let generationProfile: GenerationProfile = requestedProfile === "cpu_local_fast" && shot.characterIds.length > 1
+    ? "cpu_local_complex"
+    : requestedProfile;
+  let profilePlan = generationProfilePlan(generationProfile, shot.characterIds.length);
   let targetWidth = Number(body.width || shot.generationWidth || 512);
   let targetHeight = Number(body.height || shot.generationHeight || 512);
   if (shot.characterIds.length === 1 && targetWidth === 512 && targetHeight === 512 && /远景|全景/.test(shot.camera)) targetHeight = 768;
@@ -331,15 +367,25 @@ export async function POST(request: Request) {
       },
       { status: 422 },
     );
+  if (Math.max(targetWidth, targetHeight) > profilePlan.maxTargetEdge)
+    return NextResponse.json(
+      {
+        error: `${generationProfile} 档位的最长边上限为 ${profilePlan.maxTargetEdge}px；纯 CPU 模式请降低尺寸，或显式切换 gpu_full。`,
+        code: "GENERATION_PROFILE_SIZE_LIMIT",
+        generationProfile,
+        maxTargetEdge: profilePlan.maxTargetEdge,
+      },
+      { status: 422 },
+    );
   // 384px drafts leave only ~35-50px for a face in full-body shots. Keep all
   // character drafts at 512 so the approval image is useful for identity QA.
-  const draftLongEdge = 512;
-  const draftScale = draftLongEdge / Math.max(targetWidth, targetHeight);
-  const draftWidth = Math.max(
+  let draftLongEdge = profilePlan.draftLongEdge;
+  let draftScale = draftLongEdge / Math.max(targetWidth, targetHeight);
+  let draftWidth = Math.max(
     256,
     Math.round((targetWidth * draftScale) / 64) * 64,
   );
-  const draftHeight = Math.max(
+  let draftHeight = Math.max(
     256,
     Math.round((targetHeight * draftScale) / 64) * 64,
   );
@@ -493,19 +539,64 @@ export async function POST(request: Request) {
       "ip-adapter-plus_sd15.safetensors",
       "ip-adapter-plus_sd15",
     );
-    const openPosePath = path.join(modelDirectory, "control_sd15_openpose.pth");
-    const openPoseModel = controlModels?.model_list?.find((name) =>
-      name.startsWith("control_sd15_openpose"),
-    );
+    const openPoseCandidates = [
+      {
+        filename: "control_v11p_sd15_openpose.pth",
+        prefix: "control_v11p_sd15_openpose",
+      },
+      {
+        filename: "control_sd15_openpose.pth",
+        prefix: "control_sd15_openpose",
+      },
+    ];
+    const resolvedOpenPose = openPoseCandidates.find(({ filename, prefix }) => {
+      const localPath = path.join(modelDirectory, filename);
+      const validFile =
+        fs.existsSync(localPath) && fs.statSync(localPath).size > 1024 * 1024;
+      return (
+        validFile &&
+        controlModels?.model_list?.some((name) => name.startsWith(prefix))
+      );
+    });
+    const openPoseModel = resolvedOpenPose
+      ? controlModels?.model_list?.find((name) =>
+          name.startsWith(resolvedOpenPose.prefix),
+        )
+      : undefined;
     const cannyModel = controlModels?.model_list?.find((name) =>
       name.startsWith("control_sd15_canny"),
     );
-    const openPoseAvailable =
-      fs.existsSync(openPosePath) &&
-      fs.statSync(openPosePath).size > 1024 * 1024 &&
-      Boolean(openPoseModel);
+    const handRefinerModel = controlModels?.model_list?.find((name) =>
+      name.startsWith("control_sd15_inpaint_depth_hand_fp16"),
+    );
+    const handRefinerDependencyDirectory = path.resolve(modelDirectory, "..", "annotator", "downloads", "hand_refiner", "hr16", "ControlNet-HandRefiner-pruned");
+    const handRefinerRequiredFiles = [
+      [path.join(modelDirectory, "control_sd15_inpaint_depth_hand_fp16.safetensors"), 722601104],
+      [path.join(handRefinerDependencyDirectory, "graphormer_hand_state_dict.bin"), 855658184],
+      [path.join(handRefinerDependencyDirectory, "hrnetv2_w64_imagenet_pretrained.pth"), 513111608],
+    ] as const;
+    const handRefinerAvailable = Boolean(handRefinerModel) && handRefinerRequiredFiles.every(
+      ([filePath, expectedBytes]) => fs.existsSync(filePath) && fs.statSync(filePath).size === expectedBytes,
+    );
+    const openPoseAvailable = Boolean(openPoseModel);
     const regionalSpec = buildRegionalPrompt(shot, assets, characters);
-    const steps = 16;
+    const requiredPropInteractions = regionalSpec.repairPasses?.propInteractions || (regionalSpec.repairPasses?.propInteraction ? [regionalSpec.repairPasses.propInteraction] : []);
+    if (generationProfile === "cpu_local_fast" && requiredPropInteractions.some((item) => item?.required !== false)) {
+      generationProfile = "cpu_local_complex";
+      profilePlan = generationProfilePlan(generationProfile, shot.characterIds.length);
+      draftLongEdge = profilePlan.draftLongEdge;
+      draftScale = draftLongEdge / Math.max(targetWidth, targetHeight);
+      draftWidth = Math.max(256, Math.round((targetWidth * draftScale) / 64) * 64);
+      draftHeight = Math.max(256, Math.round((targetHeight * draftScale) / 64) * 64);
+    }
+    if (shot.characterIds.length > 1 && !regionalPrompterAvailable)
+      return NextResponse.json(
+        {
+          error: "多人镜头需要 Regional Prompter 提供真实分区控制；CPU 模式不会把 BREAK 文本伪装成区域控制。请安装并启用插件，或改为逐人物局部生成。",
+          code: "REGIONAL_PROMPTER_REQUIRED",
+        },
+        { status: 503 },
+      );
     const cfgScale = Number(process.env.SD_CFG_SCALE || 6.5);
     const seed = Number(body.seed ?? process.env.SD_SEED ?? -1);
     const identities = shot.characterIds.map((characterId, index) => {
@@ -525,7 +616,7 @@ export async function POST(request: Request) {
             weight: shot.characterIds.length > 1 ? 0.9 : 0.8,
             region:
               shot.characterIds.length > 1
-                ? {
+                ? regionalSpec.characterRegions[index]?.region || {
                     xStart: index / shot.characterIds.length,
                     xEnd: (index + 1) / shot.characterIds.length,
                   }
@@ -586,7 +677,7 @@ export async function POST(request: Request) {
               characterId,
               region:
                 shot.characterIds.length > 1
-                  ? {
+                  ? regionalSpec.characterRegions[shot.characterIds.indexOf(characterId)]?.region || {
                       xStart: index / shot.characterIds.length,
                       xEnd: (index + 1) / shot.characterIds.length,
                     }
@@ -597,15 +688,18 @@ export async function POST(request: Request) {
       .filter(Boolean);
     const outfitPlans = outfits.map((entry) => {
       const isolated = entry!.asset.tags.some((tag) => /isolated[-_ ]garment|去人脸服装参考|纯服装参考/i.test(tag));
+      const baseDecision = classifyOutfitConditioning(shot.cameraEn || shot.camera, isolated, outfitAdapter.validFile);
       return {
         entry: entry!,
         isolated,
-        decision: classifyOutfitConditioning(shot.cameraEn || shot.camera, isolated, outfitAdapter.validFile),
+        decision: generationProfile === "gpu_full"
+          ? baseDecision
+          : { status: "text_only" as const, safety: "cpu_profile_text_only" as const, controlApplied: false },
       };
     });
     const outfitReferences = outfitPlans
-      .filter((plan) => plan.decision.controlApplied)
-      .map(({ entry }) => ({
+      .filter(({ entry, decision }) => outfitAdapter.validFile && fs.existsSync(path.resolve(process.cwd(), entry.asset.path)) && (decision.controlApplied || generationProfile !== "gpu_full"))
+      .map(({ entry, isolated, decision }) => ({
       role: "outfit",
       characterId: entry.characterId,
       assetId: entry.asset.id,
@@ -615,6 +709,9 @@ export async function POST(request: Request) {
       model: outfitAdapter.model,
       weight: shot.characterIds.length > 1 ? 0.48 : 0.42,
       region: entry!.region,
+      stagedOnly: generationProfile !== "gpu_full" || !decision.controlApplied,
+      isolatedGarmentReference: isolated,
+      outfitPrompt: resolveCharacterAssetDescription(entry.asset, characters.find((character) => character.id === entry.characterId)?.profile?.baseOutfitEn) || entry.asset.name,
     }));
     const identityReferences = identities.filter(Boolean);
     const references = [...identityReferences, ...outfitReferences];
@@ -638,9 +735,11 @@ export async function POST(request: Request) {
         ? regionalOverride!.characterPrompts!.map((value) => sanitizeEnglishPrompt(String(value).trim()))
         : regionalSpec.regionPrompts;
     for (const contract of readContracts) {
-      const commonReconciled = reconcileFinalPrompt(regionalCommonPrompt, contract);
-      regionalCommonPrompt = commonReconciled.prompt;
-      promptRepairs.push(...commonReconciled.repairs.map((item) => `regional common: ${item}`));
+      if (shot.characterIds.length > 1) {
+        const commonReconciled = reconcileFinalPrompt(regionalCommonPrompt, contract);
+        regionalCommonPrompt = commonReconciled.prompt;
+        promptRepairs.push(...commonReconciled.repairs.map((item) => `regional common: ${item}`));
+      }
       const regionIndex = shot.characterIds.indexOf(contract.characterId);
       if (regionIndex >= 0 && regionalCharacterPrompts[regionIndex]) {
         const characterReconciled = reconcileFinalPrompt(regionalCharacterPrompts[regionIndex], contract);
@@ -709,11 +808,18 @@ export async function POST(request: Request) {
     const requestedNegativeOverride = rawNegativeOverride
       ? extractPromptEditorialDiff(compiled.negativePrompt, rawNegativeOverride)
       : "";
-    const effectiveNegativePrompt = buildCanonicalNegativePrompt(
+    const negativePromptTrace = buildCanonicalNegativePromptTrace(
       shot,
       regionalSpec.negativePrompt || negative,
       requestedNegativeOverride,
     );
+    if (negativePromptTrace.droppedTerms.length) {
+      return NextResponse.json(
+        { error: "负向编辑超过安全词项上限，未静默丢弃尾部内容。请减少负向编辑后重试。", code: "NEGATIVE_PROMPT_OVERRIDE_TOO_LONG", droppedTerms: negativePromptTrace.droppedTerms },
+        { status: 422 },
+      );
+    }
+    const effectiveNegativePrompt = negativePromptTrace.prompt;
     const negativeOverrideAccepted = Boolean(requestedNegativeOverride);
     const poseOverride =
       typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
@@ -723,6 +829,12 @@ export async function POST(request: Request) {
     const resolvedPoseControl = automaticPoseControl && "posePlanVersion" in automaticPoseControl
       ? applyPoseControlOverride(automaticPoseControl as PoseControlV2, body.poseControlOverride)
       : automaticPoseControl;
+    if (body.poseControlOverride && resolvedPoseControl && "safety" in resolvedPoseControl && !resolvedPoseControl.safety.valid) {
+      return NextResponse.json(
+        { error: "人工姿态覆盖与剧情支持面冲突，已阻止生成。", code: "POSE_OVERRIDE_SUPPORT_CONFLICT", errors: resolvedPoseControl.safety.errors, warnings: resolvedPoseControl.scenePlan?.warnings || [] },
+        { status: 422 },
+      );
+    }
     const hasStructuredPoseOverride = Boolean(
       resolvedPoseControl && "override" in resolvedPoseControl && resolvedPoseControl.override,
     );
@@ -744,13 +856,15 @@ export async function POST(request: Request) {
     const recipe = {
       provider: "sd-webui",
       phase: "draft",
+      generationProfile,
+      profilePlan,
       endpoint: `${base}/sdapi/v1/txt2img`,
       model: String(options.sd_model_checkpoint || "未知"),
       vae: String(options.sd_vae || "Automatic"),
       clipSkip: Number(options.CLIP_stop_at_last_layers || 1),
       sampler: "DPM++ 2M",
       scheduler: "Karras",
-      steps: shot.characterIds.length > 1 ? 16 : 12,
+      steps: profilePlan.draftSteps,
       cfgScale: 5.5,
       width: draftWidth,
       height: draftHeight,
@@ -763,8 +877,19 @@ export async function POST(request: Request) {
       references,
       regionalPrompter,
       generationSpec: {
-        compilerVersion: "sd15-staged-identity-v2",
+      compilerVersion: "sd15-staged-identity-v2",
         visualSpec: shot.visualSpecConfirmed ? shot.visualSpec : null,
+        reviewInputs: {
+          source: shot.visualSpecConfirmed ? "confirmed_visual_spec" : "compiled_execution_contract",
+          characterCount: quality.characterCount,
+          shotSize: shot.visualSpecConfirmed ? shot.visualSpec?.camera?.shotSize : (shot.cameraEn || shot.camera || "medium shot"),
+          characters: shot.characterIds.map((characterId) => ({
+            characterId,
+            expression: compiled.characterLooks[characterId]?.expressionEn || "",
+            gazeTarget: compiled.characterLooks[characterId]?.gazeEn || "",
+            hands: compiled.characterLooks[characterId]?.handsEn || "",
+          })),
+        },
         visualSpecMigration: visualMigrationTrace,
         visualSpecVersion: shot.visualSpecVersion,
         commonPrompt: regionalCommonPrompt,
@@ -777,7 +902,7 @@ export async function POST(request: Request) {
             }
           : null,
         negativePromptOverride: negativeOverrideAccepted
-          ? { requested: requestedNegativeOverride, applied: effectiveNegativePrompt, accepted: true }
+          ? { requested: negativePromptTrace.requested, applied: negativePromptTrace.applied, accepted: negativePromptTrace.accepted, droppedTerms: negativePromptTrace.droppedTerms, baseline: compiled.negativePrompt }
           : null,
         characterRegions: regionalSpec.characterRegions.map((region, index) => ({
           ...region,
@@ -831,6 +956,13 @@ export async function POST(request: Request) {
         processWidth: 512,
         processHeight: 512,
       },
+      handRefinement: {
+        enabled: handRefinerAvailable && requiredPropInteractions.some((item) => item?.required !== false && item?.handMode),
+        module: "depth_hand_refiner",
+        model: handRefinerAvailable ? handRefinerModel : null,
+        weight: 0.58,
+        dependencyStatus: handRefinerAvailable ? "ready" : "unavailable",
+      },
       promptSource:
         (requestedPromptOverride || negativeOverrideAccepted)
           ? (typeof body.promptMode === "string" ? body.promptMode : "manual_override")
@@ -849,12 +981,19 @@ export async function POST(request: Request) {
           : outfits.length
             ? "text_only_manual_review"
             : "not_selected",
-        pose: openPoseAvailable ? "control_sd15_openpose" : "unavailable",
+        pose: openPoseModel || "unavailable",
         depth: "unavailable_manual_required",
+        hands: handRefinerAvailable ? "depth_hand_refiner" : "manual_review_required",
         fallbackReason:
           faceAdapter.validFile && outfitAdapter.validFile && (!regionalSpec.poseControl || openPoseAvailable)
             ? null
             : "IP-Adapter 或 OpenPose ControlNet 模型不可用",
+      },
+      automaticVisualGate: {
+        enabled: requiredPropInteractions.length > 0,
+        method: "sd_webui_clip_interrogate",
+        maxAttempts: 2,
+        requiredPropInteractions,
       },
     };
     const persistentJobId = createPersistentGenerationJob(

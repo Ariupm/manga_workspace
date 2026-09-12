@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
   Asset,
@@ -14,6 +15,7 @@ import type {
   Timeline,
 } from "./types";
 import { buildGenerationPrompt } from "./prompts";
+import { buildRenderPlan } from "./render-plan";
 import { normalizeSemanticReviewItems, validateSemanticReviewSubmission, type SemanticReviewSubmission } from "./semantic-review";
 
 const dataDir = path.join(process.cwd(), "data");
@@ -139,12 +141,19 @@ ensureColumns("candidates", [
   ["quality_report_json", "TEXT NOT NULL DEFAULT '{}'"],
   ["reviewed_by", "TEXT NOT NULL DEFAULT ''"],
   ["reviewed_at", "TEXT NOT NULL DEFAULT ''"],
+  ["source_job_id", "INTEGER"],
+  ["image_sha256", "TEXT NOT NULL DEFAULT ''"],
 ]);
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS candidates_source_job_unique ON candidates(source_job_id) WHERE source_job_id IS NOT NULL");
 ensureColumns("jobs", [
   ["updated_at", "TEXT NOT NULL DEFAULT ''"],
   ["progress", "REAL NOT NULL DEFAULT 0"],
   ["error", "TEXT NOT NULL DEFAULT ''"],
   ["stage", "TEXT NOT NULL DEFAULT ''"],
+  ["attempt", "INTEGER NOT NULL DEFAULT 0"],
+  ["worker_id", "TEXT NOT NULL DEFAULT ''"],
+  ["heartbeat_at", "TEXT NOT NULL DEFAULT ''"],
+  ["lease_until", "TEXT NOT NULL DEFAULT ''"],
 ]);
 db.prepare("DELETE FROM jobs WHERE provider='mock'").run();
 db.prepare("DELETE FROM jobs WHERE status='cancelled'").run();
@@ -691,11 +700,17 @@ export function getStudioData(
   projectId?: number,
   episodeId?: number,
 ): StudioData {
+  recoverExpiredSdJobLeases();
   const projects =
-    all<any>(`SELECT projects.id,projects.title,COUNT(episodes.id) episode_count,
-    COALESCE(MAX(episodes.id),projects.id) updated_at
+    all<any>(`SELECT projects.id,projects.title,COUNT(DISTINCT episodes.id) episode_count,
+    MAX(COALESCE(jobs.updated_at,episodes.created_at,projects.updated_at,projects.created_at)) updated_at
     FROM projects LEFT JOIN episodes ON episodes.project_id=projects.id
-    GROUP BY projects.id ORDER BY updated_at DESC`).map((row) => ({
+    LEFT JOIN pages ON pages.episode_id=episodes.id
+    LEFT JOIN shots ON shots.page_id=pages.id
+    LEFT JOIN jobs ON jobs.shot_id=shots.id
+    GROUP BY projects.id
+    ORDER BY datetime(MAX(COALESCE(jobs.updated_at,episodes.created_at,projects.updated_at,projects.created_at))) DESC,
+      projects.id DESC`).map((row) => ({
       id: row.id,
       title: row.title,
       episodeCount: row.episode_count,
@@ -744,6 +759,11 @@ export function getStudioData(
         label: candidate.label,
         version: candidate.version,
         selected: Boolean(candidate.selected),
+        qualityStatus: candidate.quality_status,
+        qualityLabels: json<string[]>(candidate.quality_labels_json || "[]"),
+        qualityReport: json<Record<string, unknown>>(candidate.quality_report_json || "{}"),
+        sourceJobId: candidate.source_job_id,
+        imageSha256: candidate.image_sha256 || "",
       }));
       return {
         id: shot.id,
@@ -1188,11 +1208,12 @@ export function approveSdDraft(projectId: number, jobId: number, semanticReview?
     endpoint: String(payload.recipe.endpoint).replace(/\/txt2img$/, "/img2img"),
     width: payload.recipe.targetWidth || 512,
     height: payload.recipe.targetHeight || 512,
-    steps: 18,
+    steps: Number(payload.recipe?.profilePlan?.finalSteps || 18),
     cfgScale: 6,
     batchSize: 1,
     denoisingStrength: 0.35,
-    approvedDraftPath: payload.draftImagePath,
+    approvedDraftPreviewPath: payload.draftImagePath,
+    approvedDraftPath: payload.recipe?.framingPostCrop?.sourceImagePath || payload.draftImagePath,
     semanticApproval: semanticValidation.approval || { version: "semantic-review-v1", source: "manual_draft_approval", approvedAt: new Date().toISOString(), verdicts: {}, notes: "", reviewedItems: [] },
     references: payload.recipe.finalReferences || payload.recipe.references,
   };
@@ -1203,6 +1224,124 @@ export function approveSdDraft(projectId: number, jobId: number, semanticReview?
     row.shot_id,
   );
   return row;
+}
+
+export function recoverExpiredSdJobLeases() {
+  return db.prepare(`
+    UPDATE jobs
+    SET status='failed',
+        progress=0,
+        error='SD worker 心跳租约已过期；生成服务或 worker 可能异常退出，请重新生成',
+        stage='生成中断，未产生可审批结果',
+        worker_id='',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE provider='sd-webui'
+      AND status IN ('running','draft_running','final_running')
+      AND lease_until IS NOT NULL
+      AND lease_until != ''
+      AND datetime(lease_until) < datetime('now')
+  `).run().changes;
+}
+
+const fileSha256 = (file: string) =>
+  createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+const stableRecipeHash = (recipe: unknown) =>
+  createHash("sha256").update(JSON.stringify(recipe || {})).digest("hex");
+
+export function approveSdFinal(projectId: number, jobId: number, semanticReview?: SemanticReviewSubmission) {
+  if (!recordBelongsToProject("job", jobId, projectId)) return null;
+  const row = getGenerationJobRecord(jobId);
+  if (!row || row.provider !== "sd-webui" || row.status !== "awaiting_final_approval") return null;
+  const payload = JSON.parse(row.payload);
+  const relativePath = String(payload.finalReviewImagePath || "");
+  const absolutePath = relativePath ? path.resolve(process.cwd(), relativePath) : "";
+  if (!absolutePath || !fs.existsSync(absolutePath)) return null;
+  const actualImageSha256 = fileSha256(absolutePath);
+  const recordedImageSha256 = String(payload.recipe?.finalReview?.imageSha256 || "");
+  if (!recordedImageSha256 || recordedImageSha256 !== actualImageSha256) return null;
+  if (payload.recipe?.postprocessWarnings?.length || payload.recipe?.pixelQa?.status === "blocked") return null;
+  const semanticItems = normalizeSemanticReviewItems(payload.recipe?.semanticQa);
+  const recipeHash = stableRecipeHash({
+    generationSpec: payload.recipe?.generationSpec,
+    requestTrace: payload.recipe?.requestTrace,
+    passTraces: payload.recipe?.passTraces,
+    finalReview: payload.recipe?.finalReview,
+  });
+  const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview, {
+    source: "manual_final_approval",
+    stage: "final",
+    imageSha256: actualImageSha256,
+    recipeHash,
+  });
+  if (!semanticValidation.valid || !semanticValidation.approval) return null;
+  const existingCandidate = one<{ id: number }>("SELECT id FROM candidates WHERE source_job_id=?", jobId);
+  if (existingCandidate) return existingCandidate;
+  const version = one<{ value: number }>("SELECT COALESCE(MAX(version),0)+1 value FROM candidates WHERE shot_id=?", row.shot_id).value;
+  const selected = one<{ count: number }>("SELECT COUNT(*) count FROM candidates WHERE shot_id=?", row.shot_id).count === 0 ? 1 : 0;
+  const qualityLabels = semanticItems.map((item) => item.id);
+  const qualityReport = {
+    stage: "final",
+    imageSha256: actualImageSha256,
+    recipeHash,
+    pixelQa: payload.recipe?.pixelQa || null,
+    semanticApproval: semanticValidation.approval,
+  };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const inserted = db.prepare(
+      "INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,reviewed_at,source_job_id,image_sha256) VALUES(?,?,?,?,?,'approved',?,?,?,CURRENT_TIMESTAMP,?,?)",
+    ).run(
+      row.shot_id,
+      relativePath,
+      "SD WebUI 成品（最终复核通过）",
+      version,
+      selected,
+      JSON.stringify(qualityLabels),
+      JSON.stringify(qualityReport),
+      "manual_final_review",
+      jobId,
+      actualImageSha256,
+    );
+    payload.recipe.finalApproval = semanticValidation.approval;
+    payload.recipe.finalReview.status = "approved";
+    db.prepare("UPDATE jobs SET status='completed',payload=?,progress=100,error='',stage='最终图片已复核并回写候选',updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(JSON.stringify(payload), jobId);
+    db.prepare("UPDATE shots SET status='review' WHERE id=?").run(row.shot_id);
+    db.exec("COMMIT");
+    return { id: Number(inserted.lastInsertRowid) };
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function rejectSdFinal(projectId: number, jobId: number) {
+  if (!recordBelongsToProject("job", jobId, projectId)) return false;
+  const row = getGenerationJobRecord(jobId);
+  if (!row || row.provider !== "sd-webui") return false;
+  let recoverInvalidAutoPublish = false;
+  if (row.status === "completed") {
+    try {
+      const payload = JSON.parse(row.payload);
+      recoverInvalidAutoPublish = payload.recipe?.semanticQa?.status === "manual_required"
+        && !payload.recipe?.finalApproval
+        && Boolean(one<{ id: number }>("SELECT id FROM candidates WHERE source_job_id=?", jobId));
+    } catch {}
+  }
+  if (row.status !== "awaiting_final_approval" && !recoverInvalidAutoPublish) return false;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (recoverInvalidAutoPublish) db.prepare("DELETE FROM candidates WHERE source_job_id=?").run(jobId);
+    db.prepare("UPDATE jobs SET status='final_rejected',stage='最终图片未通过复核',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(jobId);
+    db.prepare("UPDATE shots SET status=CASE WHEN EXISTS(SELECT 1 FROM candidates WHERE shot_id=?) THEN 'review' ELSE 'draft' END WHERE id=?")
+      .run(row.shot_id, row.shot_id);
+    db.exec("COMMIT");
+    return true;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function rejectSdDraft(projectId: number, jobId: number) {
@@ -2107,26 +2246,15 @@ export function queueCodexPage(pageId: number) {
     const shot = getShotGenerationInput(item.id);
     if (shot.locked) continue;
     const built = buildGenerationPrompt(shot, assets, characters);
+    const renderPlan = buildRenderPlan(shot, assets, characters);
     const payload = {
       shotId: shot.id,
       pageId,
       prompt: built.prompt,
       negativePrompt: built.negativePrompt,
-      candidateCount: 1,
-      references: assets
-        .filter(
-          (asset) =>
-            (asset.type === "character" &&
-              (shot.characterIds.includes(asset.characterId) ||
-                shot.characterIds.includes(asset.id))) ||
-            asset.id === shot.outfitId ||
-            asset.id === shot.shoeId,
-        )
-        .map((asset) => ({
-          id: asset.id,
-          path: asset.path,
-          description: asset.visualDescriptionEn,
-        })),
+      candidateCount: renderPlan.candidateCount,
+      renderPlan,
+      references: renderPlan.references,
     };
     db.prepare(
       "INSERT INTO jobs(shot_id,provider,status,payload) VALUES(?,?,?,?)",

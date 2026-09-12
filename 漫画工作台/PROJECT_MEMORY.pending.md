@@ -1,42 +1,52 @@
 
-## 自动同步草稿（2026-08-09）
+## 自动同步草稿（2026-09-12）
 
 > 本节由 `pnpm memory:sync` 生成，写入正式项目记忆前必须人工确认。
 
 ### 检测到的代码变更
 - GENTS.md
 - PROJECT_DECISIONS.md
+- PROJECT_ISSUES.md
 - PROJECT_MEMORY.md
+- PROJECT_MEMORY.pending.md
+- app/api/config/route.ts
 - app/api/studio/route.ts
-- app/api/visual-planning/route.ts
 - app/globals.css
 - app/page.tsx
 - lib/db.ts
+- lib/pose-display.ts
+- lib/pose-v2.ts
 - lib/prompts.ts
+- lib/semantic-review.ts
+- lib/types.ts
 - lib/visual-planning.ts
-- package.json
-- pnpm-workspace.yaml
+- scripts/codex-worker.mjs
+- scripts/issue-ledger.mjs
+- scripts/sd-worker-logic.mjs
+- scripts/sd-worker-logic.test.mjs
 - scripts/sd-worker.mjs
 - tests/studio.test.ts
 - tsconfig.tsbuildinfo
 - ../AGENTS.md
+- .idea/
 - PROJECT_ACTIVE_ISSUE.md
-- PROJECT_ISSUES.md
-- PROJECT_MEMORY.pending.md
-- lib/pose-display.ts
-- lib/pose-v2.ts
-- lib/semantic-review.ts
+- lib/interaction-prop.ts
+- lib/render-plan.ts
+- lib/visual-quality.ts
 - runtime-check-3214-error.log
 - runtime-check-3214.log
 - runtime-check-error.log
 - runtime-check-final-error.log
 - runtime-check-final.log
 - runtime-check.log
-- scripts/audit-pose-coverage.ts
-- scripts/issue-ledger.mjs
-- scripts/issue-ledger.test.mjs
-- scripts/sd-worker-logic.mjs
-- scripts/sd-worker-logic.test.mjs
+- runtime-live-error.log
+- runtime-live.log
+- scripts/codex-visual-review.schema.json
+- scripts/render-plan.test.ts
+- scripts/test-controlnet-detect.mjs
+- scripts/test-outfit-color.mjs
+- scripts/test-prop-rebuild.mjs
+- scripts/visual-quality.test.ts
 
 ### 最近一次测试摘要
 ```text

@@ -8,6 +8,7 @@
 - 2026-08-09：诊断 Agent 复核后必须直接更新 `PROJECT_ISSUES.md`：通过项标记 `verified`，部分通过标记 `partially_fixed`，未解决标记 `open`，回归标记 `regression`；诊断发现的可复现新问题必须建立新 ISSUE 并标记 `open`，不能只留在对话总结。解决 Agent 通过 `issue:queue` 自动识别新增与未完成任务，并跳过已验证或等待复核的问题。
 - 2026-08-09：图片生成类问题统一采用程序逻辑验收。解决 Agent 和诊断 Agent 不启动 SD、不生成测试图、不等待真实图片，也不以视觉效果作为关闭条件。解决 Agent 只验证代码修改和程序链路；诊断 Agent 从不同人物、区域、动作、道具、景别的通用性复核根因、数据流、提示词编译、recipe/payload、mask/坐标、控制参数、状态机和失败分支。程序证据充分即可标记 `verified`，结论注明“程序逻辑验收通过，未进行图片生成或视觉效果验收”；模型随机性与实际视觉执行率作为运行风险，不阻塞代码问题关闭。
 - 2026-08-09：图片生成问题不强制新增自动化测试。静态代码审查、类型检查、纯函数或请求体推导和完整数据流核对可以作为程序验收证据；诊断 Agent 不得仅因“没有测试”“逻辑内嵌 worker”或“没有真实图”判定未通过，必须指出具体仍存在的代码缺陷。最新工作区规则优先于问题条目中遗留的成图、视觉检测、同 seed 或强制自动测试标准。
+- 2026-08-12：解决 Agent 完成局部修复后必须执行完整出图业务链冲突复核，沿视觉规格、提示词/交互契约、recipe/payload、Regional/ControlNet、基础生成、身份/服装/道具/视线局部 pass、质量门/人工审批和候选回写检查上下游一致性。重点防止修复视线破坏身份、修复服装覆盖姿态、Pose 违反景别裁切、后序 pass 覆盖前序控制、未应用状态被记录为已应用及失败结果进入正常候选。未记录全链路复核不得提交 `fixed_pending_review`。
 
 - 2026-08-08：修复手机用途分类误判。旧逻辑用裸 `/ear/` 识别通话，会把 `wearing` 误命中为 `call`；任务 304 因而把“双手胸前查看手机、视线落屏、取件通知”错误编译成单手举到耳边。新逻辑优先采用通知/消息/阅读、屏幕视线和双手胸前操作证据推导 `read`/`inspect`，并只在明确的 phone call 或手机靠耳表达下推导 `call`；回归测试同时覆盖任务 304 场景和真实通话。
 
@@ -506,3 +507,53 @@ workspace/sd-jobs/job-<id>.log
 - Regional Prompter API 参数必须按当前扩展的完整 20 项顺序提交；主分割值使用 `Columns/Rows`，polymask 必须传 `null`，禁止少传参数导致空字符串被扩展误读为遮罩图片。
 - IP-Adapter 启动前同时校验 `annotator/downloads/clip_vision/clip_h.pth` 完整体积（当前官方文件 2,528,481,905 bytes）；缺失或不足 2GB 时返回 `CLIP_VISION_INVALID` 并阻止任务，不能让 ControlNet 报错后仍把无资产控制的图片当成功候选。
 - 递伞中央局部校正现在同时使用 OpenPose 与 Canny：Canny 引导图提供连续伞面弧线和从伞面到交互手部的直伞柄，弥补人体骨骼无法表达道具连接关系的问题；仍保持低分辨率、局部遮罩，适合 CPU 模式。
+
+## 自动同步草稿（2026-08-15）
+
+> 本节由 `pnpm memory:sync` 生成，写入正式项目记忆前必须人工确认。
+
+### 检测到的代码变更
+- GENTS.md
+- PROJECT_DECISIONS.md
+- PROJECT_ISSUES.md
+- PROJECT_MEMORY.md
+- PROJECT_MEMORY.pending.md
+- app/api/studio/route.ts
+- app/page.tsx
+- lib/db.ts
+- lib/pose-display.ts
+- lib/pose-v2.ts
+- lib/prompts.ts
+- lib/semantic-review.ts
+- lib/types.ts
+- lib/visual-planning.ts
+- scripts/codex-worker.mjs
+- scripts/issue-ledger.mjs
+- scripts/sd-worker-logic.mjs
+- scripts/sd-worker-logic.test.mjs
+- scripts/sd-worker.mjs
+- tests/studio.test.ts
+- tsconfig.tsbuildinfo
+- ../AGENTS.md
+- PROJECT_ACTIVE_ISSUE.md
+- lib/render-plan.ts
+- lib/visual-quality.ts
+- runtime-check-3214-error.log
+- runtime-check-3214.log
+- runtime-check-error.log
+- runtime-check-final-error.log
+- runtime-check-final.log
+- runtime-check.log
+- scripts/codex-visual-review.schema.json
+- scripts/render-plan.test.ts
+- scripts/visual-quality.test.ts
+
+### 最近一次测试摘要
+```text
+测试未执行：spawnSync pnpm ENOENT
+```
+
+### 人工确认项
+- [ ] 确认这些变更确实影响项目架构、运行方式、生成参数或已知缺陷。
+- [ ] 将必要的长期事实整理到对应章节，并删除临时信息。
+- [ ] 确认未包含密钥、个人路径、运行产物或未经验证的推断。

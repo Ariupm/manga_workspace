@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["selectedCandidateIndex", "decision", "hardFailures", "scores", "repairInstruction", "summary"],
+  "properties": {
+    "selectedCandidateIndex": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "decision": { "type": "string", "enum": ["pass", "repair", "regenerate"] },
+    "hardFailures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "evidence", "region"],
+        "properties": {
+          "type": { "type": "string", "enum": ["count", "anatomy", "framing", "identity", "outfit", "hands", "prop", "gaze", "interaction", "environment"] },
+          "evidence": { "type": "string" },
+          "region": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 4, "maxItems": 4 }
+        }
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "outfit", "anatomy", "interaction", "gaze", "framing", "environment"],
+      "properties": {
+        "identity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "outfit": { "type": "number", "minimum": 0, "maximum": 1 },
+        "anatomy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "interaction": { "type": "number", "minimum": 0, "maximum": 1 },
+        "gaze": { "type": "number", "minimum": 0, "maximum": 1 },
+        "framing": { "type": "number", "minimum": 0, "maximum": 1 },
+        "environment": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "repairInstruction": { "type": "string" },
+    "summary": { "type": "string" }
+  }
+}

@@ -3,6 +3,8 @@ const poseKindLabels: Record<string, string> = {
   single_full_body_v1: "单人·全身",
   single_action_seated_v1: "单人·坐姿动作",
   single_action_moving_v1: "单人·移动",
+  single_action_walk_v2: "单人·行走／快走",
+  single_action_run_v2: "单人·跑动／冲刺",
   single_action_standing_v1: "单人·站姿交互",
   single_action_point_v1: "单人·指向",
   single_action_self_touch_v1: "单人·自触摸",

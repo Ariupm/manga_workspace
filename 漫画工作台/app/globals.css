@@ -852,6 +852,34 @@ select {
   z-index: 0;
   flex: 0 0 auto;
 }
+.semantic-review-panel {
+  background: #fff;
+  border: 1px solid var(--line);
+  padding: 14px;
+}
+.semantic-review-panel header,
+.semantic-review-panel footer,
+.semantic-review-items article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.semantic-review-panel header { margin-bottom: 10px; }
+.semantic-review-panel header small { color: var(--pink); font-size: 8px; }
+.semantic-review-panel header h3 { margin: 2px 0 0; font-size: 13px; }
+.semantic-review-panel header > span { color: var(--muted); font-size: 9px; }
+.semantic-review-items { border-top: 1px solid var(--line); }
+.semantic-review-items article { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.semantic-review-items b { font-size: 10px; }
+.semantic-review-items p,
+.semantic-review-empty { margin: 3px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.semantic-review-verdict { display: flex; gap: 5px; flex: 0 0 auto; }
+.semantic-review-verdict button { min-width: 43px; padding: 5px 7px; font-size: 9px; }
+.semantic-review-verdict .selected-pass { background: #256a47; color: #fff; border-color: #256a47; }
+.semantic-review-verdict .selected-fail { background: #a3343d; color: #fff; border-color: #a3343d; }
+.semantic-review-panel textarea { box-sizing: border-box; width: 100%; min-height: 54px; margin-top: 10px; padding: 8px; border: 1px solid var(--line); resize: vertical; font: inherit; font-size: 10px; }
+.semantic-review-panel footer { margin-top: 10px; justify-content: flex-end; }
 .candidate-strip > div:first-child {
   display: flex;
   justify-content: space-between;

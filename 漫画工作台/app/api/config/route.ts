@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import fs from "node:fs";
+import path from "node:path";
 import { callDeepSeekJson, callDeepSeekJsonWithConfig, deleteDeepSeekConfig, getDeepSeekConfig, saveDeepSeekConfig } from "@/lib/deepseek";
 
 export const runtime="nodejs";
@@ -8,6 +10,7 @@ export async function GET() {
   const provider=process.env.IMAGE_PROVIDER||"";
   const url=process.env.SD_WEBUI_URL||"http://127.0.0.1:7860";
   let reachable=false,apiEnabled=false,controlNet=false,ipAdapter=false;
+  let handRefiner={available:false,module:false,model:false,dependencies:false,missing:[] as string[]};
   let code="NOT_CONFIGURED",message="请在漫画工作台根目录创建 .env.local，并重启服务。";
   if(provider==="sd-webui") {
     try {
@@ -31,11 +34,22 @@ export async function GET() {
             modules?.module_list?.some(name=>name.startsWith("ip-adapter"))&&
             models?.model_list?.some(name=>name.includes("ip-adapter")&&!name.includes("[e3b0c442]"))
           );
+          const modelDirectory=process.env.SD_CONTROLNET_MODEL_DIR||"D:\\stable-diffusion-webui-master\\extensions\\sd-webui-controlnet\\models";
+          const dependencyDirectory=path.resolve(modelDirectory,"..","annotator","downloads","hand_refiner","hr16","ControlNet-HandRefiner-pruned");
+          const requiredFiles=[
+            {name:"control_sd15_inpaint_depth_hand_fp16.safetensors",path:path.join(modelDirectory,"control_sd15_inpaint_depth_hand_fp16.safetensors"),bytes:722601104},
+            {name:"graphormer_hand_state_dict.bin",path:path.join(dependencyDirectory,"graphormer_hand_state_dict.bin"),bytes:855658184},
+            {name:"hrnetv2_w64_imagenet_pretrained.pth",path:path.join(dependencyDirectory,"hrnetv2_w64_imagenet_pretrained.pth"),bytes:513111608},
+          ];
+          const missing=requiredFiles.filter(file=>!fs.existsSync(file.path)||fs.statSync(file.path).size!==file.bytes).map(file=>file.name);
+          const moduleAvailable=Boolean(modules?.module_list?.includes("depth_hand_refiner"));
+          const modelAvailable=Boolean(models?.model_list?.some(name=>name.startsWith("control_sd15_inpaint_depth_hand_fp16")));
+          handRefiner={available:moduleAvailable&&modelAvailable&&!missing.length,module:moduleAvailable,model:modelAvailable,dependencies:!missing.length,missing};
         } catch {}
       }
     } catch {code="UNREACHABLE";message="无法连接SD WebUI，请检查地址、端口和服务是否启动。";}
   }
-  return NextResponse.json({provider:provider||null,url,configured:provider==="sd-webui",reachable,apiEnabled,controlNet,ipAdapter,code,message,envFile:`${process.cwd()}\\.env.local`,restartRequired:true,deepseek:getDeepSeekConfig()});
+  return NextResponse.json({provider:provider||null,url,configured:provider==="sd-webui",reachable,apiEnabled,controlNet,ipAdapter,handRefiner,code,message,envFile:`${process.cwd()}\\.env.local`,restartRequired:true,deepseek:getDeepSeekConfig()});
 }
 
 export async function PATCH(request: Request) {

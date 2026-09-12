@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Asset, ChapterVisualPlan, Character, Shot, ShotVisualSpec, VisualValidationResult } from "./types";
+import { rankInteractionPropCandidates } from "./interaction-prop";
+export { rankInteractionPropCandidates };
 
 export const VISUAL_SCHEMA_VERSION = "1.0" as const;
 export const dependencyHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -10,24 +12,7 @@ const meaningful = (value: unknown) => typeof value === "string" && Boolean(valu
 const resolved = (value: unknown, fallback: string) => meaningful(value) ? String(value).trim() : fallback;
 const englishTime = (value: string) => /夜|晚/.test(value) ? "evening" : /晨|早/.test(value) ? "morning" : /午/.test(value) ? "afternoon" : "daytime";
 const inferredWeather = (shot: Shot) => /雨|伞|rain/i.test(`${shot.scene} ${shot.description}`) ? "visible steady rain" : "calm dry weather";
-const genericInteractionTarget = /^(?:the )?(?:current )?(?:story|interaction|action) (?:focus|target)|^(?:the )?current story focus$/i;
-const propSlug = (value: string) => value.toLowerCase().replace(/[^a-z0-9_\-]+/g, "_").replace(/^_+|_+$/g, "");
-const inferInteractionProp = (target: string, source: string, targetIsCharacter: boolean) => {
-  const known: Array<[RegExp,string]> = [
-    [/smartphone|phone screen|mobile phone|cell phone|手机/i,"smartphone"],
-    [/umbrella|parasol|雨伞/i,"umbrella"],
-    [/book|document|letter|page|magazine/i,"book_or_document"],
-    [/package|parcel|delivery box/i,"package"],
-    [/screwdriver|hammer|wrench|pliers|scissors|handheld tool/i,"handheld_tool"],
-    [/cup|mug|glass|bottle/i,"drink_container"],
-    [/handbag|backpack|purse|\bbag\b/i,"bag"],
-  ];
-  const knownMatch=known.find(([pattern])=>pattern.test(`${target} ${source}`));
-  if(knownMatch)return knownMatch[1];
-  if(target&&!genericInteractionTarget.test(target)&&!targetIsCharacter)return propSlug(target);
-  const described=source.match(/\b(?:hold(?:ing)?|read(?:ing)?|us(?:e|ing)|operat(?:e|ing)|inspect(?:ing)?|carry(?:ing)?|open(?:ing)?)\s+(?:a|an|the)?\s*([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,2})/i)?.[1]||"";
-  return described&&!genericInteractionTarget.test(described)?propSlug(described):"";
-};
+
 const boundedRegion = (value: any, index: number, count: number) => {
   const fallbackStart = index / Math.max(1, count);
   const fallbackEnd = (index + 1) / Math.max(1, count);
@@ -104,19 +89,33 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
     if (!actionable || !handsParticipate) return [];
     const targetCharacterId = shot.characterIds.find((id) => id !== character.characterId && new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(source)) || "";
     const targetIsCharacter = targetCharacterId && new RegExp(`\\b${targetCharacterId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(target);
-    const propId = inferInteractionProp(target,source,Boolean(targetIsCharacter));
-    return [{
+    const rankedProps = rankInteractionPropCandidates({
+      target,
+      action: character.action,
+      contact: character.hands,
+      gaze: character.gazeTarget,
+      facts,
+      context: shot.description,
+      targetIsCharacter: Boolean(targetIsCharacter),
+    });
+    // When separate hand clauses name separate props, they are separate
+    // physical relations and must survive normalization. Otherwise emit the
+    // highest-ranked active relation instead of manufacturing relations from
+    // incidental nouns in scene context.
+    const contactedProps = rankedProps.filter((candidate) => candidate.contactPoints.length > 0);
+    const selectedProps = contactedProps.length > 1 ? contactedProps : rankedProps.slice(0, 1);
+    return selectedProps.map((candidate) => ({
       type: /\b(?:pass|hand|give|receive|take)\b|递|交接|接过/i.test(character.action) ? "object_transfer" : "prop_interaction",
       actorCharacterId: character.characterId,
       targetCharacterId,
-      propId,
+      propId: candidate.propId,
       action: character.action,
       phase: "in progress",
-      contactPoints: [character.hands],
+      contactPoints: candidate.contactPoints.length ? candidate.contactPoints : [character.hands],
       gazeTarget: character.gazeTarget,
       ownershipBefore: null,
       ownershipAfter: null,
-    }];
+    }));
   });
   const interactions = suppliedInteractions.length ? suppliedInteractions : inferredInteractions;
   return {
@@ -129,7 +128,7 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
       actorCharacterId: text(raw.interaction.actorCharacterId, ""), targetCharacterId: text(raw.interaction.targetCharacterId, ""),
       contactPoint: text(raw.interaction.contactPoint), phase: text(raw.interaction.phase) } : null,
     interactions,
-    camera: { shotSize: resolved(shot.cameraEn,resolved(raw?.camera?.shotSize,"medium shot")), angle: resolved(raw?.camera?.angle,"eye-level angle"), axis: resolved(raw?.camera?.axis,"consistent screen direction"),
+    camera: { shotSize: resolved(raw?.camera?.shotSize,resolved(shot.cameraEn, meaningful(shot.camera) ? shot.camera : "medium shot")), angle: resolved(raw?.camera?.angle,"eye-level angle"), axis: resolved(raw?.camera?.axis,"consistent screen direction"),
       focus: resolved(raw?.camera?.focus,"focus on the acting character and story prop"), composition: resolved(shot.compositionEn,resolved(raw?.camera?.composition,"balanced narrative composition with readable action")) },
     stateChanges: array(raw?.stateChanges).map((x) => typeof x === "string" ? ({note: text(x)}) : ({
       characterId: typeof x?.characterId === "string" ? x.characterId : undefined, propId: typeof x?.propId === "string" ? x.propId : undefined,
@@ -185,6 +184,13 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
     const ids = value.characters.map((x) => x.characterId);
     if (new Set(ids).size !== ids.length) failures.push({ code: "count_failed", severity: "P0", message: "镜头包含重复角色 ID。" });
     for (const character of value.characters) {
+      const position = String(character.position || "").toLowerCase();
+      const center = (character.region.xStart + character.region.xEnd) / 2;
+      const positionSide = /left|左/.test(position) ? "left" : /right|右/.test(position) ? "right" : /center|middle|中/.test(position) ? "center" : null;
+      if (positionSide && ((positionSide === "left" && center >= .5) || (positionSide === "right" && center <= .5) || (positionSide === "center" && (center < .3 || center > .7)))) {
+        conflicts.push(`角色 ${character.characterId} 的 position=${character.position} 与 region=${character.region.xStart}-${character.region.xEnd} 冲突`);
+        failures.push({ code: "position_region_conflict", severity: "P0", message: conflicts[conflicts.length - 1] });
+      }
       if (!character.action?.trim() || !character.actionTarget?.trim() || !character.hands?.trim()) failures.push({ code: "interaction_failed", severity: "P0", message: `角色 ${character.characterId} 缺少动作、动作目标或手部说明。` });
       if (!character.gazeTarget?.trim()) failures.push({ code: "gaze_failed", severity: "P0", message: `角色 ${character.characterId} 缺少视线目标。` });
     }

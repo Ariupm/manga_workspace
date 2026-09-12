@@ -5,6 +5,11 @@ export type Candidate = {
   label: string;
   version: number;
   selected: boolean;
+  qualityStatus?: "manual_required" | "passed" | "approved" | "blocked";
+  qualityLabels?: string[];
+  qualityReport?: Record<string, unknown>;
+  sourceJobId?: number | null;
+  imageSha256?: string;
 };
 
 export type TextLayerType = "speech" | "narration" | "sfx";
@@ -198,7 +203,7 @@ export type VisualValidationResult = {
   warnings: string[];
   conflicts: string[];
   failures?: Array<{
-    code: "count_failed" | "identity_failed" | "anatomy_failed" | "interaction_failed" | "gaze_failed" | "environment_failed";
+    code: "count_failed" | "identity_failed" | "anatomy_failed" | "interaction_failed" | "gaze_failed" | "environment_failed" | "position_region_conflict";
     severity: "P0" | "P1" | "P2";
     message: string;
   }>;

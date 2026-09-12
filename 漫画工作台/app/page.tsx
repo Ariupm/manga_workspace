@@ -53,7 +53,11 @@ import type {
   TextLayerType,
 } from "@/lib/types";
 import type { StoryAnalysis } from "@/lib/analysis";
-import { normalizeSemanticReviewItems, type SemanticReviewSubmission } from "@/lib/semantic-review";
+import {
+  normalizeSemanticReviewItems,
+  type SemanticReviewItem,
+  type SemanticReviewSubmission,
+} from "@/lib/semantic-review";
 import { poseDisplayDetails } from "@/lib/pose-display";
 import {
   applyPoseControlOverride,
@@ -80,6 +84,11 @@ type View =
   | "queue"
   | "settings";
 const fileUrl = (path: string) => `/api/files?path=${encodeURIComponent(path)}`;
+const lastProjectStorageKey = "comic-studio:last-project";
+const lastEpisodeStorageKey = (projectId: number) =>
+  `comic-studio:last-episode:${projectId}`;
+const lastShotStorageKey = (episodeId: number) =>
+  `comic-studio:last-shot:${episodeId}`;
 const poseEditorLimbs = [
   [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9],
   [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16],
@@ -143,16 +152,32 @@ export default function Studio() {
   const pendingSaves = useRef(new Map<string, Record<string, unknown>>());
 
   const load = async (projectId?: number, episodeId?: number) => {
+    const storedProjectId = Number(window.localStorage.getItem(lastProjectStorageKey));
+    const requestedProjectId = projectId || (storedProjectId > 0 ? storedProjectId : undefined);
+    const storedEpisodeId = requestedProjectId
+      ? Number(window.localStorage.getItem(lastEpisodeStorageKey(requestedProjectId)))
+      : 0;
+    const requestedEpisodeId = episodeId || (storedEpisodeId > 0 ? storedEpisodeId : undefined);
     const params = new URLSearchParams();
-    if (projectId) params.set("projectId", String(projectId));
-    if (episodeId) params.set("episodeId", String(episodeId));
+    if (requestedProjectId) params.set("projectId", String(requestedProjectId));
+    if (requestedEpisodeId) params.set("episodeId", String(requestedEpisodeId));
     const result = await fetch(
       `/api/studio${params.size ? `?${params}` : ""}`,
       { cache: "no-store" },
     ).then((r) => r.json());
+    const resultShots = result.episode.pages.flatMap((page: ComicPage) => page.shots);
+    const storedShotId = Number(
+      window.localStorage.getItem(lastShotStorageKey(result.episode.id)),
+    );
+    const restoredShot = resultShots.find((shot: Shot) => shot.id === storedShotId);
     setData(result);
-    setActiveShotId(result.episode.pages[0]?.shots[0]?.id ?? null);
+    setActiveShotId(restoredShot?.id ?? resultShots[0]?.id ?? null);
     setLayoutPageId(result.episode.pages[0]?.id ?? null);
+    window.localStorage.setItem(lastProjectStorageKey, String(result.project.id));
+    window.localStorage.setItem(
+      lastEpisodeStorageKey(result.project.id),
+      String(result.episode.id),
+    );
   };
   useEffect(() => {
     load();
@@ -162,6 +187,13 @@ export default function Studio() {
     [data],
   );
   const activeShot = shots.find((s) => s.id === activeShotId) ?? shots[0];
+  useEffect(() => {
+    if (data?.episode.id && activeShotId)
+      window.localStorage.setItem(
+        lastShotStorageKey(data.episode.id),
+        String(activeShotId),
+      );
+  }, [data?.episode.id, activeShotId]);
   const flash = (message: string) => {
     setToastError(/失败|错误|冲突|阻断|不能|无法|未通过/.test(message));
     setToast(message);
@@ -371,7 +403,7 @@ export default function Studio() {
     }, 2000);
   };
   const handleDraft = async (
-    action: "approveDraft" | "rejectDraft",
+    action: "approveDraft" | "rejectDraft" | "approveFinal" | "rejectFinal",
     jobId: number,
     shotId: number,
     semanticReview?: SemanticReviewSubmission,
@@ -385,14 +417,18 @@ export default function Studio() {
     const result = await response.json();
     if (!response.ok) {
       setBusy(false);
-      flash(result.error ?? "草稿操作失败");
+      flash(result.error ?? "图片审核操作失败");
       return;
     }
-    if (action === "rejectDraft") {
+    if (action === "rejectDraft" || action === "rejectFinal" || action === "approveFinal") {
       setBusy(false);
       await load(data?.project.id);
       setActiveShotId(shotId);
-      flash("构图草稿已放弃，可修改画面设定后重做");
+      flash(action === "rejectDraft"
+        ? "构图草稿已放弃，可修改画面设定后重做"
+        : action === "rejectFinal"
+          ? "最终图片未通过复核，未写入候选"
+          : "最终图片已通过复核并写入正式候选");
       return;
     }
     flash("已确认构图，正在生成单张成品");
@@ -407,15 +443,17 @@ export default function Studio() {
         progress: Number(status.progress) || 0,
         etaSeconds: Number(status.etaSeconds) || 0,
       });
-      if (status.jobStatus === "completed" || status.jobStatus === "failed") {
+      if (["awaiting_final_approval", "completed", "failed"].includes(status.jobStatus)) {
         window.clearInterval(timer);
         setBusy(false);
         setGenerationProgress(null);
         await load(data?.project.id);
         setActiveShotId(shotId);
         flash(
-          status.jobStatus === "completed"
-            ? "单张成品已生成"
+          status.jobStatus === "awaiting_final_approval"
+            ? "最终图片已生成，请完成最终逐项复核"
+            : status.jobStatus === "completed"
+            ? "单张成品已生成并复核"
             : `成品生成失败：${status.error ?? "未知错误"}`,
         );
       }
@@ -576,6 +614,11 @@ export default function Studio() {
             {data.projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.title}
+                {data.projects.some(
+                  (other) => other.id !== project.id && other.title === project.title,
+                )
+                  ? ` · #${project.id}`
+                  : ""}
               </option>
             ))}
           </select>
@@ -1557,7 +1600,7 @@ function PanelEditor({
     },
   ) => void;
   handleDraft: (
-    action: "approveDraft" | "rejectDraft",
+    action: "approveDraft" | "rejectDraft" | "approveFinal" | "rejectFinal",
     jobId: number,
     shotId: number,
     semanticReview?: SemanticReviewSubmission,
@@ -1572,7 +1615,81 @@ function PanelEditor({
 }) {
   const selected =
     shot.candidates.find((c) => c.selected) ?? shot.candidates[0];
+  const pendingSdReview = jobs
+    .filter(
+      (job) =>
+        job.shotId === shot.id &&
+        job.provider === "sd-webui" &&
+        ["awaiting_draft_approval", "awaiting_final_approval"].includes(
+          job.status,
+        ),
+    )
+    .sort((left, right) => right.id - left.id)
+    .map((job) => {
+      try {
+        const payload = JSON.parse(job.payload) as {
+          draftImagePath?: string;
+          finalReviewImagePath?: string;
+          recipe?: { semanticQa?: unknown };
+        };
+        const stage =
+          job.status === "awaiting_final_approval" ? "final" : "draft";
+        const imagePath =
+          stage === "final" ? payload.finalReviewImagePath : payload.draftImagePath;
+        return imagePath
+          ? {
+              job,
+              stage,
+              imagePath,
+              items: normalizeSemanticReviewItems(payload.recipe?.semanticQa),
+            }
+          : null;
+      } catch {
+        return null;
+      }
+    })
+    .find((review): review is {
+      job: StudioData["jobs"][number];
+      stage: "draft" | "final";
+      imagePath: string;
+      items: SemanticReviewItem[];
+    } => review !== null);
+  const latestCodexResult = jobs
+    .filter(
+      (job) =>
+        job.shotId === shot.id &&
+        job.provider === "codex" &&
+        ["completed", "completed_low_confidence"].includes(job.status),
+    )
+    .sort((a, b) => b.id - a.id)[0];
+  const lowConfidencePreview =
+    latestCodexResult?.status === "completed_low_confidence"
+      ? (() => {
+      try {
+        const payload = JSON.parse(latestCodexResult.payload) as {
+          selectedImagePath?: string;
+          visualReview?: { summaryCn?: string };
+        };
+        return payload.selectedImagePath
+          ? {
+              imagePath: payload.selectedImagePath,
+              summary: payload.visualReview?.summaryCn || "自动质检未通过",
+            }
+          : null;
+      } catch {
+        return null;
+      }
+        })()
+      : null;
+  const previewImagePath =
+    pendingSdReview?.imagePath ??
+    lowConfidencePreview?.imagePath ??
+    selected?.imagePath;
   const inputRef = useRef<HTMLInputElement>(null);
+  const [reviewVerdicts, setReviewVerdicts] = useState<
+    Record<string, "pass" | "fail">
+  >({});
+  const [reviewNotes, setReviewNotes] = useState("");
   const [copied, setCopied] = useState(false);
   const [quick, setQuick] = useState<
     null | "expression" | "action" | "camera" | "outfit"
@@ -1652,6 +1769,10 @@ function PanelEditor({
     setPoseEditorOpen(false);
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   }, [shot.id, positive, negativePrompt, regionalCompiled.prompt, regionalCompiled.negativePrompt, shot.characterIds.length]);
+  useEffect(() => {
+    setReviewVerdicts({});
+    setReviewNotes("");
+  }, [pendingSdReview?.job.id]);
   const effectivePositive =
     shot.characterIds.length > 1
       ? [editableCommon, ...editableRegions].join(" BREAK ")
@@ -1667,29 +1788,11 @@ function PanelEditor({
     (effectivePoseControl
       ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(effectivePoseControl.svg)}`
       : "");
-  const draftJob = jobs.find(
-    (job) =>
-      job.shotId === shot.id &&
-      job.provider === "sd-webui" &&
-      job.status === "awaiting_draft_approval",
-  );
-  let draftPayload: {
-    draftImagePath?: string;
-    recipe?: { actualSeed?: number; characterCount?: number; semanticQa?: unknown };
-  } = {};
-  try {
-    if (draftJob) draftPayload = JSON.parse(draftJob.payload);
-  } catch {}
-  const semanticReviewItems = normalizeSemanticReviewItems(draftPayload.recipe?.semanticQa);
-  const [semanticVerdicts, setSemanticVerdicts] = useState<Record<string, "pass" | "fail">>({});
-  const [semanticReviewNotes, setSemanticReviewNotes] = useState("");
-  useEffect(() => {
-    setSemanticVerdicts({});
-    setSemanticReviewNotes("");
-  }, [draftJob?.id]);
-  const semanticReviewReady = semanticReviewItems.every((item) => !item.required || semanticVerdicts[item.id] === "pass");
   const poseDisplay = effectivePoseControl
     ? poseDisplayDetails(effectivePoseControl.kind, effectivePoseControl.source, effectivePoseControl.selectorReason, effectivePoseControl.framingMode)
+    : null;
+  const effectiveLocomotion = effectivePoseControl && "posePlanVersion" in effectivePoseControl
+    ? effectivePoseControl.scenePlan.people.find((person) => person.primaryAction === "locomotion")?.locomotion || null
     : null;
   const availablePosePresets = automaticPoseControlV2
     ? posePresetCatalog.filter((preset) => preset.peopleCount === automaticPoseControlV2.people.length)
@@ -1981,6 +2084,27 @@ function PanelEditor({
     link.href = `/api/candidates/export?projectId=${projectId}&candidateId=${candidateId}`;
     link.click();
   };
+  const submitReview = (approved: boolean) => {
+    if (!pendingSdReview) return;
+    const action = approved
+      ? pendingSdReview.stage === "draft"
+        ? "approveDraft"
+        : "approveFinal"
+      : pendingSdReview.stage === "draft"
+        ? "rejectDraft"
+        : "rejectFinal";
+    const semanticReview: SemanticReviewSubmission = {
+      version: "semantic-review-v1",
+      verdicts: reviewVerdicts,
+      notes: reviewNotes,
+    };
+    handleDraft(action, pendingSdReview.job.id, shot.id, semanticReview);
+  };
+  const requiredReviewComplete =
+    !pendingSdReview ||
+    pendingSdReview.items
+      .filter((item) => item.required)
+      .every((item) => reviewVerdicts[item.id] === "pass");
   return (
     <>
       <div className="page-tabs">
@@ -2101,80 +2225,30 @@ function PanelEditor({
           })}
         </aside>
         <section className="canvas-panel">
-          {draftJob && draftPayload.draftImagePath && (
-            <section className="sd-draft-review">
-              <header>
-                <small>CPU COMPOSITION DRAFT</small>
-                <h3>构图草稿 · 等待人工确认</h3>
-                <p>
-                  {draftPayload.recipe?.characterCount ??
-                    shot.characterIds.length}{" "}
-                  人 · Seed {draftPayload.recipe?.actualSeed ?? "未返回"} ·
-                  草稿不会进入正式候选
-                </p>
-              </header>
-              <img
-                src={fileUrl(draftPayload.draftImagePath)}
-                alt="SD 构图草稿"
-              />
-              {semanticReviewItems.length > 0 && (
-                <section className="semantic-review-checklist">
-                  <header>
-                    <b>逐项语义质检</b>
-                    <small>所有项目必须明确通过；任一失败请放弃草稿并修改设定</small>
-                  </header>
-                  {semanticReviewItems.map((item) => (
-                    <article key={item.id} className={semanticVerdicts[item.id] === "fail" ? "failed" : semanticVerdicts[item.id] === "pass" ? "passed" : ""}>
-                      <div>
-                        <span>{item.priority}</span>
-                        <b>{item.label}</b>
-                        <small>{item.expectation}</small>
-                      </div>
-                      <div className="semantic-verdicts">
-                        <button type="button" className={semanticVerdicts[item.id] === "pass" ? "active pass" : ""} onClick={() => setSemanticVerdicts((current) => ({ ...current, [item.id]: "pass" }))}>通过</button>
-                        <button type="button" className={semanticVerdicts[item.id] === "fail" ? "active fail" : ""} onClick={() => setSemanticVerdicts((current) => ({ ...current, [item.id]: "fail" }))}>失败</button>
-                      </div>
-                    </article>
-                  ))}
-                  <label>
-                    审核备注（可选）
-                    <textarea value={semanticReviewNotes} maxLength={1000} onChange={(event) => setSemanticReviewNotes(event.target.value)} placeholder="记录需要关注的细节或重做原因" />
-                  </label>
-                </section>
-              )}
-              <div>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    handleDraft("rejectDraft", draftJob.id, shot.id)
-                  }
-                >
-                  放弃并修改设定
-                </button>
-                <button
-                  className="primary"
-                  disabled={busy || !semanticReviewReady}
-                  onClick={() =>
-                    handleDraft("approveDraft", draftJob.id, shot.id, semanticReviewItems.length ? { version: "semantic-review-v1", verdicts: semanticVerdicts, notes: semanticReviewNotes } : undefined)
-                  }
-                >
-                  {busy ? "成品生成中" : semanticReviewReady ? "全部通过并生成成品" : "请先完成逐项质检"}
-                </button>
-              </div>
-            </section>
-          )}
-          <div className={`current-image ${selected ? "" : "empty"}`}>
-            {selected ? (
+          <div className={`current-image ${previewImagePath ? "" : "empty"}`}>
+            {previewImagePath ? (
               <>
-                <img src={fileUrl(selected.imagePath)} alt={shot.title} />
-                <span>无文字原始画面</span>
-                <button
-                  className="export-current"
-                  onClick={() => exportCandidate(selected.id)}
-                >
-                  <Download size={14} />
-                  导出原图
-                </button>
+                <img src={fileUrl(previewImagePath)} alt={shot.title} />
+                <span>
+                  {pendingSdReview
+                    ? pendingSdReview.stage === "draft"
+                      ? "构图草稿 · 等待逐项视觉质检"
+                      : "最终图片 · 等待逐项语义复核"
+                    : lowConfidencePreview
+                    ? `自动质检未通过 · 未进入正式候选 · ${lowConfidencePreview.summary}`
+                    : selected?.qualityStatus === "manual_required"
+                      ? "自动检查低置信 · 已展示最佳结果"
+                      : "无文字原始画面"}
+                </span>
+                {!lowConfidencePreview && selected && (
+                  <button
+                    className="export-current"
+                    onClick={() => exportCandidate(selected.id)}
+                  >
+                    <Download size={14} />
+                    导出原图
+                  </button>
+                )}
               </>
             ) : (
               <div className="empty-panel">
@@ -2210,6 +2284,63 @@ function PanelEditor({
               </div>
             )}
           </div>
+          {pendingSdReview && (
+            <section className="semantic-review-panel" aria-label="图片逐项复核">
+              <header>
+                <div>
+                  <small>
+                    {pendingSdReview.stage === "draft"
+                      ? "DRAFT REVIEW"
+                      : "FINAL REVIEW"}
+                  </small>
+                  <h3>
+                    {pendingSdReview.stage === "draft"
+                      ? "构图草稿已生成，请逐项检查"
+                      : "最终图片已生成，请逐项复核"}
+                  </h3>
+                </div>
+                <span>任务 #{pendingSdReview.job.id}</span>
+              </header>
+              {pendingSdReview.items.length > 0 ? (
+                <div className="semantic-review-items">
+                  {pendingSdReview.items.map((item) => (
+                    <article key={item.id}>
+                      <div>
+                        <b>{item.priority} · {item.label}</b>
+                        <p>{item.expectation}</p>
+                      </div>
+                      <div className="semantic-review-verdict">
+                        <button
+                          className={reviewVerdicts[item.id] === "pass" ? "selected-pass" : ""}
+                          onClick={() => setReviewVerdicts((current) => ({ ...current, [item.id]: "pass" }))}
+                        >通过</button>
+                        <button
+                          className={reviewVerdicts[item.id] === "fail" ? "selected-fail" : ""}
+                          onClick={() => setReviewVerdicts((current) => ({ ...current, [item.id]: "fail" }))}
+                        >不通过</button>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="semantic-review-empty">该旧任务没有逐项质检契约；仍可选择继续或放弃。</p>
+              )}
+              <textarea
+                value={reviewNotes}
+                onChange={(event) => setReviewNotes(event.target.value)}
+                placeholder="复核备注（可选）"
+                maxLength={1000}
+              />
+              <footer>
+                <button className="danger" onClick={() => submitReview(false)} disabled={busy}>
+                  放弃并重做
+                </button>
+                <button className="primary" onClick={() => submitReview(true)} disabled={busy || !requiredReviewComplete}>
+                  {pendingSdReview.stage === "draft" ? "全部通过，生成成品" : "全部通过，写入正式候选"}
+                </button>
+              </footer>
+            </section>
+          )}
           <div className="candidate-strip">
             <div>
               <b>正式候选</b>
@@ -2363,8 +2494,10 @@ function PanelEditor({
                       {automaticPoseControlV2 && (
                         <div className="pose-template-controls">
                           <div className="pose-recommendation">
-                            <span>v2 自动推荐：{automaticPoseControlV2.scenePlan.people.map((person) => person.actions.join(" + ")).join(" / ")}</span>
-                            <span>置信度 {automaticPoseControlV2.scenePlan.confidence} · 变体 {effectivePoseControl.variantId + 1} · {effectivePoseControl.controlProfile.id}（{effectivePoseControl.controlProfile.weight}/{effectivePoseControl.controlProfile.guidanceEnd}）</span>
+                            <span>v2 当前计划{poseControlOverride ? "（人工覆盖）" : "（自动推荐）"}：{effectivePoseControl.scenePlan.people.map((person) => person.actions.join(" + ")).join(" / ")}</span>
+                            <span>置信度 {effectivePoseControl.scenePlan.confidence} · 变体 {effectivePoseControl.variantId + 1} · {effectivePoseControl.controlProfile.id}（{effectivePoseControl.controlProfile.weight}/{effectivePoseControl.controlProfile.guidanceEnd}）</span>
+                            {effectiveLocomotion && <span>步态：{effectiveLocomotion.mode === "run" ? "跑动" : "行走"} · {effectiveLocomotion.gaitPhase === "heel_strike" ? "落脚接触" : effectiveLocomotion.gaitPhase === "mid_stance" ? "中支撑" : "蹬地摆动"} · 支撑脚 {effectiveLocomotion.supportSide === "left" ? "左" : "右"} · 摆动脚 {effectiveLocomotion.swingSide === "left" ? "左" : "右"}</span>}
+                            {effectivePoseControl.framingWarnings.map((warning) => <em className="asset-warning" key={warning}>{warning}</em>)}
                           </div>
                           <label>
                             动作模板
@@ -2375,12 +2508,22 @@ function PanelEditor({
                               {availablePosePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.category} · {preset.label}</option>)}
                             </select>
                           </label>
+                          {effectivePoseControl.scenePlan.visualSpecConfirmed && (
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(poseControlOverride?.confirmPoseContract)}
+                                onChange={(event) => updatePoseParameters({ confirmPoseContract: event.target.checked })}
+                              />
+                              确认覆盖已确认剧情姿态
+                            </label>
+                          )}
                           <label>
                             动作阶段
                             <select value={poseControlOverride?.phase || automaticPoseControlV2.scenePlan.people[0]?.phase || "contact"} onChange={(event) => updatePoseParameters({ phase: event.target.value as PoseControlOverrideV1["phase"] })}>
-                              <option value="anticipation">准备</option>
-                              <option value="contact">接触／动作中</option>
-                              <option value="follow_through">完成／随动</option>
+                              <option value="anticipation">{effectiveLocomotion ? "落脚／接触" : "准备"}</option>
+                              <option value="contact">{effectiveLocomotion ? "中支撑" : "接触／动作中"}</option>
+                              <option value="follow_through">{effectiveLocomotion ? "蹬地／摆动" : "完成／随动"}</option>
                             </select>
                           </label>
                           <label>
@@ -4981,12 +5124,15 @@ function TaskQueue({
     final_queued: "成品排队",
     final_running: "成品生成中",
     awaiting_draft_approval: "待视觉质检确认",
+    awaiting_final_approval: "待最终图片复核",
     draft_blocked: "视觉质检阻断",
     draft_rejected: "草稿已放弃",
+    final_rejected: "最终图片未通过",
     paused: "已暂停",
     codex_queued: "Codex排队",
     running_codex: "Codex生成中",
     completed: "已完成",
+    completed_low_confidence: "已完成 · 自动质检未通过",
     failed: "失败",
     awaiting_codex: "等待确认",
   };
@@ -5299,6 +5445,7 @@ function TaskQueueLegacy({
     codex_queued: "Codex排队中",
     running_codex: "Codex生成中",
     completed: "已完成",
+    completed_low_confidence: "已完成 · 自动质检未通过",
     failed: "失败",
     awaiting_codex: "等待 Codex 处理",
   };

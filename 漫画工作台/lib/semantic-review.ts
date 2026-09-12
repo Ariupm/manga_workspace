@@ -15,6 +15,13 @@ export type SemanticReviewSubmission = {
   notes?: string;
 };
 
+export type SemanticReviewBinding = {
+  source?: "manual_draft_approval" | "manual_final_approval";
+  stage?: "draft" | "final";
+  imageSha256?: string;
+  recipeHash?: string;
+};
+
 const legacyLabels: Record<string, Omit<SemanticReviewItem, "id">> = {
   interaction_review_required: { label: "关键交互", priority: "P0", required: true, expectation: "人物、手部与剧情对象形成明确且正确的交互", sources: ["legacy semanticQa label"] },
   gaze_review_required: { label: "视线方向", priority: "P0", required: true, expectation: "头部和双眼看向剧情目标，不误看镜头", sources: ["legacy semanticQa label"] },
@@ -36,7 +43,11 @@ export function normalizeSemanticReviewItems(semanticQa: unknown): SemanticRevie
   return qa.labels.map(String).map((id) => legacyLabels[id] ? ({ id, ...legacyLabels[id] }) : ({ id, label: id, priority: "P0" as const, required: true, expectation: "确认该语义要求已在画面中正确执行", sources: ["legacy semanticQa label"] }));
 }
 
-export function validateSemanticReviewSubmission(items: SemanticReviewItem[], submission: unknown) {
+export function validateSemanticReviewSubmission(
+  items: SemanticReviewItem[],
+  submission: unknown,
+  binding: SemanticReviewBinding = {},
+) {
   if (!items.length) return { valid: true as const, errors: [] as string[], approval: null };
   if (!submission || typeof submission !== "object")
     return { valid: false as const, errors: ["该草稿包含语义质检项，必须提交逐项审核结果"], approval: null };
@@ -58,7 +69,10 @@ export function validateSemanticReviewSubmission(items: SemanticReviewItem[], su
     errors,
     approval: errors.length ? null : {
       version: "semantic-review-v1" as const,
-      source: "manual_draft_approval",
+      source: binding.source || "manual_draft_approval",
+      stage: binding.stage || "draft",
+      ...(binding.imageSha256 ? { imageSha256: binding.imageSha256 } : {}),
+      ...(binding.recipeHash ? { recipeHash: binding.recipeHash } : {}),
       approvedAt: new Date().toISOString(),
       verdicts,
       notes: typeof value.notes === "string" ? value.notes.trim().slice(0, 1000) : "",
