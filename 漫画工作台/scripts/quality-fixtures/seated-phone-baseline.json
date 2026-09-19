@@ -1,0 +1,20 @@
+{
+  "id": "seated-phone-compact-no-control",
+  "expectedCheckpoint": "DreamShaper_8_pruned",
+  "purpose": "底模能力诊断：短提示词、无 ControlNet、无局部 pass。仅衡量基础身份属性和双手阅读动作；不代表完整工作台已验证。",
+  "payload": {
+    "prompt": "anime illustration, one adult woman, long pastel pink hair, pink-brown eyes, cream yellow blouse, soft pink skirt, sitting on a sofa, upper body, three-quarter view, holding one small smartphone vertically with both hands at chest level, looking down at the phone screen, head tilted down, gentle smile, living room, soft daylight",
+    "negative_prompt": "extra person, extra arms, extra legs, missing hands, fused fingers, deformed anatomy, oversized phone, multiple phones, looking at viewer, short hair, black hair, blurry, text, watermark",
+    "width": 512,
+    "height": 512,
+    "steps": 12,
+    "cfg_scale": 5.5,
+    "sampler_name": "DPM++ 2M",
+    "scheduler": "Karras",
+    "seed": 13579246,
+    "batch_size": 1,
+    "n_iter": 1,
+    "send_images": true,
+    "save_images": false
+  }
+}

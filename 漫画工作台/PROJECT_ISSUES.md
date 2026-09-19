@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-PROMPT-004 结构化视线目标被隐式转换为无效提示词
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：2026-09-19 要求修复剧情漫画质量并记录改动及实际验证，允许 SD 生图。
+- 已确认事实：507/510/511 的 requestTrace.prompt 含 preserve gaze toward [object Object]；当前编译函数直接插值 gazeTarget 对象。
+- 高概率原因：旧字符串模板未适配结构化 PoseGazeTarget。
+- 未验证假设：该无效文本对最终视线偏差的贡献尚未量化，不能归因全部画质问题。
+- 反证或冲突：原 prompt 还包含其他视线句，去除无效文本不等于模型必然执行正确。
+- 复现步骤：传入 gazeTarget={kind:object,point:{x:0.2,y:0.6}} 到 deferRequiredPropsFromBasePrompt；旧实现产生对象字符串。多类道具与 independent 同样受影响。
+- 涉及文件：scripts/sd-worker-logic.mjs；scripts/sd-worker-logic.test.mjs；GENERATION_QUALITY_WORKLOG.md。
+- 影响范围：单双手、不同人物区域、物体/工作点/独立视线及旧字符串目标的基础提示词。
+- 建议方案：按 kind 编译可读视线；结构化 independent 不得被旧 object 模式覆盖；保留关系坐标给控制通道。
+- 验收标准：实际基础 prompt 不含对象隐式字符串，目标和手数正确、输入关系不变；真实视觉效果单独记录。
+- 解决 Agent 修改：新增 baseInteractionGazePrompt；保留可读 gaze 和旧字符串；kind 区分 object/work_point/target/independent，不发送内部 ID。
+- 解决 Agent 测试：32/32 worker 测试通过，覆盖 5 道具×2 手数×4 目标。全链复核：剧情/人工选择→视觉规格→prompt/交互→recipe/payload 的视线保持；Regional/ControlNet、基础→身份/服装/道具/手/视线 pass 的共享对象与几何未变；同一辅助函数适用不同人物、区域和景别；草稿整体确认、失败硬阻断、成品自动回写路径未改，不虚报视觉通过。
+- 残余风险：程序逻辑验收通过，未进行修复后的图片生成或视觉效果验收。模型随机性、头向几何和局部 mask 的视觉执行率仍待本轮质量验证。
+- 诊断 Agent 复核证据：待独立复核；原始请求证据为只读正式数据库 507/510/511。
+- 诊断 Agent 复核结论：待复核，不标 verified。
+- 后续处理：进行真实图像对照；整体质量目标继续，详见 GENERATION_QUALITY_WORKLOG.md。
+
 ## ISSUE-PIPELINE-002 用户授权的生图剧情一致性全链审计与优化
 
 - 优先级：P1

@@ -42,3 +42,5 @@ pnpm memory:sync
 ## 当前重点
 
 完善结构化视觉规划、V3 剧情动作模板与统一投影、候选图质量门、生成后质检和项目记忆的轻量自动同步。
+
+2026-09-19 用户明确授权本线程用 SD 生图验证质量；修复和实验续接记录见 `GENERATION_QUALITY_WORKLOG.md`。实际 checkpoint 已通过 options API 切至 DreamShaper 8（879db523c3）；程序通过不代表画质通过，真实实验不代替用户草稿整体确认。

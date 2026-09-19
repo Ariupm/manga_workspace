@@ -1,5 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { baseInteractionGazePrompt } from "./sd-worker-logic.mjs";
+
+test("structured gaze survives base prompt compilation without object coercion or object-mode leakage", () => {
+  for (const object of ["smartphone", "book", "cup", "package", "tool"]) {
+    for (const handMode of ["one", "two"]) {
+      for (const kind of ["object", "work_point", "target", "independent"]) {
+        const relation = { required: true, object, handMode, activeHand: "left", gazeMode: "object", gazeTarget: { kind, point: kind === "independent" ? null : { x: .2, y: .6 }, targetId: "opaque:123", source: "test" } };
+        const before = JSON.stringify(relation);
+        const result = deferRequiredPropsFromBasePrompt("pink hair, left hand holding an object, right hand opening a door", [relation]);
+        assert.doesNotMatch(result.prompt, /\[object Object\]|opaque:123|undefined/);
+        assert.match(result.prompt, /pink hair.*right hand opening a door/);
+        if (kind === "independent") assert.match(result.prompt, /independently declared gaze/);
+        if (kind === "object") assert.ok(result.prompt.includes(`eyes focused on the ${object}`));
+        if (kind === "work_point") assert.ok(result.prompt.includes(`eyes focused on the ${object} contact point`));
+        assert.equal(JSON.stringify(relation), before);
+      }
+    }
+  }
+  assert.equal(baseInteractionGazePrompt({ gazeTarget: "the road ahead" }), "preserve gaze toward the road ahead");
+  assert.equal(baseInteractionGazePrompt({ gazeTarget: { kind: "object" }, gaze: "head tilted down, eyes reading the phone screen" }), "head tilted down, eyes reading the phone screen");
+  assert.equal(baseInteractionGazePrompt({}), "preserve the independently declared gaze");
+});
 import { controlExecutionCoverage, deferRequiredPropsFromBasePrompt, evaluateCaptionForRequiredProps, generationProfilePlan, handDepthDetectionUsable, handPoseDetectionUsable, identityRefinementPlan, gazeMaskCenter, identityReferenceMaskPlan, outfitGarmentZones, propBodySizePlan, propSizePlan, selectControlUnitsForProfile, semanticReviewContractForStage, semanticReviewLabels, semanticReviewContract, semanticApprovalCoversItems, faceRefinementPassPlan, identityReferenceForCharacter, shouldUseOutfitVisualReference, structuredGazeExecutionPlan, upperBodyVisiblePrompt } from "./sd-worker-logic.mjs";
 
 test("identity refinement separates off-camera and camera gaze", () => {

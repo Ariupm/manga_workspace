@@ -490,6 +490,20 @@ export function upperBodyVisiblePrompt(prompt = "", { suppressForegroundClutter 
     .join(", ");
 }
 
+export function baseInteractionGazePrompt(item = {}) {
+  const target = item.gazeTarget;
+  const kind = target && typeof target === "object" ? target.kind : item.gazeMode;
+  // A structured independent target takes precedence over legacy object mode.
+  if (kind === "independent") return "preserve the independently declared gaze";
+  if (typeof target === "string" && target.trim()) return `preserve gaze toward ${target.trim()}`;
+  if (typeof item.gaze === "string" && item.gaze.trim()) return item.gaze.trim();
+  const object = String(item.object || "story object").replace(/_/g, " ");
+  if (kind === "object") return `eyes focused on the ${object}`;
+  if (kind === "work_point") return `eyes focused on the ${object} contact point`;
+  if (kind === "target") return "preserve gaze toward the specified interaction target";
+  return "preserve the independently declared gaze";
+}
+
 export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = []) {
   const objects = interactions.filter((item) => item?.required !== false && item?.object).map((item) => String(item.object).toLowerCase().replace(/_/g, " "));
   if (!objects.length) return { prompt: String(prompt || ""), removed: [], objects: [] };
@@ -517,9 +531,7 @@ export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [])
       ? "both declared hands contact distinct object-side anchors"
       : `only the ${activeHand} hand contacts the object; the other hand remains available for its declared action`;
     const purpose = item.purpose ? `purpose ${String(item.purpose).replace(/_/g, " ")}` : "preserve the declared action purpose";
-    const gaze = item.gazeMode === "object" || item.gazeTarget
-      ? `preserve gaze toward ${item.gazeTarget || `${objectClass} surface`}`
-      : "preserve the independently declared gaze";
+    const gaze = baseInteractionGazePrompt(item);
     return `(exactly one clearly visible actual ${objectClass} with a ${silhouette} silhouette:1.5), approximately ${size.width.toFixed(2)} frame-width by ${size.height.toFixed(2)} frame-height, ${placement}, (${handContract}:1.45), ${purpose}, ${gaze}, recognizable as its object category with surface detail deferred, never enlarged into furniture clothing jewelry or a body-sized foreground form`;
   });
   kept.push(...portable, "fine prop surface rendering is deferred without changing story action hand count or gaze", "preserve the planned wrist elbow and contact-anchor geometry");
