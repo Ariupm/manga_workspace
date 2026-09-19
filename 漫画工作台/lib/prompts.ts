@@ -13,6 +13,7 @@ import {
   type PoseInteractionInput,
   type PosePoint as PosePointV2,
 } from "./pose-v2";
+import { buildPoseControlV3 } from "./pose-v3";
 import { rankInteractionPropCandidates } from "./interaction-prop";
 
 const placeholders = [
@@ -1558,6 +1559,7 @@ export function buildRegionalPrompt(
   shot: Shot,
   assets: Asset[],
   characters: Character[] = [],
+  options: { posePlannerVersion?: "2.0" | "3.0" } = {},
 ) {
   const quality = analyzeGenerationPrompt(shot, characters, assets);
   const risk = deriveShotRiskProfile(shot);
@@ -1691,13 +1693,12 @@ export function buildRegionalPrompt(
   const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60)) + ", deep shadow across eyes";
   const regionPrompts = characterRegions.map((region) => region.prompt);
   const characterInteractionContracts = shot.characterIds.flatMap((id) => deriveInteractionContracts(shot, id)).map((item)=>interactionForShotFraming(item,shot));
+  const poseHeight = /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512;
   const poseControl = risk.poseRequired
-    ? buildPoseControlV2(
-        shot,
-        characterInteractionContracts.map(poseInteractionInput),
-        512,
-        /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512,
-      )
+    ? options.posePlannerVersion === "3.0"
+      ? buildPoseControlV3(shot, characterInteractionContracts.map(poseInteractionInput), { compositionPolicy: "auto_story", width: 512, height: poseHeight })
+        || buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight)
+      : buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight)
     : null;
   return {
     commonPrompt: basePrompt,

@@ -157,15 +157,15 @@ test("CPU profiles cap peak base controls and run required refinements serially"
   const fast = generationProfilePlan("cpu_local_fast", 1);
   const complex = generationProfilePlan("cpu_local_complex", 2);
   assert.equal(fast.runDraftRefinements, true);
-  assert.equal(fast.maxInitialControlUnits, 2);
+  assert.equal(fast.maxInitialControlUnits, 3);
   assert.equal(fast.draftLongEdge, 448);
-  assert.equal(complex.maxInitialControlUnits, 2);
+  assert.equal(complex.maxInitialControlUnits, 3);
   const selected = selectControlUnitsForProfile([
     { stage: "identity_reference", id: "identity" },
     { stage: "initial_prop_structure", id: "prop" },
     { stage: "pose", id: "pose" },
   ], "cpu_local_fast");
-  assert.deepEqual(selected.map((item) => item.id), ["prop", "pose"]);
+  assert.deepEqual(selected.map((item) => item.id), ["identity", "prop", "pose"]);
 });
 
 test("complex CPU prioritizes non-serial pose and support controls in the peak-memory base stage", () => {
@@ -176,10 +176,10 @@ test("complex CPU prioritizes non-serial pose and support controls in the peak-m
     { stage: "pose", id: "pose" },
     { stage: "support_surface_geometry", id: "support" },
   ], "cpu_local_complex");
-  assert.deepEqual(selected.map((item) => item.id), ["pose", "support"]);
+  assert.deepEqual(selected.map((item) => item.id), ["prop", "pose", "support"]);
   assert.equal(selected.some((item) => item.id === "identity"), false);
   assert.equal(selected.some((item) => item.id === "composition"), false);
-  assert.equal(selected.some((item) => item.id === "prop"), false);
+  assert.equal(selected.some((item) => item.id === "prop"), true);
 });
 
 test("upper-body deferred prop leaves CPU base slots for pose and support", () => {
@@ -189,25 +189,33 @@ test("upper-body deferred prop leaves CPU base slots for pose and support", () =
     { stage: "deferred_prop_structure", id: "prop" },
     { stage: "support_surface_geometry", id: "support" },
   ], "cpu_local_complex");
-  assert.deepEqual(selected.map((item) => item.id), ["pose", "support"]);
+  assert.deepEqual(selected.map((item) => item.id), ["pose", "prop", "support"]);
 });
 
-test("CPU required controls are either in the base request or scheduled as a real serial pass", () => {
+test("coverage only accepts serial compensation with explicit equivalent capabilities", () => {
   const units = [
     { stage: "identity_reference", characterId: "hero" },
     { stage: "pose" },
     { stage: "deferred_prop_structure", relationId: "phone-1" },
     { stage: "support_surface_geometry" },
   ];
-  const selected = selectControlUnitsForProfile(units, "cpu_local_fast");
-  const coverage = controlExecutionCoverage(units, selected, { runRefinements: true });
-  assert.equal(coverage.complete, true);
-  assert.deepEqual(coverage.entries.map((item) => [item.stage, item.status]), [
-    ["identity_reference", "scheduled_serial_refinement"],
+  const selected = units.filter((unit) => unit.stage !== "deferred_prop_structure");
+  const insufficient = controlExecutionCoverage(units, selected, { runRefinements: true, serialCapabilities: {
+    identity_reference: { available: true, preservesPose: true },
+    deferred_prop_structure: { available: true, includesObject: true, includesRequiredHands: false, includesPoseContact: false, preservesPose: true },
+  } });
+  assert.equal(insufficient.complete, false);
+  assert.deepEqual(insufficient.entries.map((item) => [item.stage, item.status]), [
+    ["identity_reference", "applied_in_base"],
     ["pose", "applied_in_base"],
-    ["deferred_prop_structure", "scheduled_serial_refinement"],
+    ["deferred_prop_structure", "uncovered"],
     ["support_surface_geometry", "applied_in_base"],
   ]);
+  const equivalent = controlExecutionCoverage(units, selected, { runRefinements: true, serialCapabilities: {
+    identity_reference: { available: true, preservesPose: true },
+    deferred_prop_structure: { available: true, includesObject: true, includesRequiredHands: true, includesPoseContact: true, preservesPose: true },
+  } });
+  assert.equal(equivalent.complete, true);
   assert.equal(controlExecutionCoverage(units, selected, { runRefinements: false }).complete, false);
 });
 
@@ -220,13 +228,48 @@ test("caption gate detects required smartphone aliases and reports omissions", (
 test("required props retain their structured category while fine content is deferred", () => {
   const result = deferRequiredPropsFromBasePrompt("one woman, (looking toward the smartphone, head and pupils aligned toward the action target:1.3), phone screen visible, seated on a sofa", [{ required: true, object: "smartphone", handMode: "two", shape: "portrait_rect", orientation: "portrait", objectCenter: { x: .5, y: .47 }, contactAnchors: [{ x: .445, y: .47 }, { x: .555, y: .47 }], region: { xStart: 0, xEnd: 1 } }]);
   assert.match(result.prompt, /clearly visible actual smartphone/);
-  assert.equal(/phone screen visible/i.test(result.prompt), false);
-  assert.equal(/head and pupils aligned/i.test(result.prompt), false);
+  assert.equal(/phone screen visible/i.test(result.prompt), true);
+  assert.equal(/head and pupils aligned/i.test(result.prompt), true);
   assert.equal([...result.prompt].filter((character) => character === "(").length, [...result.prompt].filter((character) => character === ")").length);
-  assert.match(result.prompt, /actual handheld object/);
+  assert.match(result.prompt, /both declared hands contact distinct object-side anchors/);
   assert.match(result.prompt, /approximately 0\.08 frame-width by 0\.16 frame-height/);
   assert.match(result.negative, /readable prop text/);
   assert.deepEqual(result.objects, ["smartphone"]);
+});
+
+test("prop surface deferral preserves one-hand purpose gaze and the other action", () => {
+  const result = deferRequiredPropsFromBasePrompt(
+    "one woman, right hand carries a smartphone at her side, left hand closes the door, eyes looking forward",
+    [{ required: true, object: "smartphone", purpose: "carry", handMode: "one", activeHand: "right", gazeMode: "independent", shape: "portrait_rect", orientation: "portrait", objectCenter: { x: .7, y: .68 }, contactAnchors: [{ x: .7, y: .68, hand: "right", role: "active" }], region: { xStart: .5, xEnd: 1 } }],
+  );
+  assert.match(result.prompt, /right hand carries a smartphone at her side/);
+  assert.match(result.prompt, /left hand closes the door/);
+  assert.match(result.prompt, /eyes looking forward/);
+  assert.match(result.prompt, /only the right hand contacts the object/);
+  assert.doesNotMatch(result.prompt, /both acting hands wrap/);
+});
+
+test("surface phrase rewrite never deletes a mixed semicolon clause or negative text constraint", () => {
+  const original = "left hand holding smartphone at her side; right hand closing the door; eyes looking toward the path; no legible text";
+  const result = deferRequiredPropsFromBasePrompt(original, [{
+    required: true, object: "smartphone", purpose: "carry", handMode: "one", activeHand: "left", gazeMode: "independent",
+    shape: "portrait_rect", orientation: "portrait", objectCenter: { x: .3, y: .68 },
+    contactAnchors: [{ x: .3, y: .68, hand: "left", role: "active" }], region: { xStart: 0, xEnd: .5 },
+  }]);
+  assert.match(result.prompt, /left hand holding smartphone at her side/);
+  assert.match(result.prompt, /right hand closing the door/);
+  assert.match(result.prompt, /eyes looking toward the path/);
+  assert.match(result.prompt, /no legible text/);
+  assert.deepEqual(result.removed, []);
+
+  const positiveDetail = deferRequiredPropsFromBasePrompt("left hand holds a book with intricate prop surface detail while looking forward", [{
+    required: true, object: "book", purpose: "carry", handMode: "one", activeHand: "left", gazeMode: "independent",
+    shape: "portrait_rect", objectCenter: { x: .3, y: .6 }, contactAnchors: [{ x: .3, y: .6, hand: "left", role: "active" }], region: { xStart: 0, xEnd: .5 },
+  }]);
+  assert.match(positiveDetail.prompt, /left hand holds a book/);
+  assert.match(positiveDetail.prompt, /while looking forward/);
+  assert.match(positiveDetail.prompt, /simplified non-legible prop surface detail/);
+  assert.deepEqual(positiveDetail.removed, ["intricate prop surface detail"]);
 });
 
 test("hand depth gate rejects flat detector output and accepts a real contour", () => {

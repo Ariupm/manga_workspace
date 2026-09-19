@@ -29,3 +29,10 @@
 - 原因：长期事实必须人工确认，避免把猜测写入项目记忆。
 - 直接解决：检查 `PROJECT_MEMORY.pending.md`，确认后运行 `pnpm memory:sync:apply`。
 - 验证：确认变更已归入上下文、坑点或决策，而不是只追加原始日志。
+
+## V3 动作模板不能只添加下拉框名称
+
+- 症状：界面出现了新动作模板，但选择前后骨架坐标、接触关系或投影哈希没有变化。
+- 原因：只在 `poseTemplateRegistryV3` 注册名称，未同步语义选择、V2 兼容映射和差异化完整骨架几何。
+- 直接解决：按 `POSE_TEMPLATE_V3_MIGRATION.md` 的新增模板流程，同时维护 `templates.ts` 的 manifest/selector、`planner.ts` 的兼容映射与几何求解，并补充程序测试。
+- 验证：至少断言模板 ID、相关关节坐标、`templateHash` 和必要时的 `projectionHash` 发生符合动作机制的变化；同输入仍可复现。

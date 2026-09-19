@@ -65,6 +65,7 @@ import {
   type PoseControlOverrideV1,
   type PoseControlV2,
 } from "@/lib/pose-v2";
+import { applyPoseControlOverrideV3, poseTemplateRegistryV3, type PoseControlV3 } from "@/lib/pose-v3";
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
@@ -1615,45 +1616,38 @@ function PanelEditor({
 }) {
   const selected =
     shot.candidates.find((c) => c.selected) ?? shot.candidates[0];
-  const pendingSdReview = jobs
+  const latestSdPreviewJob = jobs
     .filter(
       (job) =>
         job.shotId === shot.id &&
-        job.provider === "sd-webui" &&
-        ["awaiting_draft_approval", "awaiting_final_approval"].includes(
-          job.status,
-        ),
+        job.provider === "sd-webui",
     )
-    .sort((left, right) => right.id - left.id)
-    .map((job) => {
+    .sort((left, right) => right.id - left.id)[0];
+  const sdPreview = latestSdPreviewJob && ["awaiting_draft_approval", "awaiting_final_approval", "draft_blocked"].includes(latestSdPreviewJob.status)
+    ? (() => {
       try {
-        const payload = JSON.parse(job.payload) as {
+        const payload = JSON.parse(latestSdPreviewJob.payload) as {
           draftImagePath?: string;
           finalReviewImagePath?: string;
           recipe?: { semanticQa?: unknown };
         };
         const stage =
-          job.status === "awaiting_final_approval" ? "final" : "draft";
+          latestSdPreviewJob.status === "awaiting_final_approval" ? "final" : "draft";
         const imagePath =
           stage === "final" ? payload.finalReviewImagePath : payload.draftImagePath;
-        return imagePath
-          ? {
-              job,
-              stage,
-              imagePath,
-              items: normalizeSemanticReviewItems(payload.recipe?.semanticQa),
-            }
-          : null;
+        return {
+          job: latestSdPreviewJob,
+          stage,
+          imagePath: imagePath || null,
+          blocked: latestSdPreviewJob.status === "draft_blocked",
+          items: normalizeSemanticReviewItems(payload.recipe?.semanticQa),
+        };
       } catch {
-        return null;
+        return { job: latestSdPreviewJob, stage: "draft" as const, imagePath: null, blocked: latestSdPreviewJob.status === "draft_blocked", items: [] as SemanticReviewItem[] };
       }
-    })
-    .find((review): review is {
-      job: StudioData["jobs"][number];
-      stage: "draft" | "final";
-      imagePath: string;
-      items: SemanticReviewItem[];
-    } => review !== null);
+    })()
+    : null;
+  const pendingSdReview = sdPreview && !sdPreview.blocked && sdPreview.imagePath ? sdPreview : null;
   const latestCodexResult = jobs
     .filter(
       (job) =>
@@ -1682,14 +1676,11 @@ function PanelEditor({
         })()
       : null;
   const previewImagePath =
-    pendingSdReview?.imagePath ??
-    lowConfidencePreview?.imagePath ??
-    selected?.imagePath;
+    (sdPreview ? sdPreview.imagePath : null) ??
+    (sdPreview ? null : lowConfidencePreview?.imagePath) ??
+    (sdPreview ? null : selected?.imagePath);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [reviewVerdicts, setReviewVerdicts] = useState<
-    Record<string, "pass" | "fail">
-  >({});
-  const [reviewNotes, setReviewNotes] = useState("");
+  const finalizedLegacyJobs = useRef(new Set<number>());
   const [copied, setCopied] = useState(false);
   const [quick, setQuick] = useState<
     null | "expression" | "action" | "camera" | "outfit"
@@ -1722,7 +1713,7 @@ function PanelEditor({
     "shot",
   );
   const compiled = buildGenerationPrompt(shot, assets, characters);
-  const regionalCompiled = buildRegionalPrompt(shot, assets, characters);
+  const regionalCompiled = buildRegionalPrompt(shot, assets, characters, { posePlannerVersion: "3.0" });
   const {
     prompt: positive,
     negativePrompt,
@@ -1738,6 +1729,16 @@ function PanelEditor({
   const [editableRegions, setEditableRegions] = useState(
     regionalCompiled.regionPrompts,
   );
+  useEffect(() => {
+    if (!pendingSdReview || pendingSdReview.stage !== "final" || finalizedLegacyJobs.current.has(pendingSdReview.job.id)) return;
+    finalizedLegacyJobs.current.add(pendingSdReview.job.id);
+    handleDraft("approveFinal", pendingSdReview.job.id, shot.id, {
+      version: "semantic-review-v1",
+      verdicts: {},
+      overallConfirmed: true,
+      notes: "兼容旧流程：草稿已确认，成品自动加入候选图。",
+    });
+  }, [pendingSdReview?.job.id, pendingSdReview?.stage, shot.id]);
   const [poseImageOverride, setPoseImageOverride] = useState("");
   const [poseControlOverride, setPoseControlOverride] = useState<PoseControlOverrideV1 | null>(null);
   const [poseEditorOpen, setPoseEditorOpen] = useState(false);
@@ -1749,12 +1750,17 @@ function PanelEditor({
   const [editablePosePeople, setEditablePosePeople] = useState<PosePoint[][]>(
     () => clonePosePeople(regionalCompiled.poseControl?.people),
   );
-  const automaticPoseControlV2 = regionalCompiled.poseControl && "posePlanVersion" in regionalCompiled.poseControl
+  const automaticPoseControlV2 = regionalCompiled.poseControl && "posePlanVersion" in regionalCompiled.poseControl && regionalCompiled.poseControl.posePlanVersion === "2.0"
     ? regionalCompiled.poseControl as PoseControlV2
     : null;
-  const effectivePoseControl = automaticPoseControlV2 && poseControlOverride
-    ? applyPoseControlOverride(automaticPoseControlV2, poseControlOverride)
-    : regionalCompiled.poseControl;
+  const automaticPoseControlV3 = regionalCompiled.poseControl && "posePlanVersion" in regionalCompiled.poseControl && regionalCompiled.poseControl.posePlanVersion === "3.0"
+    ? regionalCompiled.poseControl as PoseControlV3
+    : null;
+  const effectivePoseControl = poseControlOverride && automaticPoseControlV3
+    ? applyPoseControlOverrideV3(automaticPoseControlV3, poseControlOverride)
+    : automaticPoseControlV2 && poseControlOverride
+      ? applyPoseControlOverride(automaticPoseControlV2, poseControlOverride)
+      : regionalCompiled.poseControl;
   useEffect(() => {
     setEditablePositive(positive);
     setEditableNegative(
@@ -1769,10 +1775,6 @@ function PanelEditor({
     setPoseEditorOpen(false);
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   }, [shot.id, positive, negativePrompt, regionalCompiled.prompt, regionalCompiled.negativePrompt, shot.characterIds.length]);
-  useEffect(() => {
-    setReviewVerdicts({});
-    setReviewNotes("");
-  }, [pendingSdReview?.job.id]);
   const effectivePositive =
     shot.characterIds.length > 1
       ? [editableCommon, ...editableRegions].join(" BREAK ")
@@ -1784,21 +1786,18 @@ function PanelEditor({
     ? editablePositive.split(/\s*,\s*/).filter((term) => term.trim() && !positive.toLowerCase().includes(term.trim().toLowerCase())).join(", ")
     : "";
   const prompt = `${effectivePositive}\n\nNegative: ${editableNegative}`;
-  const posePreview = poseImageOverride ||
-    (effectivePoseControl
-      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(effectivePoseControl.svg)}`
-      : "");
+  const posePreview = poseImageOverride || (effectivePoseControl?.svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(effectivePoseControl.svg)}` : "");
   const poseDisplay = effectivePoseControl
     ? poseDisplayDetails(effectivePoseControl.kind, effectivePoseControl.source, effectivePoseControl.selectorReason, effectivePoseControl.framingMode)
     : null;
   const effectiveLocomotion = effectivePoseControl && "posePlanVersion" in effectivePoseControl
     ? effectivePoseControl.scenePlan.people.find((person) => person.primaryAction === "locomotion")?.locomotion || null
     : null;
-  const availablePosePresets = automaticPoseControlV2
-    ? posePresetCatalog.filter((preset) => preset.peopleCount === automaticPoseControlV2.people.length)
-    : [];
+  const availablePosePresets = automaticPoseControlV3
+    ? poseTemplateRegistryV3.filter((template) => automaticPoseControlV3.people.length === 2 ? ["handover","handshake","highfive","embrace","support_walk"].includes(template.id) : !["handover","handshake","highfive","embrace","support_walk"].includes(template.id)).map((template) => ({ id: template.id, label: template.label, category: template.family }))
+    : automaticPoseControlV2 ? posePresetCatalog.filter((preset) => preset.peopleCount === automaticPoseControlV2.people.length) : [];
   const updatePoseParameters = (patch: Partial<PoseControlOverrideV1>) => {
-    if (!automaticPoseControlV2) return;
+    if (!automaticPoseControlV2 && !automaticPoseControlV3) return;
     const next: PoseControlOverrideV1 = {
       schemaVersion: "pose-override-v1",
       ...(poseControlOverride || {}),
@@ -1806,7 +1805,7 @@ function PanelEditor({
       people: undefined,
       editMode: "parameter_edit",
     };
-    const rebuilt = applyPoseControlOverride(automaticPoseControlV2, next);
+    const rebuilt = automaticPoseControlV3 ? applyPoseControlOverrideV3(automaticPoseControlV3, next) : applyPoseControlOverride(automaticPoseControlV2!, next);
     setPoseControlOverride(next);
     setPoseImageOverride("");
     setEditablePosePeople(clonePosePeople(rebuilt.people));
@@ -1817,9 +1816,9 @@ function PanelEditor({
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   };
   const restoreSelectedTemplate = () => {
-    if (!automaticPoseControlV2 || !poseControlOverride) return restoreAutomaticPose();
+    if ((!automaticPoseControlV2 && !automaticPoseControlV3) || !poseControlOverride) return restoreAutomaticPose();
     const next = { ...poseControlOverride, people: undefined, editMode: "parameter_edit" as const };
-    const rebuilt = applyPoseControlOverride(automaticPoseControlV2, next);
+    const rebuilt = automaticPoseControlV3 ? applyPoseControlOverrideV3(automaticPoseControlV3, next) : applyPoseControlOverride(automaticPoseControlV2!, next);
     setPoseControlOverride(next);
     setPoseImageOverride("");
     setEditablePosePeople(clonePosePeople(rebuilt.people));
@@ -1894,6 +1893,8 @@ function PanelEditor({
         ...(poseControlOverride || {}),
         people: clonePosePeople(editablePosePeople),
         editMode: "joint_edit",
+        coordinateSpace: "projected_canvas",
+        projectionIntent: "lock_current",
       });
       setPoseImageOverride("");
       setPoseEditorOpen(false);
@@ -1956,7 +1957,7 @@ function PanelEditor({
     const suggested = suggestPromptFixes(shot, characters);
     const repairedShot = { ...shot, ...suggested };
     const repaired = buildGenerationPrompt(repairedShot, assets, characters);
-    const repairedRegional = buildRegionalPrompt(repairedShot, assets, characters);
+    const repairedRegional = buildRegionalPrompt(repairedShot, assets, characters, { posePlannerVersion: "3.0" });
     setEditablePositive(repaired.prompt);
     setEditableNegative(
       repairedShot.characterIds.length > 1
@@ -2095,16 +2096,12 @@ function PanelEditor({
         : "rejectFinal";
     const semanticReview: SemanticReviewSubmission = {
       version: "semantic-review-v1",
-      verdicts: reviewVerdicts,
-      notes: reviewNotes,
+      verdicts: {},
+      overallConfirmed: approved,
+      notes: approved ? "用户已整体确认草稿。" : "用户放弃草稿并重做。",
     };
     handleDraft(action, pendingSdReview.job.id, shot.id, semanticReview);
   };
-  const requiredReviewComplete =
-    !pendingSdReview ||
-    pendingSdReview.items
-      .filter((item) => item.required)
-      .every((item) => reviewVerdicts[item.id] === "pass");
   return (
     <>
       <div className="page-tabs">
@@ -2230,17 +2227,19 @@ function PanelEditor({
               <>
                 <img src={fileUrl(previewImagePath)} alt={shot.title} />
                 <span>
-                  {pendingSdReview
+                  {sdPreview?.blocked
+                    ? `任务 #${sdPreview.job.id} · 草稿已阻断 · ${sdPreview.job.stage || "后处理"} · ${sdPreview.job.error || "生成后处理失败"}`
+                    : pendingSdReview
                     ? pendingSdReview.stage === "draft"
-                      ? "构图草稿 · 等待逐项视觉质检"
-                      : "最终图片 · 等待逐项语义复核"
+                      ? "构图草稿 · 等待确认"
+                      : "成品生成完成 · 正在加入候选图"
                     : lowConfidencePreview
                     ? `自动质检未通过 · 未进入正式候选 · ${lowConfidencePreview.summary}`
                     : selected?.qualityStatus === "manual_required"
                       ? "自动检查低置信 · 已展示最佳结果"
                       : "无文字原始画面"}
                 </span>
-                {!lowConfidencePreview && selected && (
+                {!sdPreview && !lowConfidencePreview && selected && (
                   <button
                     className="export-current"
                     onClick={() => exportCandidate(selected.id)}
@@ -2253,9 +2252,9 @@ function PanelEditor({
             ) : (
               <div className="empty-panel">
                 <ImageIcon size={42} />
-                <h3>这一格还没有正式画面</h3>
+                <h3>{sdPreview ? `任务 #${sdPreview.job.id} 暂无可用预览` : "这一格还没有正式画面"}</h3>
                 <p>
-                  先生成低成本构图草稿，确认人数、姿势和构图后再生成单张成品。
+                  {sdPreview ? `${sdPreview.job.stage || "后处理"}：${sdPreview.job.error || "草稿图未保存或无法读取"}。本任务不能确认或加入正式候选。` : "先生成低成本构图草稿，确认人数、姿势和构图后再生成单张成品。"}
                 </p>
                 <div>
                   <button
@@ -2284,59 +2283,34 @@ function PanelEditor({
               </div>
             )}
           </div>
-          {pendingSdReview && (
-            <section className="semantic-review-panel" aria-label="图片逐项复核">
+          {sdPreview?.blocked && (
+            <section className="semantic-review-panel" aria-label="阻断草稿诊断">
+              <header>
+                <div><small>DRAFT BLOCKED</small><h3>任务 #{sdPreview.job.id} · {sdPreview.job.stage || "后处理"}</h3></div>
+              </header>
+              <p>{sdPreview.job.error || "后处理失败，不能继续生成成品。"}</p>
+              <footer><button onClick={() => quality.valid ? generateEditedPrompt() : repairAndGenerate()} disabled={busy || shot.locked}>修改后重试草稿</button></footer>
+            </section>
+          )}
+          {pendingSdReview?.stage === "draft" && (
+            <section className="semantic-review-panel" aria-label="草稿确认">
               <header>
                 <div>
                   <small>
-                    {pendingSdReview.stage === "draft"
-                      ? "DRAFT REVIEW"
-                      : "FINAL REVIEW"}
+                    DRAFT READY
                   </small>
                   <h3>
-                    {pendingSdReview.stage === "draft"
-                      ? "构图草稿已生成，请逐项检查"
-                      : "最终图片已生成，请逐项复核"}
+                    构图草稿已生成
                   </h3>
                 </div>
                 <span>任务 #{pendingSdReview.job.id}</span>
               </header>
-              {pendingSdReview.items.length > 0 ? (
-                <div className="semantic-review-items">
-                  {pendingSdReview.items.map((item) => (
-                    <article key={item.id}>
-                      <div>
-                        <b>{item.priority} · {item.label}</b>
-                        <p>{item.expectation}</p>
-                      </div>
-                      <div className="semantic-review-verdict">
-                        <button
-                          className={reviewVerdicts[item.id] === "pass" ? "selected-pass" : ""}
-                          onClick={() => setReviewVerdicts((current) => ({ ...current, [item.id]: "pass" }))}
-                        >通过</button>
-                        <button
-                          className={reviewVerdicts[item.id] === "fail" ? "selected-fail" : ""}
-                          onClick={() => setReviewVerdicts((current) => ({ ...current, [item.id]: "fail" }))}
-                        >不通过</button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="semantic-review-empty">该旧任务没有逐项质检契约；仍可选择继续或放弃。</p>
-              )}
-              <textarea
-                value={reviewNotes}
-                onChange={(event) => setReviewNotes(event.target.value)}
-                placeholder="复核备注（可选）"
-                maxLength={1000}
-              />
               <footer>
                 <button className="danger" onClick={() => submitReview(false)} disabled={busy}>
                   放弃并重做
                 </button>
-                <button className="primary" onClick={() => submitReview(true)} disabled={busy || !requiredReviewComplete}>
-                  {pendingSdReview.stage === "draft" ? "全部通过，生成成品" : "全部通过，写入正式候选"}
+                <button className="primary" onClick={() => submitReview(true)} disabled={busy}>
+                  确认并生成成品
                 </button>
               </footer>
             </section>
@@ -2490,12 +2464,13 @@ function PanelEditor({
                   <section className="pose-control-card">
                     <div>
                       <b>{poseDisplay?.kindLabel} OpenPose</b>
-                      <span>{poseDisplay?.sourceLabel} · {poseDisplay?.framingLabel} · {poseDisplay?.selectorReason}。可直接拖动当前骨骼关节点，应用后作为本格实际 ControlNet 姿势图。</span>
-                      {automaticPoseControlV2 && (
+                      <span>{poseDisplay?.sourceLabel} · {poseDisplay?.framingLabel} · {poseDisplay?.selectorReason}。{automaticPoseControlV3 ? "V3 会保留完整动作，再统一投影为实际控制图。" : "可直接拖动当前骨骼关节点，应用后作为本格实际 ControlNet 姿势图。"}</span>
+                      {(automaticPoseControlV2 || automaticPoseControlV3) && (
                         <div className="pose-template-controls">
                           <div className="pose-recommendation">
-                            <span>v2 当前计划{poseControlOverride ? "（人工覆盖）" : "（自动推荐）"}：{effectivePoseControl.scenePlan.people.map((person) => person.actions.join(" + ")).join(" / ")}</span>
+                            <span>{automaticPoseControlV3 ? "V3" : "V2"} 当前计划{poseControlOverride ? "（人工覆盖）" : "（自动推荐）"}：{effectivePoseControl.scenePlan.people.map((person) => person.actions.join(" + ")).join(" / ")}</span>
                             <span>置信度 {effectivePoseControl.scenePlan.confidence} · 变体 {effectivePoseControl.variantId + 1} · {effectivePoseControl.controlProfile.id}（{effectivePoseControl.controlProfile.weight}/{effectivePoseControl.controlProfile.guidanceEnd}）</span>
+                            {automaticPoseControlV3 && <span>自动构图：{automaticPoseControlV3.scenePlan.projection?.composition || "需要调整"} · {automaticPoseControlV3.scenePlan.decisionReasons.join("；")}</span>}
                             {effectiveLocomotion && <span>步态：{effectiveLocomotion.mode === "run" ? "跑动" : "行走"} · {effectiveLocomotion.gaitPhase === "heel_strike" ? "落脚接触" : effectiveLocomotion.gaitPhase === "mid_stance" ? "中支撑" : "蹬地摆动"} · 支撑脚 {effectiveLocomotion.supportSide === "left" ? "左" : "右"} · 摆动脚 {effectiveLocomotion.swingSide === "left" ? "左" : "右"}</span>}
                             {effectivePoseControl.framingWarnings.map((warning) => <em className="asset-warning" key={warning}>{warning}</em>)}
                           </div>
@@ -2520,7 +2495,7 @@ function PanelEditor({
                           )}
                           <label>
                             动作阶段
-                            <select value={poseControlOverride?.phase || automaticPoseControlV2.scenePlan.people[0]?.phase || "contact"} onChange={(event) => updatePoseParameters({ phase: event.target.value as PoseControlOverrideV1["phase"] })}>
+                            <select value={poseControlOverride?.phase || effectivePoseControl.scenePlan.people[0]?.phase || "contact"} onChange={(event) => updatePoseParameters({ phase: event.target.value as PoseControlOverrideV1["phase"] })}>
                               <option value="anticipation">{effectiveLocomotion ? "落脚／接触" : "准备"}</option>
                               <option value="contact">{effectiveLocomotion ? "中支撑" : "接触／动作中"}</option>
                               <option value="follow_through">{effectiveLocomotion ? "蹬地／摆动" : "完成／随动"}</option>
@@ -2528,7 +2503,7 @@ function PanelEditor({
                           </label>
                           <label>
                             力度
-                            <select value={poseControlOverride?.intensity || automaticPoseControlV2.scenePlan.people[0]?.intensity || "normal"} onChange={(event) => updatePoseParameters({ intensity: event.target.value as PoseControlOverrideV1["intensity"] })}>
+                            <select value={poseControlOverride?.intensity || effectivePoseControl.scenePlan.people[0]?.intensity || "normal"} onChange={(event) => updatePoseParameters({ intensity: event.target.value as PoseControlOverrideV1["intensity"] })}>
                               <option value="calm">轻微</option>
                               <option value="normal">正常</option>
                               <option value="dynamic">强动态</option>
@@ -2536,7 +2511,7 @@ function PanelEditor({
                           </label>
                           <label>
                             主动手
-                            <select value={poseControlOverride?.handedness || automaticPoseControlV2.scenePlan.people[0]?.handedness || "right"} onChange={(event) => updatePoseParameters({ handedness: event.target.value as PoseControlOverrideV1["handedness"] })}>
+                            <select value={poseControlOverride?.handedness || effectivePoseControl.scenePlan.people[0]?.handedness || "right"} onChange={(event) => updatePoseParameters({ handedness: event.target.value as PoseControlOverrideV1["handedness"] })}>
                               <option value="left">左手</option>
                               <option value="right">右手</option>
                               <option value="both">双手</option>
@@ -2562,7 +2537,7 @@ function PanelEditor({
                               </select>
                             </label>
                           )}
-                          <button type="button" onClick={() => updatePoseParameters({ mirror: !(poseControlOverride?.mirror ?? automaticPoseControlV2.scenePlan.people[0]?.mirror) })}>水平镜像</button>
+                          <button type="button" onClick={() => updatePoseParameters({ mirror: !(poseControlOverride?.mirror ?? effectivePoseControl.scenePlan.people[0]?.mirror) })}>水平镜像</button>
                           {effectivePoseControl.people.length === 2 && <button type="button" onClick={() => updatePoseParameters({ swapRoles: !poseControlOverride?.swapRoles })}>交换动作角色</button>}
                         </div>
                       )}

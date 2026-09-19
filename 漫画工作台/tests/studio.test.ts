@@ -1364,6 +1364,21 @@ test("含语义检查项的草稿必须逐项通过并保存审核证据", () =>
   assert.equal(recipe.semanticApproval.notes,"逐项检查完成");
 });
 
+test("草稿整体确认无需逐项点击且保留检查契约快照", () => {
+  const data=getStudioData(1),shot=data.episode.pages[0].shots[0];
+  const items=[{id:"character_count_review_required",label:"人物数量",priority:"P0",required:true,expectation:"恰好一人",sources:["generationSpec"]}];
+  const payload={phase:"draft",draftImagePath:"../角色资产/小粉/00-原始参考图.png",recipe:{phase:"draft",endpoint:"http://127.0.0.1:7860/sdapi/v1/txt2img",postprocessWarnings:[],pixelQa:{status:"passed"},semanticQa:{version:"semantic-review-v1",status:"manual_required",items,labels:[items[0].id]},references:[],finalReferences:[]}};
+  const id=createPersistentGenerationJob(shot.id,"sd-webui",payload);
+  updateGenerationJobPayload(id,payload);
+  updatePersistentGenerationJob(id,"awaiting_draft_approval",100,"","等待整体确认");
+  assert.ok(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{},overallConfirmed:true,notes:"用户已整体确认草稿。"}));
+  const stored=JSON.parse(getGenerationJobRecord(id).payload);
+  assert.equal(getGenerationJobRecord(id).status,"final_queued");
+  assert.equal(stored.recipe.semanticApproval.reviewMode,"overall_confirmation");
+  assert.equal(stored.recipe.semanticApproval.reviewedItems.length,0);
+  assert.equal(stored.recipe.semanticApproval.reviewContractSnapshot[0].id,"character_count_review_required");
+});
+
 test("最终图片必须按当前哈希重新逐项复核后才写入候选", () => {
   const data=getStudioData(1),shot=data.episode.pages[0].shots[0];
   const finalReviewImagePath="../角色资产/小粉/00-原始参考图.png";

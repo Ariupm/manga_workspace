@@ -283,8 +283,8 @@ export function semanticApprovalCoversItems(items = [], approval = null) {
 export function generationProfilePlan(profile = "cpu_local_fast", characterCount = 1) {
   const normalized = ["cpu_local_fast", "cpu_local_complex", "gpu_full"].includes(profile) ? profile : "cpu_local_fast";
   if (normalized === "gpu_full") return { id: normalized, cpu: false, maxInitialControlUnits: 8, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 1024, draftSteps: characterCount > 1 ? 16 : 12, finalSteps: 18 };
-  if (normalized === "cpu_local_complex") return { id: normalized, cpu: true, maxInitialControlUnits: 2, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 640, draftSteps: 12, finalSteps: 16 };
-  return { id: normalized, cpu: true, maxInitialControlUnits: 2, runDraftRefinements: true, draftLongEdge: 448, maxTargetEdge: 640, draftSteps: 10, finalSteps: 14 };
+  if (normalized === "cpu_local_complex") return { id: normalized, cpu: true, maxInitialControlUnits: 3, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 640, draftSteps: 12, finalSteps: 16 };
+  return { id: normalized, cpu: true, maxInitialControlUnits: 3, runDraftRefinements: true, draftLongEdge: 448, maxTargetEdge: 640, draftSteps: 10, finalSteps: 14 };
 }
 
 export function selectControlUnitsForProfile(units = [], profile = "cpu_local_fast") {
@@ -293,7 +293,7 @@ export function selectControlUnitsForProfile(units = [], profile = "cpu_local_fa
   const priority = (unit) => {
     if (unit.stage === "pose") return 100;
     if (unit.stage === "support_surface_geometry") return 95;
-    if (unit.stage === "initial_prop_structure") return 90;
+    if (["initial_prop_structure", "deferred_prop_structure"].includes(unit.stage)) return 90;
     if (unit.stage === "identity_reference") return 50;
     if (unit.stage === "upper_body_composition_scale") return 60;
     if (unit.stage === "outfit_reference") return 50;
@@ -306,19 +306,23 @@ export function selectControlUnitsForProfile(units = [], profile = "cpu_local_fa
     .map((item) => item.unit);
 }
 
-export function controlExecutionCoverage(units = [], selectedUnits = [], { runRefinements = false } = {}) {
+export function controlExecutionCoverage(units = [], selectedUnits = [], { runRefinements = false, serialCapabilities = {} } = {}) {
   const selected = new Set(selectedUnits);
   const requiredStages = new Set(["identity_reference", "pose", "initial_prop_structure", "deferred_prop_structure", "support_surface_geometry"]);
-  const serialStages = new Set(["identity_reference", "initial_prop_structure", "deferred_prop_structure"]);
   const entries = units.filter((unit) => requiredStages.has(unit.stage)).map((unit) => {
     const appliedInBase = selected.has(unit);
-    const seriallyCompensated = !appliedInBase && runRefinements && serialStages.has(unit.stage);
+    const capability = serialCapabilities[unit.stage];
+    const seriallyCompensated = !appliedInBase && runRefinements && capability?.available === true
+      && (unit.stage === "identity_reference" || capability.preservesPose === true)
+      && (!["initial_prop_structure", "deferred_prop_structure"].includes(unit.stage)
+        || (capability.includesObject === true && capability.includesRequiredHands === true && capability.includesPoseContact === true));
     return {
       stage: unit.stage,
       characterId: unit.characterId || null,
       relationId: unit.relationId || null,
       objectInstanceId: unit.objectInstanceId || null,
       status: appliedInBase ? "applied_in_base" : seriallyCompensated ? "scheduled_serial_refinement" : "uncovered",
+      serialCapability: appliedInBase ? null : capability || null,
     };
   });
   return { entries, complete: entries.every((item) => item.status !== "uncovered"), uncovered: entries.filter((item) => item.status === "uncovered") };
@@ -489,13 +493,17 @@ export function upperBodyVisiblePrompt(prompt = "", { suppressForegroundClutter 
 export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = []) {
   const objects = interactions.filter((item) => item?.required !== false && item?.object).map((item) => String(item.object).toLowerCase().replace(/_/g, " "));
   if (!objects.length) return { prompt: String(prompt || ""), removed: [], objects: [] };
-  const objectPattern = new RegExp(objects.flatMap((object) => propAliases[object]?.length ? propAliases[object] : [object]).map((value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i");
-  const interactionPattern = /required story prop|declared object|story instance|hands physically contact|object-hand contact|screen surface|viewer surface/i;
   const removed = [];
-  const kept = splitPromptClauses(prompt).filter((part) => {
-    const drop = objectPattern.test(part) || interactionPattern.test(part);
-    if (drop) removed.push(part);
-    return !drop;
+  const kept = splitPromptClauses(prompt).map((part) => {
+    // Surface deferral is a local rewrite, never a clause deletion. A clause
+    // may simultaneously encode hand ownership, another action, placement and
+    // gaze. Negative phrases such as "no legible text" are already compatible
+    // with the deferred pass and must be preserved verbatim.
+    return part.replace(/(?:legible|readable) (?:screen |prop )?text|intricate (?:screen |prop )?surface (?:content|detail)|fine (?:screen |prop )?(?:content|detail)|pseudo-text/gi, (match, offset, source) => {
+      if (/\b(?:no|without|avoid)\s*$/.test(source.slice(Math.max(0, offset - 16), offset))) return match;
+      removed.push(match);
+      return "simplified non-legible prop surface detail";
+    });
   });
   const portable = interactions.filter((item) => item?.required !== false && item?.handMode && item.shape !== "umbrella").map((item) => {
     const contacts = item.contactAnchors || [];
@@ -504,9 +512,17 @@ export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [])
     const silhouette = /portrait_rect|landscape_rect/.test(item.shape || "") ? "thin rectangular" : item.shape === "cylinder" ? "slender cylindrical" : item.shape === "elongated" ? "narrow elongated" : "compact";
     const placement = item.objectCenter ? `centered at normalized frame position ${Number(item.objectCenter.x).toFixed(2)} ${Number(item.objectCenter.y).toFixed(2)}` : "centered between the acting hands";
     const objectClass = String(item.object || "story object").toLowerCase().replace(/_/g, " ");
-    return `(exactly one clearly visible actual ${objectClass} with a ${silhouette} silhouette:1.5), approximately ${size.width.toFixed(2)} frame-width by ${size.height.toFixed(2)} frame-height, ${placement}, (physically held and enclosed by the declared hand contact anchors:1.45), recognizable as its object category with a plain unfinished surface, never enlarged into furniture clothing jewelry or a body-sized foreground form`;
+    const activeHand = item.activeHand || contacts.find((point) => point.role === "active")?.hand || "declared active";
+    const handContract = item.handMode === "two"
+      ? "both declared hands contact distinct object-side anchors"
+      : `only the ${activeHand} hand contacts the object; the other hand remains available for its declared action`;
+    const purpose = item.purpose ? `purpose ${String(item.purpose).replace(/_/g, " ")}` : "preserve the declared action purpose";
+    const gaze = item.gazeMode === "object" || item.gazeTarget
+      ? `preserve gaze toward ${item.gazeTarget || `${objectClass} surface`}`
+      : "preserve the independently declared gaze";
+    return `(exactly one clearly visible actual ${objectClass} with a ${silhouette} silhouette:1.5), approximately ${size.width.toFixed(2)} frame-width by ${size.height.toFixed(2)} frame-height, ${placement}, (${handContract}:1.45), ${purpose}, ${gaze}, recognizable as its object category with surface detail deferred, never enlarged into furniture clothing jewelry or a body-sized foreground form`;
   });
-  kept.push("both acting hands wrap naturally around the declared actual handheld object", ...portable, "the object has a plain surface without fine content or legible text", "preserve the planned wrist elbow and contact-anchor geometry");
+  kept.push(...portable, "fine prop surface rendering is deferred without changing story action hand count or gaze", "preserve the planned wrist elbow and contact-anchor geometry");
   return {
     prompt: kept.join(", "),
     removed,

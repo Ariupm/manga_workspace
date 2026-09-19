@@ -13,6 +13,7 @@
 - API：`app/api/`
 - 数据与迁移：`lib/db.ts`
 - 提示词与视觉规划：`lib/prompts.ts`、`lib/visual-planning.ts`
+- V3 动作模板：`lib/pose-v3/templates.ts`（注册与语义选择）、`lib/pose-v3/planner.ts`（几何、覆盖与投影）；新增模板流程见 `POSE_TEMPLATE_V3_MIGRATION.md`
 - SD 独立任务：`scripts/sd-worker.mjs`
 - 数据库：`data/studio.db`
 - 生成结果：`workspace/generated/`
@@ -40,4 +41,4 @@ pnpm memory:sync
 
 ## 当前重点
 
-完善结构化视觉规划、候选图质量门、生成后质检和项目记忆的轻量自动同步。
+完善结构化视觉规划、V3 剧情动作模板与统一投影、候选图质量门、生成后质检和项目记忆的轻量自动同步。

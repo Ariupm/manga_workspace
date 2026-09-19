@@ -1,5 +1,98 @@
 # 漫画工作台问题台账
 
+## ISSUE-PIPELINE-002 用户授权的生图剧情一致性全链审计与优化
+
+- 优先级：P1
+- 状态：verified
+- 诊断 Agent 独立终审（2026-09-13）：核对审计报告及两条 gaze 实际 payload：gazeIdentityUnit 已不受 CPU 排除，按对应人物 identityReference、可用路径与 gazePlan 创建，和 head-direction Pose 同时进入 ControlNet.args；实际 trace 随单元记录而非只记录计划。面部 mask、对象目标上下文及 relation/character 归属未改变，没有手机/job 硬编码。沿输入契约、基础覆盖、局部继承、错误阻断及审批/候选核对；本项交付为证据驱动审计和明确遗漏修复，不将尚未定位的发色、头向或手检测视觉失败判成代码已解决。worker 31/31 测试、语法检查、TypeScript noEmit 通过。程序逻辑验收通过，未进行图片生成或视觉效果验收。两局部控制的 CPU 耗时与内存、face-only 对头发覆盖不足及检测未命中仍为已记录风险。标记 verified，本轮未确认新增独立缺陷；以下旧 open 结论为历史。
+- 用户报告：2026-09-13 用户要求把最新失败草稿与项目级优化方案交给另一个对话执行。
+- 已确认事实：job 503 基础及后处理图均未表达看通知，且发色/发长偏离；手部检测失败导致 draft_blocked。此项是明确授权的审计优化任务，不代表已确认新增代码根因。UI 另由 ISSUE-UI-001 处理。
+- 高概率原因：待审计，不能仅凭视觉偏差认定模型、mask 或权重为根因。
+- 未验证假设：身份覆盖范围、头向执行、局部坐标和检测输入可能存在缺口，均须代码或请求证据核验。
+- 反证或冲突：历史 426 有低头看手机但非整体合格；近期两项 verified 仅证明特定程序缺陷消除，不证明整个生图效果已合格。
+- 复现步骤：只读比对 jobs 426/500/502/503 的实际请求、控制及阶段图，按 GENERATION_OPTIMIZATION_HANDOFF.md 执行审计，不运行 SD。
+- 涉及文件：GENERATION_OPTIMIZATION_HANDOFF.md；scripts/sd-worker.mjs、scripts/sd-worker-logic.mjs、lib/prompts.ts、lib/pose-v3/、app/api/studio/route.ts、现有 recipe 与阶段日志。
+- 影响范围：项目不同人物、动作、道具和景别的剧情生成一致性。
+- 建议方案：先定位首次偏离及确证程序根因，再做通用修复；保留单一契约/共享几何、资源覆盖和后序保护，区分请求成功与语义效果。
+- 验收标准：交付可追溯根因报告与必要程序修复；确证独立缺陷建项，风险不冒充缺陷；覆盖方案列出的矩阵及全链冲突复核。无代码缺陷的视觉风险如实记录，不以必须改善某一张图作为关闭条件。
+- 解决 Agent 修改：2026-09-13 完成 `GENERATION_OPTIMIZATION_AUDIT_2026-09-13.md` 根因报告。确认 CPU 两条 gaze 执行路径把已规划且可用的角色身份 ControlNet 特判排除，而历史 502/503 trace 证实最后脸部 pass 没有该单元；已移除排除，按实际请求记录控制单元。没有证据的初始发色/头向偏差及手部空检测不擅自调参或降低门禁。
+- 解决 Agent 测试：worker 语法、31/31 纯逻辑测试及 TypeScript noEmit 通过；核对 426/500/502/503 的 seed、prompt、控制阶段、输出及失败。完整链路复核：剧情/人工选择→视觉规格→canonical prompt/交互→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/接触/手/视线→自动质量门与草稿整体确认→正式候选，详见审计报告。单/双人、左右区域、单/双手、多类道具与意图、坐/站/行走、近/全景沿既有共享契约与几何路径；本次仅修正可用身份单元在 CPU gaze 请求中的遗漏，未引入角色或道具硬编码。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：模型执行随机性、CPU 局部双控制峰值内存与耗时、实际视觉成功率未验证；face-only 身份控制不保证长发和衣着，503 initial 的视觉偏差不能由现有样本锁定代码根因。手部检测在锚点内返回空轮廓的原因未确认，仍保留硬阻断；不得承诺 100%。
+- 诊断 Agent 复核证据：前轮已查看用户已有 initial/保存草稿及任务状态；本项明确作为用户授权的审计工作登记。
+- 诊断 Agent 复核结论：open，待实施审计与证据驱动优化，不预先宣称代码回归。
+- 后续处理：读取 GENERATION_OPTIMIZATION_HANDOFF.md；完成后 fixed_pending_review，诊断复核审计证据与实际修复范围。
+
+## ISSUE-UI-001 阻断草稿已保存但分镜预览过滤该状态
+
+- 诊断 Agent 补充运行证据（2026-09-13）：用户再次报告最新草稿不显示。只读 job 503/shot 1255 为 draft_blocked，draftImagePath=workspace/generated/sd-draft-job-503-7144a132-7a62-4431-a7be-134055699216.png 且文件存在；仍为手部检测器未返回可用轮廓，当前 pendingSdReview 仍排除此状态，本项继续 open。对用户已有 initial 与最终保存图进行对照，基础阶段已是短深色发、正视观众、手机位于膝前且接触手被遮挡；后处理改变表情与道具表面但未纠正这些整体关系。视觉偏差仅作后续定位线索，不能据此确定独立代码根因；检测输入尺寸/裁剪/遮挡、身份与头向控制的实际继承应另行程序审计，不降低失败门禁，不以新增生成图作为程序验收条件。
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：2026-09-12 最新草稿生成结束后没有展示。
+- 已确认事实：job 502/shot 1255 为 draft_blocked，progress=100，错误为手部深度修复未应用、所有可用手部检测器未返回可用轮廓；payload.draftImagePath 已保存且文件存在。app/page.tsx pendingSdReview 只过滤 awaiting_draft_approval/awaiting_final_approval，排除 draft_blocked；轮询阻断分支只刷新并 flash 错误。旧 job 501 仍为 awaiting_draft_approval，可被筛选成预览而掩盖最新失败结果。
+- 高概率原因：把可查看图片与可批准继续混为同一状态筛选。
+- 未验证假设：手部检测失败的具体原因需另查，不据此断言 detector 实现错误，也不要求降低门禁。
+- 反证或冲突：不是生成文件丢失；技术失败阻断继续生成本身符合规则。
+- 复现步骤：只读 jobs 502/501 并检查 draftImagePath 文件存在；用当前 pendingSdReview 过滤条件推导，502 被排除而 501 可被选中。
+- 涉及文件：app/page.tsx:1624（分镜预览筛选）、:378（轮询 draft_blocked 分支）；data/studio.db job 502。
+- 影响范围：已保存中间或草稿结果但后处理失败的 SD 任务。
+- 建议方案：将诊断预览与审批资格分离；最新 blocked 且有图时显示其图片、任务 ID、失败原因与重试入口，并明确禁止确认成品/正式入候选。不能静默回退旧待确认图冒充本轮结果；无文件时明确无可用预览。保留现有技术门禁，不修改历史数据。
+- 验收标准：blocked 有图/无图、最新 blocked 加旧 awaiting、正常 awaiting、completed 路径可通过状态数据推导；blocked 可查看不可批准，无旧图误认。仅程序逻辑验收，不启动 SD 或生成测试图。
+- 解决 Agent 修改：2026-09-13 以该分镜最新 SD job 决定当前预览状态；blocked 有图显示诊断图、任务 ID、阶段、错误和重试入口，无图明确无可用预览；最新 blocked 不再回退旧 awaiting 或候选图。审批对象仅由非 blocked、带草稿路径的 awaiting 状态产生，completed 仍回到正式候选。
+- 解决 Agent 测试：按状态数据推导 blocked 有图/无图、503 blocked+501 awaiting、正常 awaiting、completed；blocked 无审批按钮且无正式候选写入路径，正常 awaiting 仍一次整体确认。TypeScript noEmit 通过。完整链路复核：剧情/人工选择→视觉规格→prompt/交互→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手/视线→自动质量门与草稿整体确认→正式候选；本次 UI 仅展示真实最新状态，不更改人数、区域、景别、姿态、身份、服装、道具、遮挡、环境或控制请求，失败/降级没有伪装成已应用。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：显示诊断图不意味着图像通过语义或技术验收；模型视觉执行率仍为运行风险。
+- 诊断 Agent 复核证据：2026-09-12 当前代码与只读数据库及文件存在检查确认；未生成图片。
+- 诊断 Agent 复核结论：新建 open，UI 状态消费缺口已确认；检测失败根因未确认。
+- 后续处理：解决 Agent 修复至 fixed_pending_review；保留草稿整体确认与成品程序硬门禁，不增加逐项人工审核。
+
+## ISSUE-CONTROL-002 必需手物控制延后时覆盖检查未验证串行补偿能力
+
+- 优先级：P0
+- 状态：verified
+- 诊断 Agent 独立复核（2026-09-12，本轮）：当前 CPU 基础预算为 3，required prop 不再标为延后，实际 controlUnits 进入 request payload；coverage 读取显式能力且 worker 对 object-only prop 声明 includesRequiredHands=false/includesPoseContact=false，预算溢出时在请求前 throw。独立 CPU fast/complex/GPU × phone/book/cup/package 共 12 组选择与覆盖推导通过，额外双道具超预算用例确认不能被串行标记掩盖。identity 补偿与 API enabled=true、worker 按 identity reference 循环的执行路径相符。检查了规格/recipe、基础控制筛选、后续 relation 共享数据、失败阻断和既有草稿整体确认/候选路径。本项已确认的覆盖缺口通过；未承诺所有像素交互正确，也未把计划位置视为检测结果。30/30 worker 测试、两份 worker 语法检查、TypeScript noEmit 均通过。程序逻辑验收通过，未进行图片生成或视觉效果验收。CPU 三控制的内存和速度、模型实际执行率保留为运行风险；历史 job 500 不会自动改写。以下旧“新建 open”结论为历史，当前以本轮为准。
+- 用户报告：2026-09-12 用户要求将本轮项目级解决方案登记入解决队列。第一格为收到取件通知；最小目标是手机可辨认、人物看通知且开心，景别无需严格。
+- 已确认事实：只读 job 500（shot 1255）profileExecution/requestTrace：基础仅发送 pose/support_surface_geometry，deferred_prop_structure 被省略但 coverage.complete=true。当前 scripts/sd-worker-logic.mjs 的 selectControlUnitsForProfile 固定优先 pose=100、support=95、initial_prop=90；controlExecutionCoverage 仅凭 runRefinements 与阶段名将遗漏控制标 scheduled_serial_refinement，不验证阶段能力及接触几何前提。worker CPU 分支将手持道具延后；generic_prop trace 为 maskIncludesHands=false、poseControlExcludedFromObjectPass=true。
+- 高概率原因：把已安排串行请求视为关系控制完整覆盖，没有校验串行阶段是否能补偿基础手物结构。
+- 未验证假设：不能由单张失败图证明所有串行策略无效；景别投影、局部定位和 gaze 身份继承需继续核对当前代码，不能把历史图像自动判成当前回归。
+- 反证或冲突：job 500 确实运行道具、接触和视线修复且保持 semantic_pending。关联 ISSUE-PROFILE-001、ISSUE-PROP-003、ISSUE-PROP-004；本项补充旧方案的覆盖判定缺口，不否认已有阶段审计修复。
+- 复现步骤：用 pose/support/deferred_prop_structure 输入 CPU 控制筛选，以 runRefinements=true 调用 coverage；道具未进入基础而 complete=true，函数无阶段能力/接触前提输入。对照 job 500 recipe 与当前 worker 数据流。
+- 涉及文件：scripts/sd-worker-logic.mjs:290、scripts/sd-worker.mjs:366、scripts/sd-worker.mjs:994；data/studio.db job 500。
+- 影响范围：不同人物、区域、单手/双手和不同道具的生成控制与局部修复。
+- 建议方案：按剧情 relation 声明对象结构、接触、姿态与支持需求，按必要性分配预算。基础建立必要手物关系或提供可证明等价的联合控制；串行补偿需明确能力和前提，不能仅凭 pass 存在判完整。预算不足明确阻断或可追溯降级。所有 mask/对象/接触/视线共用几何及投影；预设坐标不得伪装成检测位置。景别未锁定时可调整，选定后各控制必须一致。
+- 验收标准：CPU/GPU、单/双人、单/双手、phone/book/cup/package/无道具矩阵，必要控制实际发送或等价策略有程序证据；缺口不能被 runRefinements 掩盖。后序 pass 的几何、身份和姿态继承闭合。仅程序逻辑验收，不启动 SD、不生成图；维持草稿整体确认与成品自动流程。
+- 解决 Agent 修改：2026-09-12 扩展 `controlExecutionCoverage`，遗漏控制只有在 worker 显式声明串行阶段 available、保持 Pose，且道具阶段同时包含对象、全部必要手部和 Pose 接触时才可记为 `scheduled_serial_refinement`；能力不足一律 `uncovered` 并在 SD 请求前阻断。当前 generic prop 的 mask/guide 明确不含手和 actor skeleton，因此不再冒充等价补偿。CPU 必需手持道具结构恢复进入基础请求，CPU 基础控制预算由 2 调整为 3，使常见 pose+prop+support 同时发送；identity 仍可由真实 face-only 串行 pass 补偿。
+- 解决 Agent 测试：`node --check scripts/sd-worker-logic.mjs`、`node --check scripts/sd-worker.mjs`、`node --test scripts/sd-worker-logic.test.mjs`（30/30）和本地 `tsc --noEmit --incremental false` 通过。新增“仅存在 pass 但缺手/接触能力仍 uncovered”及“能力完整才允许串行覆盖”断言。完整出图业务链冲突复核：剧情/人工选择的 required relation 经视觉规格、canonical prompt 和 interaction contract 进入 recipe；对象中心、contactAnchors、handMode、人物 region 与 framing 投影继续共用结构化计划；CPU payload 现实际同时发送 pose/required prop/support，身份按人物串行；generic prop/hand/gaze 后序仍使用 relationId/objectInstanceId/共享锚点并保留身份、姿态、服装与构图，且其对象-only 能力不会再被覆盖门虚报；请求或后处理失败继续写 warning 并阻断草稿确认/正式候选，HTTP 2xx 仍只表示 request_succeeded。草稿一次整体确认与成品自动入候选规则未改变。
+- 残余风险：CPU 同时发送三个基础控制会增加峰值内存与耗时；若设备确实无法承载，当前选择明确阻断而不是静默降级。无视觉检测器时语义执行仍不确定，不承诺 100% 成图合格，不把请求成功当语义通过。
+- 诊断 Agent 复核证据：2026-09-12 当前源码静态检查及只读 job 500 证据一致；未生成图片。
+- 诊断 Agent 复核结论：新建 open，未修复。
+- 后续处理：解决 Agent 修复至 fixed_pending_review。复核剧情/人工选择→视觉规格→提示词/交互→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/视线 pass→自动质量门与草稿整体确认→正式候选。独立新冲突登记 ISSUE；仅假设写风险。不得恢复逐项语义勾选或成品二次人工审核。
+
+## ISSUE-PROMPT-003 基础道具提示词改写无条件双手化并删除动作视线
+
+- 优先级：P0
+- 状态：verified
+- 诊断 Agent 再次独立复核（2026-09-12）：已移除命中表面关键词后删除整句的分支，当前只原位替换细节短语；上轮分号复现句保留身侧位置、另一手关门、看向道路与 no legible text。独立运行 smartphone/book/cup/tool × left/right × 逗号/分号 × no/without/avoid/正向细节共 64 组，动作与具体视线均保留；额外多关系单/双手及无道具分支通过。单手不再强制双手，双手仍保留不同接触锚点。检查 worker deferredBase.prompt 在基础 payload 的使用和 requestTrace 记录，修改没有改写 relation、Pose、对象/手 mask、身份/服装/视线阶段输入或审批状态机；上轮已通过的控制覆盖修复继续有效。31/31 worker 测试、两份 worker 语法检查、TypeScript noEmit 全部通过。原整句删除复现已消除，本项标记 verified，以下 partially_fixed 和剩余修改要求为历史记录。程序逻辑验收通过，未进行图片生成或视觉效果验收；模型随机性与实际视觉执行率保留为产品运行风险。本轮无新增确定问题。
+- 解决 Agent 再修复（2026-09-12）：移除“匹配表面细节就删除整个 prompt clause”的路径，改为在原句内仅替换明确的正向细节短语；`no/without/avoid legible text` 等否定约束保持原文。无法安全切分的逗号、分号混合句整体保留，因此人物位置、主动手、另一手动作和具体视线目标不会被通用占位语替代。
+- 解决 Agent 再测试（2026-09-12）：新增诊断复现原句 `left hand holding smartphone at her side; right hand closing the door; eyes looking toward the path; no legible text`，确认四项语义全部保留且 removed 为空；另测 book 正向 intricate surface detail 只原位替换该短语，前后动作和视线不变。`node --test scripts/sd-worker-logic.test.mjs` 31/31、worker 两文件语法与 TypeScript noEmit 通过。完整链复核：剧情/人工选择、视觉规格、canonical prompt、recipe/payload 保留同一句级事实；Regional、Pose、道具 geometry/mask 与后续 identity/prop/hand/gaze pass 仍消费既有 relation 和共享坐标，没有重新推断手数、位置或视线；技术失败及自动门禁继续阻断，草稿整体确认和成品自动入候选状态机未改变。程序逻辑验收完成，未进行图片生成或视觉效果验收。
+- 诊断 Agent 独立复核（2026-09-12，本轮）：单手/双手条件编译和保留普通 phone 句的修复有效，30/30 worker 测试、语法与 TypeScript 检查通过。但 deferRequiredPropsFromBasePrompt 仍对 deferredSurfaceDetailPattern 命中的整个 splitPromptClauses 结果删除。独立可复现输入为 `left hand holding smartphone at her side; right hand closing the door; eyes looking toward the path; no legible text`，relation 为 required=true/object=smartphone/handMode=one/activeHand=left/purpose=carry/gazeMode=independent。返回 removed 包含完整输入，实际输出丢失身侧位置、右手关门和朝路看，只余泛化 other hand remains available 与 independently declared gaze。no legible text 自身也被正则 legible text 命中。此为当前程序确定分支，非视觉失败推断，属于原整句删除根因残留，退回 partially_fixed；不新增重复 ISSUE。
+- 本轮剩余修改要求：只替换或删除局部表面细节短语，混合动作/位置/视线句须保留其语义；无法安全切分时保留原句，不得删除后用通用占位语补回。覆盖逗号与分号、无可读文字的否定表达、单手携带与另一手动作、多关系句；验证返回实际 prompt 仍含原有动作和视线目标。按原要求完成全链路复核。程序逻辑验收部分通过，未进行图片生成或视觉效果验收。
+- 用户报告：本轮用户要求把项目级解决方案写入台账，由另一个解决 Agent 执行。
+- 已确认事实：当前 deferRequiredPropsFromBasePrompt 按对象别名删除整个 clause，然后无条件追加 both acting hands wrap naturally around the declared actual handheld object，未按 handMode/activeHand 分支。job 498 单手身侧持手机、另一手关门的输入在实际请求变成双手握物；job 500 基础请求删除保存 prompt 中含 phone/smartphone 的视线动作句。当前函数仍存在相同处理。
+- 高概率原因：简化道具表面内容的阶段越权删除动作语义，并使用全局双手模板重建。
+- 未验证假设：图片中的杯状物不能仅归因于提示词；模型与控制缺口仍共同影响结果。
+- 反证或冲突：最终请求并未漏写 smartphone；不能归咎于 DeepSeek 没要求手机。关联 ISSUE-INTERACTION-001、ISSUE-TOOL-001、ISSUE-PROMPT-001，本项为 worker 改写层的独立缺口。
+- 复现步骤：调用 deferRequiredPropsFromBasePrompt，输入 required=true、object=smartphone、handMode=one 及单手携带/看手机句；结果包含 both acting hands 且 removed 含视线整句。对 cup/book 和多关系核对同分支。
+- 涉及文件：scripts/sd-worker-logic.mjs:489；scripts/sd-worker.mjs 调用链；lib/prompts.ts；data/studio.db jobs 498/500。
+- 影响范围：单/双手持物、携带/阅读/通话/交接及多对象关系。
+- 建议方案：基础和后处理提示词从同一结构化契约编译，保留手数、主动手、动作目的及视线。只简化表面细节，不能按对象名称删除完整剧情句。逐 relation 编译并校验规格、骨骼、recipe、实际请求、pass 一致；UI 可追溯实际请求。剧情事实、身份和服装保持；用户未锁定的景别允许调整但不得各层冲突。
+- 验收标准：one/two、left/right、携带/阅读/通话/交接、phone/book/cup/tool、多人物多关系矩阵，表面简化不改变手数和视线；无道具不发明动作。程序逻辑验收，不生成图，不要求视觉检测器作为关闭条件。
+- 解决 Agent 修改：2026-09-12 将 `deferRequiredPropsFromBasePrompt` 从“命中任一道具别名即删除整句并统一追加双手”改为只延后可由道具 pass 承担的细粒度表面/伪文字内容。原始对象、动作目的、另一只手动作、视线与表面可见性句保持不变；每条 relation 独立按 handMode、activeHand/contact anchor、purpose 和 gaze 编译。one-hand 明确只有主动手接触且另一手保留既定动作，two-hand 明确两手落在不同接触锚点，不再从 smartphone 类别推断双手。
+- 解决 Agent 测试：worker 逻辑测试 30/30、两个 worker 语法检查与 TypeScript 检查通过；新增“右手身侧携带手机、左手关门、看前方”回归用例，确认动作、视线、主动手全部保留且不出现 both-hands 重写；既有双手阅读用例确认仍保留双手不同锚点、手机可见与看屏幕语义。完整出图业务链冲突复核：剧情/人工选择→视觉规格的 action/hands/gaze/outfit 不被 worker 改写层覆盖；canonical prompt、recipe 与实际基础 payload 保留同一 relation 事实；Regional、OpenPose、prop guide/mask 继续消费同一 characterId/region/objectCenter/contactAnchors；identity/prop/hand/gaze 后序 pass 不改变 handMode/purpose/gaze，技术失败保持上一阶段并阻断候选；草稿整体确认及成品程序硬门后自动回写候选的状态机未增加逐项 UI 或二次人工审核。服装与锁定景别未被本修复修改。
+- 残余风险：程序一致不代表像素 100% 正确；自由文本若上游本身含互斥动作仍需视觉规格校验阻断，模型对携带、阅读、通话、交接及视线的实际执行率保留为产品运行风险。
+- 诊断 Agent 复核证据：2026-09-12 静态核对当前函数和历史实际请求，明确无条件双手追加与关键词整句删除分支。
+- 诊断 Agent 复核结论：新建 open，未修复。
+- 后续处理：解决 Agent 推进 fixed_pending_review，按剧情→视觉规格→提示词/交互→recipe/payload→控制→基础图→局部 pass→质量门/草稿整体确认→候选全链复核。保留现有一次草稿整体确认，成品通过程序硬门禁自动入候选。
+
 ## ISSUE-PROFILE-001 CPU 草稿控制预算省略身份及关键道具控制且没有补偿阶段
 
 - 优先级：P0
@@ -1246,6 +1339,28 @@
 - 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
 - 后续处理：解决 Agent 扩展统一语义复核契约并贯通逐项审批门禁。
 - 诊断 Agent 最终复核（2026-08-12）：`semanticReviewContract` 现从 visualSpec.characters 生成 `character_count_review_required` 与 `anatomy_review_required` 两个 P0 项，并对非 unknown/默认自然表情生成 `expression_review_required` P1 项；job 410 的单人、额外肢体风险与 happy 表情均会形成独立 required verdict。现有 UI/API/数据库/final worker 对 semantic contract items 采用通用逐项校验，因此新增项无需旁路即可被同一 approval 覆盖，缺项或 fail 均不能进入 final。worker 逻辑测试 8/8 通过。程序逻辑验收通过，未进行图片生成或视觉效果验收，标记 `verified`；人工误判与模型执行率继续作为产品运行风险。
+
+## ISSUE-POSE-012 V3 关节点编辑应用后重新自动投影，导致用户画布姿态缩小或位移
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 来源问题：2026-09-12 用户提交骨骼编辑器应用前后截图并询问为何“应用到本格”后由大幅完整骨架变成居中小骨架。
+- 用户报告：在“直接编辑当前骨骼”弹窗中拖动完成的骨架占据画布大部分区域；点击“应用到本格”后，单元格 OpenPose 预览中的骨架明显缩小、位置改变，且关节点外观与编辑器不同。
+- 已确认事实：`app/page.tsx` 的编辑器直接读取并修改 `effectivePoseControl.people`，这些坐标已经是 V3 `ProjectionPlanV3` 投影后的画布坐标；`applyEditedPose` 将其原样保存为 `poseControlOverride.people`。随后 `applyPoseControlOverrideV3` 先用旧 projection 对这些点做逆投影，再调用 V2 override 重建 `fullPeople`，最后对编辑结果重新执行 `chooseProjectionV3`，允许重新选择 composition、scale 与 translate。因而“关节点直接编辑”不是画布坐标的所见即所得保存，而会触发第二次自动构图；骨架包围盒变化时可选择较小 scale 并重新居中。预览外观差异另由两个 renderer 导致：编辑器使用 `circle r=8`、白色描边，V3 control SVG 使用 `circle r=4`、无白色描边；这只解释节点样式，不解释骨架相对画布缩小。
+- 高概率原因：V3 override 没有区分 `parameter_edit`（应重建完整骨架并重新投影）与 `joint_edit`（用户已经直接编辑最终画布坐标，应锁定或显式更新投影），两种编辑模式共用同一自动重投影路径。
+- 未验证假设：用户本格的具体旧/新 projection scale、composition 和 hash 尚未从运行时 recipe 提取；但静态数据流已经确定 `joint_edit` 会重新运行自动构图，足以解释截图中的非所见即所得变化。
+- 反证或冲突：右侧单元格固定显示为 150×150 CSS 缩略图，只会改变整张 SVG 的显示尺寸，不会改变骨架相对黑色画布的占比；图2中相对画布占比也明显下降，因此不能仅归因于预览框较小。节点白边消失属于展示 renderer 不一致，不是坐标变小的根因。
+- 复现步骤：创建任意 V3 单人 pose；取 `base.people` 作为编辑器坐标，扩大或移动若干关节后以 `{schemaVersion:"pose-override-v1", people, editMode:"joint_edit"}` 调用 `applyPoseControlOverrideV3`；比较输入画布坐标与返回 `people`、projection scale/translate/hash，可见函数重新选择投影且返回坐标不保证等于编辑输入。现有 `tests/pose-v3.test.ts` 无 joint-edit 坐标保持断言。
+- 涉及文件：`app/page.tsx` 的 `editablePosePeople/applyEditedPose/posePreview`；`lib/pose-v3/planner.ts` 的 `applyPoseControlOverrideV3`；`lib/pose-v3/projection.ts` 的 `chooseProjectionV3`；`lib/pose-v3/render.ts` 与 `app/globals.css` 的预览样式。
+- 影响范围：所有新建 V3 单人/多人关节点直接编辑，尤其用户改变人物占屏、中心位置、四肢外扩或接近画布边缘时；参数编辑仍应允许自动重算构图，不应与 joint edit 一并禁用。
+- 建议方案：为 override 明确坐标空间和构图意图。`joint_edit` 保存最终 projected canvas coordinates，并锁定当前 projection 或从编辑结果生成 user-locked projection，应用后必须逐点保持可见关节坐标；`parameter_edit` 才重新构建 full pose 并运行自动/偏好投影。recipe、payload、UI 同步记录 coordinateSpace、projection source/hash 和 editMode。若控制 SVG 与编辑器需要视觉一致，再共用同一 renderer 配置，但不能把装饰性白边发送给 ControlNet。
+- 验收标准：V3 单/双人、不同 composition、人物区域、动作/道具及边界关节矩阵中，joint edit 应用前后的可见关节画布坐标在浮点容差内一致，人物 bbox/中心/占屏不变；parameter edit 仍可产生新的 projection；隐藏关节、关系锚点、support/prop 几何与 pose 使用同一投影；recipe/payload/ControlNet 和 UI 显示同一 projection。程序逻辑验收，不启动 SD、不生成图片。
+- 解决 Agent 修改：2026-09-12 将 V3 override 分为独立语义路径。`joint_edit` 现在把 `people` 明确作为 `projected_canvas` 最终画布坐标，沿用当前 scale/translate/composition，生成 `source=user_locked` 的 projection，不再调用 `chooseProjectionV3`；仅为保存完整骨架而按同一锁定 projection 逆变换，ControlNet 再投影后与编辑输入一致。`parameter_edit`/模板编辑保持重建 full pose 并重新自动投影。`PoseControlOverrideV1`、UI state、resolved pose/recipe 新增 `coordinateSpace` 与 `projectionIntent`，V3 control 保存实际 override、锁定 projection hash 和审计原因。
+- 解决 Agent 测试：新增 V3 单人 joint-edit 用例，移动头与腕后断言返回 `people` 逐点等于编辑画布坐标、projection scale/translate 不变、source=user_locked、override 元数据完整；同用例确认 parameter edit 仍产生新 projection hash。`tsc --noEmit --incremental false` 通过；定向 `tsx --test tests/pose-v3.test.ts` 在进入用例前被本机 `uv_os_get_passwd ENOMEM` 阻断，无断言失败。完整出图业务链冲突复核：剧情/人工参数编辑仍可重算视觉构图；直接关节点编辑的画布坐标经 override→API→recipe/payload→OpenPose SVG 使用同一锁定 projection，人物数量、region、隐藏点可见性与 fullPeople 逆变换保持对应；relation、prop、support 几何沿用同一未变 scale/translate，不发生第二次缩放位移；identity/服装/道具/视线 pass、自动质量门、草稿整体确认与正式候选回写状态机均未被改动。程序逻辑验收完成，未启动 SD、未生成图片或执行视觉效果验收。
+- 残余风险：编辑关节后若主动破坏既有手物接触或支持关系，现有跨控制 safety/语义门仍需负责阻断；编辑器节点白边与 ControlNet 无装饰节点仍是刻意的展示差异。即使坐标保存所见即所得，ControlNet 对最终像素姿态与比例的执行率仍受模型随机性影响。
+- 诊断 Agent 复核证据：上述 UI 状态流、V3 逆投影与 `chooseProjectionV3` 重跑路径，以及编辑器/control SVG 的 renderer 差异。
+- 诊断 Agent 复核结论：创建为 `open`。程序逻辑验收未通过，未进行图片生成或视觉效果验收。
+- 后续处理：解决 Agent 拆分 joint edit 与 parameter edit 的投影语义，并补充画布坐标保持和全链路一致性测试。
 
 ## job 410 跨问题完整解决方案（诊断 Agent，2026-08-12）
 

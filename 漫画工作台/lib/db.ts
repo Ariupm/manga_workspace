@@ -1194,7 +1194,10 @@ export function approveSdDraft(projectId: number, jobId: number, semanticReview?
   if (payload.recipe?.pixelQa?.status === "blocked")
     return null;
   const semanticItems = normalizeSemanticReviewItems(payload.recipe?.semanticQa);
-  const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview);
+  const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview, {
+    source: semanticReview?.overallConfirmed ? "manual_overall_confirmation" : "manual_draft_approval",
+    stage: "draft",
+  });
   if (!semanticValidation.valid) return null;
   if (
     !payload.draftImagePath ||
@@ -1269,7 +1272,7 @@ export function approveSdFinal(projectId: number, jobId: number, semanticReview?
     finalReview: payload.recipe?.finalReview,
   });
   const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview, {
-    source: "manual_final_approval",
+    source: semanticReview?.overallConfirmed ? "manual_overall_confirmation" : "manual_final_approval",
     stage: "final",
     imageSha256: actualImageSha256,
     recipeHash,

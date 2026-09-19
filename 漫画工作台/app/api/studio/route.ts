@@ -55,6 +55,7 @@ import {
   sanitizeEnglishPrompt,
 } from "@/lib/prompts";
 import { applyPoseControlOverride, type PoseControlV2 } from "@/lib/pose-v2";
+import { applyPoseControlOverrideV3 } from "@/lib/pose-v3";
 import { normalizeShotSpec, validateVisualIds } from "@/lib/visual-planning";
 import {
   createGenerationJob,
@@ -579,7 +580,7 @@ export async function POST(request: Request) {
       ([filePath, expectedBytes]) => fs.existsSync(filePath) && fs.statSync(filePath).size === expectedBytes,
     );
     const openPoseAvailable = Boolean(openPoseModel);
-    const regionalSpec = buildRegionalPrompt(shot, assets, characters);
+    const regionalSpec = buildRegionalPrompt(shot, assets, characters, { posePlannerVersion: "3.0" });
     const requiredPropInteractions = regionalSpec.repairPasses?.propInteractions || (regionalSpec.repairPasses?.propInteraction ? [regionalSpec.repairPasses.propInteraction] : []);
     if (generationProfile === "cpu_local_fast" && requiredPropInteractions.some((item) => item?.required !== false)) {
       generationProfile = "cpu_local_complex";
@@ -827,8 +828,16 @@ export async function POST(request: Request) {
         : "";
     const automaticPoseControl = regionalSpec.poseControl;
     const resolvedPoseControl = automaticPoseControl && "posePlanVersion" in automaticPoseControl
-      ? applyPoseControlOverride(automaticPoseControl as PoseControlV2, body.poseControlOverride)
+      ? automaticPoseControl.posePlanVersion === "3.0"
+        ? applyPoseControlOverrideV3(automaticPoseControl, body.poseControlOverride)
+        : applyPoseControlOverride(automaticPoseControl as PoseControlV2, body.poseControlOverride)
       : automaticPoseControl;
+    if (resolvedPoseControl && "posePlanVersion" in resolvedPoseControl && resolvedPoseControl.posePlanVersion === "3.0" && !resolvedPoseControl.safety.valid) {
+      return NextResponse.json(
+        { error: "V3 动作证据、接触或投影校验失败，已阻止生成。", code: "POSE_V3_CONTROL_CONFLICT", status: resolvedPoseControl.scenePlan.status, errors: resolvedPoseControl.safety.errors, warnings: resolvedPoseControl.safety.warnings },
+        { status: 422 },
+      );
+    }
     if (body.poseControlOverride && resolvedPoseControl && "safety" in resolvedPoseControl && !resolvedPoseControl.safety.valid) {
       return NextResponse.json(
         { error: "人工姿态覆盖与剧情支持面冲突，已阻止生成。", code: "POSE_OVERRIDE_SUPPORT_CONFLICT", errors: resolvedPoseControl.safety.errors, warnings: resolvedPoseControl.scenePlan?.warnings || [] },

@@ -13,10 +13,11 @@ export type SemanticReviewSubmission = {
   version: "semantic-review-v1";
   verdicts: Record<string, "pass" | "fail">;
   notes?: string;
+  overallConfirmed?: boolean;
 };
 
 export type SemanticReviewBinding = {
-  source?: "manual_draft_approval" | "manual_final_approval";
+  source?: "manual_draft_approval" | "manual_final_approval" | "manual_overall_confirmation";
   stage?: "draft" | "final";
   imageSha256?: string;
   recipeHash?: string;
@@ -56,6 +57,25 @@ export function validateSemanticReviewSubmission(
     return { valid: false as const, errors: ["语义质检提交版本或逐项结果无效"], approval: null };
   const errors: string[] = [];
   const verdicts: Record<string, "pass" | "fail"> = {};
+  if (value.overallConfirmed) {
+    return {
+      valid: true as const,
+      errors,
+      approval: {
+        version: "semantic-review-v1" as const,
+        source: binding.source || "manual_overall_confirmation",
+        stage: binding.stage || "draft",
+        ...(binding.imageSha256 ? { imageSha256: binding.imageSha256 } : {}),
+        ...(binding.recipeHash ? { recipeHash: binding.recipeHash } : {}),
+        approvedAt: new Date().toISOString(),
+        verdicts,
+        notes: typeof value.notes === "string" ? value.notes.trim().slice(0, 1000) : "",
+        reviewMode: "overall_confirmation",
+        reviewedItems: [],
+        reviewContractSnapshot: items,
+      },
+    };
+  }
   for (const item of items) {
     const verdict = value.verdicts[item.id];
     if (item.required && verdict !== "pass" && verdict !== "fail") errors.push(`缺少“${item.label}”的通过/失败结论`);

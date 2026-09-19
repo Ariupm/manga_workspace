@@ -363,7 +363,10 @@ try {
     const propGuideImage = (await sharp(propGuideSvg).png().toBuffer()).toString("base64");
     const propGuideOutput = persistStageOutput("control_prop", initialPropInteraction.relationId || "legacy:1", propGuideImage);
     recipe.stageOutputs.push({ stage: "control_prop", relationId: initialPropInteraction.relationId || null, objectInstanceId: initialPropInteraction.objectInstanceId || null, output: propGuideOutput });
-    const deferSmallPropFromUpperBodyBase = profilePlan.cpu && Boolean(initialPropInteraction.handMode);
+    // A required hand-held prop cannot be called "covered" by the current
+    // object-only serial pass: that pass deliberately excludes actor Pose and
+    // its mask excludes the hands. Keep the joint object structure in base.
+    const deferSmallPropFromUpperBodyBase = false;
     controlUnits.push({ enabled: true, module: "none", model: initialCannyModel, weight: .84, image: propGuideImage, resize_mode: "Just Resize", low_vram: true, processor_res: 512, threshold_a: 64, threshold_b: 128, guidance_start: 0, guidance_end: .78, control_mode: "Balanced", pixel_perfect: false, relationId: initialPropInteraction.relationId || "legacy:1", objectInstanceId: initialPropInteraction.objectInstanceId, expectedCount: initialPropInteraction.expectedCount || 1, shape: initialPropInteraction.shape, surfacePlan: initialPropInteraction.surfacePlan, geometry: guideGeometry, objectBounds: { x: (px - pw / 2) / recipe.width, y: (py - ph / 2) / recipe.height, width: pw / recipe.width, height: ph / recipe.height }, stage: deferSmallPropFromUpperBodyBase ? "deferred_prop_structure" : "initial_prop_structure", deferredReason: deferSmallPropFromUpperBodyBase ? "cpu_base_prioritizes_non_serial_pose_and_support; serial_prop_pass_owns_object" : null, guideEncoding: "precomputed_edge", sharedGeometryKey: guideGeometry.sharedGeometryKey || null, exclusionRegions: initialPropInteraction.surfacePlan?.exclusionRegions || [] });
   }
   const supportRelations = recipe.poseControl?.scenePlan?.supportRelations || [];
@@ -457,6 +460,11 @@ try {
   };
   const requiredControlCoverage = controlExecutionCoverage(requestedControlUnits, controlUnits, {
     runRefinements: phase !== "draft" || profilePlan.runDraftRefinements,
+    serialCapabilities: {
+      identity_reference: { available: true, preservesPose: true },
+      initial_prop_structure: { available: true, includesObject: true, includesRequiredHands: false, includesPoseContact: false, preservesPose: true },
+      deferred_prop_structure: { available: true, includesObject: true, includesRequiredHands: false, includesPoseContact: false, preservesPose: true },
+    },
   });
   recipe.profileExecution.requiredControlCoverage = requiredControlCoverage;
   if (!requiredControlCoverage.complete) {
@@ -1236,7 +1244,7 @@ try {
       update(phase==="draft"?"draft_running":"final_running",97,"",`正在校正人物视线与剧情道具：${propInteraction.object}`);
       const expression = recipe.characterLooks?.[propInteraction.characterId]?.expressionEn || recipe.generationSpec?.visualSpec?.characters?.find((item) => item.characterId === propInteraction.characterId)?.expression || "";
       const gazeIdentityPath=identityReference?.path?path.resolve(root,identityReference.path):"";
-      const gazeIdentityUnit=!profilePlan.cpu&&gazePlan.identityControl&&gazeIdentityPath&&fs.existsSync(gazeIdentityPath)?{
+      const gazeIdentityUnit=gazePlan.identityControl&&gazeIdentityPath&&fs.existsSync(gazeIdentityPath)?{
         enabled:true,
         module:gazePlan.identityControl.module,
         model:gazePlan.identityControl.model,
@@ -1489,7 +1497,7 @@ try {
       const gazeMask = (await sharp(gazeMaskSvg).png().toBuffer()).toString("base64");
       const identityPath = identityReference?.path ? path.resolve(root, identityReference.path) : "";
       const identityReferenceAvailable = Boolean(gazePlan.identityControl && identityPath && fs.existsSync(identityPath));
-      const gazeIdentityUnit = !profilePlan.cpu && identityReferenceAvailable ? {
+      const gazeIdentityUnit = identityReferenceAvailable ? {
         enabled: true,
         module: gazePlan.identityControl.module,
         model: gazePlan.identityControl.model,
@@ -1735,22 +1743,61 @@ try {
     retryWorker.unref();
     process.exit(0);
   }
+  if (automaticVisualGate.status === "blocked") {
+    payload.recipe.automaticVisualGateResult = automaticVisualGate;
+    db.prepare("UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(JSON.stringify(payload), jobId);
+    db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
+    update("failed", 100, `自动质量门未通过：${(automaticVisualGate.missing || []).join("、") || "关键画面要求未满足"}`, "成品自动质检失败，未写入候选");
+    process.exit(0);
+  }
   const filename = `sd-final-job-${jobId}-${randomUUID()}.png`;
   fs.writeFileSync(path.join(directory, filename), finalImage);
   payload.finalReviewImagePath = `workspace/generated/${filename}`;
   payload.phase = "final";
+  const finalImageSha256 = createHash("sha256").update(finalImage).digest("hex");
   payload.recipe.finalReview = {
-    status: "awaiting_manual_approval",
+    status: "automatically_added_to_candidates",
     stage: "final",
-    imageSha256: createHash("sha256").update(finalImage).digest("hex"),
+    imageSha256: finalImageSha256,
     generatedAt: new Date().toISOString(),
-    reviewMode: "manual_semantic_review",
+    reviewMode: "automatic_after_draft_confirmation",
     reviewItemIds: (semanticQa.items || []).map((item) => item.id),
     automaticVisualGate,
   };
-  db.prepare("UPDATE jobs SET status='awaiting_final_approval',payload=?,progress=100,error='',stage='正式图已生成，等待逐项语义复核',updated_at=CURRENT_TIMESTAMP WHERE id=?")
-    .run(JSON.stringify(payload), jobId);
-  db.prepare("UPDATE shots SET status='awaiting_final_approval' WHERE id=?").run(row.shot_id);
+  payload.recipe.finalApproval = {
+    version: "semantic-review-v1",
+    source: "automatic_after_draft_confirmation",
+    stage: "final",
+    approvedAt: new Date().toISOString(),
+    imageSha256: finalImageSha256,
+    reviewMode: "automatic_after_draft_confirmation",
+    draftApproval: payload.recipe.semanticApproval || null,
+  };
+  const existingCandidate = one("SELECT id FROM candidates WHERE source_job_id=?", jobId);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!existingCandidate) {
+      const version = Number(one("SELECT COALESCE(MAX(version),0)+1 value FROM candidates WHERE shot_id=?", row.shot_id)?.value || 1);
+      const selected = Number(one("SELECT COUNT(*) count FROM candidates WHERE shot_id=?", row.shot_id)?.count || 0) === 0 ? 1 : 0;
+      const qualityReport = {
+        stage: "final",
+        imageSha256: finalImageSha256,
+        pixelQa,
+        automaticVisualGate,
+        approval: payload.recipe.finalApproval,
+        semanticContractSnapshot: semanticQa.items || [],
+      };
+      db.prepare("INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,reviewed_at,source_job_id,image_sha256) VALUES(?,?,?,?,?,'passed',?,?,?,CURRENT_TIMESTAMP,?,?)")
+        .run(row.shot_id, payload.finalReviewImagePath, "SD WebUI 成品（草稿确认后自动加入）", version, selected, JSON.stringify(semanticQa.labels || []), JSON.stringify(qualityReport), "automatic_after_draft_confirmation", jobId, finalImageSha256);
+    }
+    db.prepare("UPDATE jobs SET status='completed',payload=?,progress=100,error='',stage='成品已自动加入候选图',updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(JSON.stringify(payload), jobId);
+    db.prepare("UPDATE shots SET status='review' WHERE id=?").run(row.shot_id);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 } catch (error) {
   update(
     "failed",

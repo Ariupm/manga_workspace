@@ -1,4 +1,5 @@
 import type { Shot } from "./types";
+import type { PoseControlV3 } from "./pose-v3/schema";
 
 export type PosePoint = { x: number; y: number };
 export type PoseGazeTargetKind = "object" | "work_point" | "target" | "independent";
@@ -172,6 +173,8 @@ export type PoseControlOverrideV1 = {
   confirmPoseContract?: boolean;
   people?: PosePoint[][];
   editMode?: "preset" | "parameter_edit" | "joint_edit";
+  coordinateSpace?: "projected_canvas" | "full_pose";
+  projectionIntent?: "lock_current" | "recompute";
 };
 
 export type PoseControlV2 = {
@@ -1142,12 +1145,17 @@ export function parsePoseControlOverride(value: unknown): PoseControlOverrideV1 
     ...(typeof raw.confirmPoseContract === "boolean" ? { confirmPoseContract: raw.confirmPoseContract } : {}),
     ...(people ? { people } : {}),
     ...(["preset", "parameter_edit", "joint_edit"].includes(String(raw.editMode)) ? { editMode: raw.editMode as PoseControlOverrideV1["editMode"] } : {}),
+    ...(["projected_canvas", "full_pose"].includes(String(raw.coordinateSpace)) ? { coordinateSpace: raw.coordinateSpace as PoseControlOverrideV1["coordinateSpace"] } : {}),
+    ...(["lock_current", "recompute"].includes(String(raw.projectionIntent)) ? { projectionIntent: raw.projectionIntent as PoseControlOverrideV1["projectionIntent"] } : {}),
   };
   if (parsed.people && !validatePosePeople(parsed.people).valid) return null;
   return parsed;
 }
 
-export function applyPoseControlOverride(base: PoseControlV2, value: unknown): PoseControlV2 {
+export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, value: unknown): PoseControlV2 | PoseControlV3 {
+  // V3 overrides belong to the V3 projection editor. Never report a legacy
+  // edit as applied when reading a mixed historical recipe.
+  if (base.posePlanVersion !== "2.0") return base;
   const override = parsePoseControlOverride(value);
   if (!override) return base;
   const plan: PoseScenePlanV2 = JSON.parse(JSON.stringify(base.scenePlan));

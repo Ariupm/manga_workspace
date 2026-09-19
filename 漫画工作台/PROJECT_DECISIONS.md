@@ -63,12 +63,19 @@
 - 适用范围：所有单人动作骨骼、SVG limb 渲染、ControlNet pose 请求、recipe 审计和骨骼卡片展示。
 - 禁止回退：不得让任何动作族自行决定是否服从 close/medium 上身裁切，不得用同一静态骨架仅改 kind 名称，也不得在 recipe 中省略最终采用的 framing 信息。
 
-## 人工语义质检采用逐项版本化证据
+## 新任务姿态规划采用 V3 完整骨架与唯一投影
 
-- 决定：worker 从实际 generationSpec/qualityGate/conditioner 生成带优先级、期望值和来源的 review contract；UI、API、数据库和 final worker 共用逐项 verdict，全部 required items 通过后才能进入正式生成。
-- 原因：单一 `visualReviewConfirmed` 布尔值无法证明交互、视线、景别、身份、服装、手部、道具、构图和光照被实际审核。
-- 适用范围：所有 awaiting_draft_approval 草稿及其 final 候选写入门禁；旧 labels 仅作为迁移输入。
-- 禁止回退：不得把按钮点击等同于全部语义质检通过，不得只保存批准时间而丢失逐项结果、检查项快照和备注。
+- 决定：新建生成任务默认使用 `PoseScenePlanV3` 和 `compositionPolicy=auto_story`。规划器先在完整动作空间生成 18 点人体与关系数据，再由唯一 `ProjectionPlanV3` 对所有关节执行同一平移/缩放并记录逐关节可见性；旧 recipe 与已有 V2 结构化编辑覆盖继续固定走 V2。
+- 原因：近景/中景不能通过改写髋膝踝坐标来假装裁切，也不能为显示腿部而把所有动作缩小成全身远景。剧情动作证据、接触点和支持面应先成立，再决定可读构图。
+- 适用范围：新 SD 生成任务的动作模板选择、完整骨架、自动构图、OpenPose 控制图、recipe 审计和后续控制图扩展。
+- 禁止回退：不得把历史动作写成单个关节的特例坐标，不得让 prompt、mask、prop/support 控制或 UI 各自重算人物区域，不得把旧 V2 recipe 无提示解释为 V3。
+
+## 图片审批采用草稿整体确认与成品自动入候选
+
+- 决定：worker 继续从实际 generationSpec/qualityGate/conditioner 生成带优先级、期望值和来源的 review contract，作为诊断与审计快照；UI 只要求用户在草稿阶段做一次整体确认。确认后生成成品，成品通过像素解码、后处理和已配置自动门禁后自动写入候选，不再要求第二次人工复核。
+- 原因：逐项点击和成品二次确认使常规出图流程过于繁琐；用户需要直接判断草稿是否值得继续生成。
+- 适用范围：所有 awaiting_draft_approval 草稿、最终生成和候选回写路径。
+- 禁止回退：不得恢复逐项语义勾选或成品二次人工复核；不得把整体确认伪造成逐项人工通过。程序能够确认的像素、后处理及自动门禁失败仍必须阻断。
 
 ## OpenPose 采用可审计的参数化场景计划
 
