@@ -1,5 +1,27 @@
 # 漫画工作台问题台账
 
+## ISSUE-PROMPT-014 自动修正预览差异重新注入旧人物描述
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：job548仍摆拍，授权本轮真实生成对照并继续修复，覆盖旧的禁止生成测试图规则。
+- 已确认事实：job548 promptSource=auto_repaired，promptOverride把the package on the shelf及face and upper body clearly visible作为editorial加入公共段；人物段已为新视线/可见性表达。参考与Pose关闭。
+- 高概率原因：服务端把自动生成的客户端旧预览当成人工增补，与新编译差分后污染公共段。
+- 未验证假设：该污染对最终摆拍的贡献需真实对照，不能把移除旧词等同视觉问题解决。
+- 反证或冲突：真正人工编辑仍需保留；不能为修复而丢弃Pose、尺寸、种子和用户控制开关。
+- 复现步骤：auto_repaired/structured/forced_structured提交旧promptOverride，检查进入编译前的输入与最终editorial。
+- 涉及文件：app/api/studio/route.ts、scripts/generation-editorial-policy.*及测试。
+- 影响范围：新结构化生成请求，单/多人公共、人物及负向预览；历史配方不改。
+- 建议方案：结构化模式忽略客户端预览覆盖，由服务端当前已保存事实编译；手动与旧无模式请求保留。
+- 验收标准：结构化模式三个文本覆盖移除，其他参数保留；人工编辑兼容，原对象不变。
+- 解决 Agent 修改：入口共享generationEditorialInput；structured/forced_structured/auto_repaired不接受客户端自动预览作为正向、负向或Regional增补，基于服务端已保存事实重新编译。manual_override及无模式旧客户端兼容，其他控制字段保留。
+- 解决 Agent 测试：264/264内存库项目测试、生产构建通过。覆盖三种结构化模式、正/负/Regional旧文本移除、人工/旧模式兼容、输入不可变及Pose/参考/尺寸/种子保留。本轮用户明确授权实际生成：job548同模型同种子708319615、512平方、12步CFG5.5，仅移除两段旧editorial的对照仍正面看镜头；视觉问题没有因此解决。代码缺陷修复与视觉结果分开记录。
+- 残余风险：基础模型的姿态/视线执行率尚未解决；本轮真实生成只作诊断，不自动采用候选。 实际三轮：clean仍看镜头；compact侧脸但双手持箱及服装错误；relations侧脸但场景/道具漂移。完整取包裹镜头未修好，不能凭程序通过宣称解决，详见JOB548_VISUAL_DIAGNOSIS_2026-10-05.md。
+- 诊断 Agent 复核证据：job548请求审计与auto_repaired调用链。
+- 诊断 Agent 复核结论：待独立复核。
+- 后续处理：交独立诊断复核；真实对照保存在workspace/gaze548-experiment，未自动采用或覆盖用户候选。
+- 完整出图业务链冲突复核：剧情/人工选择→已保存规格→prompt/交互契约→recipe/payload→Regional/ControlNet→基础与身份/服装/道具/手/视线pass→草稿整体确认、技术错误和候选回写均已核对。入口只去掉明示结构化模式的自动文本覆盖，人物/区域/动作/景别无硬编码，人工编辑仍进入既有冲突检查。姿态、身份、服装、数量、遮挡、场景及几何仍由服务端同一事实编译；未删除参考/Pose/尺寸/种子，不改旧配方。后续pass不再从此入口收到过期公共editorial；失败、审批和候选政策不变，不引入自动视觉质检或第二次审批。真实图片仍失败的部分记录为模型执行风险，而不是伪称代码测试证明摆拍解决。
+
 ## ISSUE-GAZE-010 视线目标名称未编译为注视动作
 
 - 优先级：P1

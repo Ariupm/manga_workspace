@@ -1,3 +1,4 @@
+import {generationEditorialInput} from "../../../scripts/generation-editorial-policy.mjs";
 import {poseUsagePlan,referenceImageUsagePlan} from '../../../scripts/generation-control-policy.mjs';
 import {cpuGenerationPolicy} from '../../../scripts/cpu-generation-policy.mjs';
 import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
@@ -254,7 +255,7 @@ export async function PATCH(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const body = await request.json();
+  const body = generationEditorialInput(await request.json());
   if (
     !["generate", "generateDraft", "approveDraft", "rejectDraft", "approveFinal", "rejectFinal"].includes(
       body.action,
