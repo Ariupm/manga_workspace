@@ -4,26 +4,12 @@
 > 本节由 `pnpm memory:sync` 生成，写入正式项目记忆前必须人工确认。
 
 ### 检测到的代码变更
-- PROJECT_CONTEXT.md
-- PROJECT_DECISIONS.md
-- PROJECT_GOTCHAS.md
 - PROJECT_ISSUES.md
-- PROJECT_MEMORY.pending.md
-- PROMPT_ARCHITECTURE_REPAIR_2026-10-05.md
-- app/api/visual-planning/route.ts
 - app/page.tsx
-- lib/prompts.ts
-- lib/types.ts
-- lib/visual-planning.ts
-- scripts/action-stage-policy.mjs
-- scripts/pose-execution-v3.mjs
-- scripts/prompt-compiler.mjs
-- tests/prompt-compiler.test.ts
-- lib/interaction-facts.ts
 
 ### 最近一次测试摘要
 ```text
-同步器自动测试调用失败：spawnSync pnpm ENOENT；已独立执行224/224项目测试、68/68执行层测试、TypeScript与生产构建。未进行图片生成。新交互事实架构见提示词修复报告第四轮及短记忆。
+同步器自动测试调用失败：spawnSync pnpm ENOENT；已独立执行224/224项目测试、TypeScript和生产构建。用户.map错误与只读正式旧规格缺数组证据一致，编辑器已兼容；未进行图片生成。
 ```
 
 ### 人工确认项
