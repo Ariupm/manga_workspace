@@ -291,7 +291,12 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
       if(new Set(supports.map(s=>JSON.stringify(s))).size>1)failures.push({code:'interaction_failed',severity:'P0',message:`共享实例 ${id} 的支持状态冲突`});
     }
     for(const relation of validStructured)if(relation.visualFacts?.gaze.kind==='object'&&!groups.has(relation.visualFacts.gaze.targetId))failures.push({code:'gaze_failed',severity:'P0',message:'结构化视线目标物体未在当前镜头中声明'});
-    for(const id of ids){const targets=validStructured.filter(r=>r.actorCharacterId===id).map(r=>{const g=r.visualFacts!.gaze;return JSON.stringify([g.kind,g.targetId,g.surface,g.kind==='independent'?g.description:'']);});if(new Set(targets).size>1)failures.push({code:'gaze_failed',severity:'P0',message:`角色 ${id} 在同一镜头中具有互相矛盾的结构化视线目标`});}
+    for(const id of ids){
+      const gazes=validStructured.filter(r=>r.actorCharacterId===id).map(r=>r.visualFacts!.gaze);
+      const targets=gazes.map(g=>JSON.stringify([g.kind,g.targetId,g.kind==='independent'?g.description:'']));
+      const surfaces=gazes.filter(g=>g.surface).map(g=>g.surface);
+      if(new Set(targets).size>1||new Set(surfaces).size>1)failures.push({code:'gaze_failed',severity:'P0',message:`角色 ${id} 在同一镜头中具有互相矛盾的结构化视线目标`});
+    }
   }
   if (errors.length) failures.push(...errors.map((message) => ({ code: message.includes("角色") ? "identity_failed" as const : "interaction_failed" as const, severity: "P0" as const, message })));
   const blocked = failures.some((failure) => failure.severity === "P0");

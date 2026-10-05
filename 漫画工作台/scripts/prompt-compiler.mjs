@@ -73,7 +73,7 @@ export function relationVisualText(relation, stage = 'prop') {
   const geometry = relation.actionRelationAudit?.geometry || relation.actionPlan?.geometry;
   const visualTerms = geometry?.mechanism === 'transfer' ? [] : synchronizedActionTerms(relation).filter(term => !/required story prop|story instance|interaction purpose|surface and exclusion|exclusion regions|wrist anchors|normalized|orientation determined|visible surface follows|action stage|action in progress|before contact|completed action|object position consistent|hands? physically|acting hand at|hand approaching|object remains|object is held|\(.*eyes focused/i.test(term));
   const support=relation.supportLabel ? `the ${relation.supportLabel}` : 'a support surface';
-  const supported = state?.objectState === 'on_support' ? `${object} resting on ${support}` : state?.objectState === 'held' ? `${object} held above ${relation.supportLabel?`the ${relation.supportLabel}`:'the previous support surface'}` : '';
+  const supported = state?.objectState === 'on_support' ? `${object} resting on ${support}` : state?.objectState === 'held' ? relation.supportLabel?`${object} held above the ${relation.supportLabel}`:`${object} held in ${hands}` : '';
   const affordance = relation.visualFacts || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
   const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
   return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
@@ -105,6 +105,8 @@ export function compilePromptFields(fields = [], negative = '') {
     // Absence of an accessory is represented by its scoped negative, not global.
     if (/\bno visible bag\b/i.test(original)) negatives.push('bag');
     if (/\bno glasses\b/i.test(original)) negatives.push('glasses');
+    if (/\bno outerwear\b/i.test(original)) negatives.push('outerwear');
+    text=text.replace(/\bno outerwear\b/gi,'');
     if (/\bno split screen\b/i.test(original)) negatives.push('split screen');
     if (/\bno legible text\b/i.test(original)) negatives.push('legible text');
     text = text
@@ -131,7 +133,7 @@ export function compilePromptFields(fields = [], negative = '') {
     text = text.replace(/,\s*(?=:\d)/g, '').replace(/\(\s*,/g, '(');
     for (const term of promptTerms(text)) {
       if (!/[a-z]/i.test(term)) continue;
-      if (/^(?:calm weather|hands naturally positioned for the described action and framing|acting hands visible and following the described action|contextual orientation determined by the current action|visible surface follows camera and action geometry|object position consistent with its support and transfer stage|action in progress|ambient illumination consistent with the declared scene lighting|motivated directional key light|soft environment bounce light|natural gaze follows the surrounding story action)$/i.test(term)) {
+      if (/^(?:not visible indoors|calm weather|hands naturally positioned for the described action and framing|acting hands visible and following the described action|contextual orientation determined by the current action|visible surface follows camera and action geometry|object position consistent with its support and transfer stage|action in progress|ambient illumination consistent with the declared scene lighting|motivated directional key light|soft environment bounce light|natural gaze follows the surrounding story action)$/i.test(term)) {
         audit.push({factId:field.id,source:field.source,requested:term,applied:'',reason:'non_visual_placeholder'});continue;
       }
       if (/\b(?:no|not|never|without|avoid|do not)\b/i.test(term)) {

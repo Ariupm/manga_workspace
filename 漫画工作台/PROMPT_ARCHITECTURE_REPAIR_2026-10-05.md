@@ -163,3 +163,13 @@ medium close-up, chest-up framing, frame from chest to head, home interior, exac
 ## 第五轮：旧视觉规格编辑界面兼容（2026-10-05）
 
 用户报错与正式只读数据一致：shot1255/1256没有interactions数组，新界面直接.map触发Cannot read properties of undefined。读取及编辑列表改为缺失时空列表，显示旧格式提示；不修改持久化规格，不伪造明确交互事实。224项测试、类型检查及生产构建通过；程序逻辑验收，未生成图片。
+
+## 第六轮：直接英文输出与本地中文编译（2026-10-05）
+
+用户最终指令覆盖最初重试方案：单镜头只调用DeepSeek一次，明确要求包括证据/警告/备注在内的所有描述英文。少量中文由本地视觉编译器处理；不可透明ID保留，数字和结构不变。地点沿用已有地点编译，工具句式按通用语法组合，名称沿人物绑定转换，转换原文和结果记入languageCompilation.audit。
+
+无法识别的复杂中文明确失败，保留compilationCandidate供本地复用，不删原文、不编造事实、不再要求DeepSeek重译。新增compile-shot-candidate只本地编译/校验/保存。它不是任意中文翻译模型，无法承诺所有中文输入成功。
+
+真实shot1259的中文主要位于provenance.evidence。复用已返回候选，本地编译8个字段后保存v1，来源deepseek_local_compile，仍待确认。规格两条关系分别为剪刀/包裹各1件，视线均指package_01。复核发现并修复held状态不必有支持物名、同目标空surface不等于相反surface、not visible indoors是确切不可视模板、no outerwear应进人物范围负向。纯PromptPlan编译无错误且正向无中文。
+
+227/227项目测试、68/68执行层测试、类型和生产构建通过，完整链复核见ISSUE-PROMPT-011第六轮。程序逻辑验收通过，未进行图片生成或视觉效果验收；没有代用户确认新规格或生成草稿。

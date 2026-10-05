@@ -1,5 +1,6 @@
 import { assertVisualShape, chapterSystemPrompt, normalizeChapterPlan, validateVisualIds } from "./visual-planning";
 import type { Asset, Character, ChapterVisualPlan, Shot } from "./types";
+import {compileVisualJsonToEnglish,VisualLanguageCompilationError} from './visual-json-language';
 
 type PlanningShot = Pick<Shot, "id" | "title" | "description" | "scene" | "timeOfDay" | "characterIds"> & Partial<Pick<Shot, "characterLooks" | "outfitId" | "shoeId">> & { confirmedVisualSpec?: Shot["visualSpec"] };
 export type ChapterPlanningInput = {
@@ -25,11 +26,10 @@ export async function planChapterInBatches(input: ChapterPlanningInput, invoke: 
       try {
         const result = await invoke(`${chapterSystemPrompt} ${task} Be concise.`, `${JSON.stringify(data)}${failure ? `\nPrevious response was invalid: ${failure}. Return the complete corrected JSON.` : ""}`, { timeoutMs: 90_000, maxTokens: 4_500, thinking: "disabled" });
         calls.push({ stage, model: result.model, usage: result.usage, latencyMs: result.latencyMs });
-        const nonEnglish = JSON.stringify(result.data).match(/"[^"\n]*[\u3400-\u9fff][^"\n]*"/);
-        if (nonEnglish) throw new Error(`视觉规划包含中文描述：${nonEnglish[0].slice(0, 180)}`);
-        validate(result.data);
-        return result.data as any;
-      } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+        const compiled=compileVisualJsonToEnglish(result.data);
+        validate(compiled.data);
+        return compiled.data as any;
+      } catch (error) { failure = error instanceof Error ? error.message : String(error);if(error instanceof VisualLanguageCompilationError)throw new Error(`${stage}失败：${failure}`); }
     }
     throw new Error(`${stage}失败：${failure}`);
   }

@@ -4,14 +4,13 @@ import { confirmAllShotVisualSpecs, confirmChapterVisualPlan, confirmShotVisualS
 import { assertVisualShape, characterContinuityMemory, dependencyHash, inheritShotContinuity, normalizeShotSpec, shotSystemPrompt, validateVisualIds, VISUAL_SCHEMA_VERSION } from "@/lib/visual-planning";
 import { planChapterInBatches } from "@/lib/chapter-planning";
 import {interactionFactsShape,interactionFactsInstruction,markManualInteractionFactEdits,assertInteractionFactTranslation} from '@/lib/interaction-facts';
+import {requestEnglishVisualJson,VisualLanguageCompilationError,compileVisualJsonToEnglish} from '@/lib/visual-json-language';
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
 
-async function invoke(system:string,user:string) {
-  let last: unknown;
-  for(let attempt=0;attempt<2;attempt++)try{const result=await callDeepSeekJson(system,user);const serialized=JSON.stringify(result.data);if(/[\u3400-\u9fff]/.test(serialized))throw new Error("视觉规划包含中文，正在要求模型重新输出英文");return result;}catch(error){last=error;}
-  throw last;
+async function invoke(system:string,user:string,validate?:(data:any)=>void,glossary:Record<string,string>={}) {
+  return requestEnglishVisualJson((s,u)=>callDeepSeekJson(s,u,{timeoutMs:90_000,maxTokens:6500,thinking:'disabled'}),system,user,validate,glossary);
 }
 
 const shotSummary=(shot:any,includeConfirmed=true)=>shot?({id:shot.id,title:shot.title,description:shot.description,scene:shot.scene,timeOfDay:shot.timeOfDay,
@@ -32,12 +31,17 @@ async function refineOne(data:ReturnType<typeof getStudioData>,shotId:number,for
   input.requiredShape.interactions[0]=Object.assign(input.requiredShape.interactions[0],{visualFacts:interactionFactsShape});
   const hash=dependencyHash(input);
   if(shot.visualSpec&&shot.visualSpecDependencyHash===hash&&!force)return {cached:true,spec:shot.visualSpec,shotId};
-  const result=await invoke(`${shotSystemPrompt} ${interactionFactsInstruction}`,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`);
+  const result=await invoke(`${shotSystemPrompt} ${interactionFactsInstruction}`,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`,raw=>{
+    assertVisualShape('shot',raw);
+    const normalized=normalizeShotSpec(raw,shot,{interactionSource:'model',requireInteractionFacts:true});
+    const validation=validateVisualIds(normalized,data.characters,data.assets);
+    if(!validation.valid)throw new Error([...validation.errors,...(validation.failures||[]).map(f=>f.message)].join('; '));
+  },Object.fromEntries(data.characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice('character_'.length).replace(/_/g,' '):`character ${c.id}`])));
   assertVisualShape("shot",result.data);
   const previous=all[index-1]&&(all[index-1].visualSpecConfirmed||allowPendingPrevious)?all[index-1].visualSpec:null;
   const spec=inheritShotContinuity(normalizeShotSpec(result.data,shot,{interactionSource:'model',requireInteractionFacts:true}),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,continuityMemory.map(item=>item.character)),validation=validateVisualIds(spec,data.characters,data.assets);
   if(!validation.valid)throw new Error(`镜头规格校验失败：${[...validation.errors,...(validation.failures||[]).map(f=>f.message)].join("；")}`);
-  const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.model,generatedAt:new Date().toISOString(),inputHash:hash,usage:result.usage,validation};
+  const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.model,generatedAt:new Date().toISOString(),inputHash:hash,usage:result.usage,languageCompilation:result.languageCompilation,validation};
   saveShotVisualSpec(shot.id,spec,"deepseek",hash,meta);
   return {cached:false,spec,shotId,meta,validation};
 }
@@ -63,6 +67,19 @@ export async function POST(request:Request) {
       return NextResponse.json({ok:true,plan,meta,validation});
     }
     if(body.action==="refine-shot")return NextResponse.json({ok:true,...await refineOne(data,Number(body.shotId),Boolean(body.force))});
+    if(body.action==='compile-shot-candidate'){
+      const shots=data.episode.pages.flatMap(p=>p.shots),index=shots.findIndex(s=>s.id===Number(body.shotId)),shot=shots[index];
+      if(!shot||!body.candidate?.data)return NextResponse.json({error:'缺少分格或待编译规格'},{status:400});
+      const compiled=compileVisualJsonToEnglish(body.candidate.data,Object.fromEntries(data.characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice('character_'.length).replace(/_/g,' '):`character ${c.id}`])));
+      assertVisualShape('shot',compiled.data);
+      const previous=shots[index-1]?.visualSpecConfirmed?shots[index-1].visualSpec:null;
+      const spec=inheritShotContinuity(normalizeShotSpec(compiled.data,shot,{interactionSource:'model',requireInteractionFacts:true}),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,characterContinuityMemory(shots,index).map(x=>x.character));
+      const validation=validateVisualIds(spec,data.characters,data.assets);
+      if(!validation.valid)return NextResponse.json({error:'本地编译后规格校验失败，未保存',validation},{status:422});
+      const hash=dependencyHash({compiledCandidate:body.candidate.data,shotId:shot.id}),meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:body.candidate.model,usage:body.candidate.usage,generatedAt:new Date().toISOString(),inputHash:hash,languageCompilation:{mode:'local_visual_compiler',audit:compiled.audit},validation};
+      if(!saveShotVisualSpec(shot.id,spec,'deepseek_local_compile',hash,meta))throw new Error('本地编译规格保存失败');
+      return NextResponse.json({ok:true,shotId:shot.id,spec,meta,validation});
+    }
     if(body.action==="refine-all") {
       if(!data.episode.visualPlanConfirmed)return NextResponse.json({error:"请先确认全章视觉规划"},{status:409});
       const results=[];let working=data;
@@ -100,6 +117,6 @@ export async function POST(request:Request) {
     return NextResponse.json({error:"未知操作"},{status:400});
   } catch(error) {
     recordVisualPlanningFailure(episodeId,Number.isInteger(Number(body.shotId))?Number(body.shotId):null,String(body.action||"unknown"),error);
-    return NextResponse.json({error:error instanceof Error?error.message:"视觉规划失败",mode:getDeepSeekConfig().enabled?"deepseek_failed":"rules"},{status:502});
+    return NextResponse.json({error:error instanceof Error?error.message:"视觉规划失败",mode:error instanceof VisualLanguageCompilationError?'local_english_compilation_failed':getDeepSeekConfig().enabled?"deepseek_failed":"rules",compilationCandidate:error instanceof VisualLanguageCompilationError?error.candidate:undefined},{status:502});
   }
 }

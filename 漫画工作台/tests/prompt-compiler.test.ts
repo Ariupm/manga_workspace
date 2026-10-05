@@ -109,6 +109,8 @@ test('semantic routing preserves approach gaps and scopes exclusions; ambiguous 
   assert.match(result.prompt,/parcel/);assert.match(result.prompt,/visible gap/);
   assert.doesNotMatch(result.prompt,/\bno\b|without/);assert.match(result.negativePrompt,/eye contact/);
   assert.equal(compilePromptFields([{id:'custom',text:'not opening the door',source:'manual'}]).errors.length,1);
+  const indoor=compilePromptFields([{id:'weather',text:'not visible indoors',source:'spec'},{id:'clothes',text:'no outerwear',source:'spec'}]);
+  assert.deepEqual(indoor.errors,[]);assert.equal(indoor.prompt,'');assert.match(indoor.negativePrompt,/outerwear/);
 });
 
 test('compiler retains long required facts and deduplicates without a tail cutoff',()=>{

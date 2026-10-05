@@ -5,11 +5,19 @@
 
 ### 检测到的代码变更
 - PROJECT_ISSUES.md
-- app/page.tsx
+- PROJECT_MEMORY.pending.md
+- app/api/visual-planning/route.ts
+- lib/chapter-planning.ts
+- lib/interaction-facts.ts
+- lib/visual-planning.ts
+- scripts/prompt-compiler.mjs
+- tests/prompt-compiler.test.ts
+- lib/visual-json-language.ts
+- tests/visual-json-language.test.ts
 
 ### 最近一次测试摘要
 ```text
-同步器自动测试调用失败：spawnSync pnpm ENOENT；已独立执行224/224项目测试、TypeScript和生产构建。用户.map错误与只读正式旧规格缺数组证据一致，编辑器已兼容；未进行图片生成。
+同步器自动测试调用失败：spawnSync pnpm ENOENT；独立227/227项目测试、68/68执行层测试、TypeScript和生产构建通过。真实shot1259复用DeepSeek候选本地编译保存v1待确认，PromptPlan无错误/无中文；未生成图片。
 ```
 
 ### 人工确认项

@@ -25,7 +25,7 @@ export function normalizeInteractionFacts(raw: any, origin: 'manual' | 'model' |
   if(raw.phase==='anticipation'&&raw.contact.state!=='approach'||raw.phase==='contact'&&raw.contact.state!=='contact')throw new Error('交互事实阶段与接触状态冲突');
   if (!string(raw.contact?.part)) throw new Error('交互事实缺少接触部位');
   member(raw.support?.state,['on_support','held','unspecified'],'support.state');
-  if (raw.support.state !== 'unspecified' && !string(raw.support?.label)) throw new Error('交互事实缺少支持物');
+  if (raw.support.state === 'on_support' && !string(raw.support?.label)) throw new Error('交互事实缺少支持物');
   member(raw.gaze?.kind,['object','character','independent'],'gaze.kind');
   if (raw.gaze.kind !== 'independent' && !string(raw.gaze?.targetId)) throw new Error('交互事实缺少视线目标ID');
   if (!string(raw.gaze?.description)) throw new Error('交互事实缺少视线说明');
