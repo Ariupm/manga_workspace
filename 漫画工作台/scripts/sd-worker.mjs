@@ -1,4 +1,5 @@
 import {actionOutlineBounds,actionOutlineMarkup} from "./action-mechanism.mjs";
+import { assertPromptPlanRecipe, prepareGenerationPromptRequest } from "./prompt-compiler.mjs";
 import {contactPassAllowed,actionContactTerms} from "./action-stage-policy.mjs";
 import {poseUnitParameters} from "./pose-conditioning-policy.mjs";
 import { draftHasHardFailure } from "./draft-approval-policy.mjs";
@@ -166,6 +167,19 @@ try {
     process.exit(0);
   const payload = JSON.parse(row.payload);
   const recipe = payload.recipe;
+  assertPromptPlanRecipe(recipe);
+  let promptCompilationFailure = null;
+  const sendGeneration = async (context, url, request) => {
+    let compiledRequest;
+    try { compiledRequest = prepareGenerationPromptRequest(recipe,request,context); }
+    catch(error) { promptCompilationFailure = error; throw error; }
+    const trace = recipe.promptRequestTraces?.at(-1);
+    try {
+      const result = await postJson(url,compiledRequest);
+      if(trace)trace.requestStatus = result.status >= 200 && result.status < 300 ? "succeeded" : "failed";
+      return result;
+    } catch(error) { if(trace)trace.requestStatus="failed"; throw error; }
+  };
   if(recipe.generationSpec?.repairPasses?.actionContractVersion==='story-action-1'&&recipe.poseControl?.posePlanVersion!=='3.0')throw new Error('Story action contract requires its V3 geometry; legacy fallback is not executable');
   preparePoseExecutionV3(recipe);
   const executionScenePlan = recipe.poseExecution?.scenePlan || recipe.poseControl?.scenePlan;
@@ -584,7 +598,7 @@ try {
         requestPayload.resize_mode = 0;
       }
     }
-    generated = await postJson(recipe.endpoint, requestPayload);
+    generated = await sendGeneration({stage:"base"},recipe.endpoint, requestPayload);
   } finally {
     clearInterval(progressTimer);
   }
@@ -740,7 +754,7 @@ try {
         },
       };
       try {
-        const refined = await postJson(
+        const refined = await sendGeneration({stage:"identity",characterId:reference.characterId},
           recipe.endpoint.replace(/\/txt2img$/, "/img2img"),
           refinePayload,
         );
@@ -821,7 +835,7 @@ try {
             mask_blur: 8, inpainting_fill: 1, inpaint_full_res: true, inpaint_full_res_padding: 40, send_images: true,
             ...(useVisualReference ? { alwayson_scripts: { ControlNet: { args: [{ enabled: true, module: reference.module, model: reference.model, weight: Math.max(.32, Number(reference.weight || .36) * .8), image: fs.readFileSync(referencePath).toString("base64"), effective_region_mask: outfitMask, resize_mode: "Crop and Resize", low_vram: true, processor_res: 512, guidance_start: 0, guidance_end: .82, control_mode: "Balanced", pixel_perfect: true }] } } } : {}),
           };
-          const outfitResult = await postJson(recipe.endpoint.replace(/\/txt2img$/, "/img2img"), outfitPayload);
+          const outfitResult = await sendGeneration({stage:"outfit",characterId:reference.characterId,details:`(${garment.prompt}:${outfitPromptWeight})`},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), outfitPayload);
           if (outfitResult.status < 200 || outfitResult.status >= 300) throw new Error(`服务返回 ${outfitResult.status}：${outfitResult.body.slice(0, 180)}`);
           const outfitResponse = JSON.parse(outfitResult.body);
           if (!outfitResponse.images?.[0]) throw new Error("服装精修没有返回图片");
@@ -977,7 +991,7 @@ try {
     propPassTrace.plannedHandProtection = { method: "contact_and_wrist_disks", points: objectMaskPlan.protectedContacts, pixelSegmentationVerified: false };
     recipe.passTraces.push(propPassTrace);
     try {
-      const result=await postJson(recipe.endpoint.replace(/\/txt2img$/,"/img2img"),payload);
+      const result=await sendGeneration({stage:"prop",characterId:propInteraction.characterId,relationId,details:appearanceContract.positive.join(", ")},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),payload);
       if(result.status<200||result.status>=300)throw new Error(`服务返回 ${result.status}：${result.body.slice(0,180)}`);
       const repaired=JSON.parse(result.body);
       if(!repaired.images?.[0])throw new Error("没有返回图片");
@@ -1023,7 +1037,7 @@ try {
           const contactControls = [
             { enabled: true, module: poseControl.module || "none", model: poseControl.model, weight: Math.min(.62,poseUnitParameters(poseControl).weight), image: poseImageBase64, effective_region_mask: contact.mask, resize_mode: "Just Resize", low_vram: true, processor_res: 512, guidance_start: 0, guidance_end: Math.min(.7,poseUnitParameters(poseControl).guidance_end), control_mode: poseUnitParameters(poseControl).control_mode, pixel_perfect: false },
           ];
-          const contactResult = await postJson(recipe.endpoint.replace(/\/txt2img$/, "/img2img"), {
+          const contactResult = await sendGeneration({stage:"hand",characterId:propInteraction.characterId,relationId,details:`${contact.anchor.hand} hand, wrist continuing from the existing forearm`},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), {
             prompt: ["masterpiece, best quality, anime illustration", `one anatomically correct ${contact.anchor.hand} hand`, "five separated natural fingers with plausible joints", "coherent wrist continuing from the existing forearm", ...actionContactTerms(propInteraction), "preserve the existing object core shape position orientation and the opposite hand"].join(", "),
             negative_prompt: [recipe.negativePrompt, "fused fingers, elongated fingers, extra fingers, missing fingers, detached hand, extra hand, mechanical hand, cuff replacing wrist, changed prop, moved prop, duplicate prop"].join(", "),
             init_images: [response.images[0]], mask: contact.mask, width, height,
@@ -1158,7 +1172,7 @@ try {
             mask_blur: 6, inpainting_fill: 1, inpaint_full_res: true, inpaint_full_res_padding: 52, send_images: true,
             alwayson_scripts: { ControlNet: { args: [{ enabled: true, module: "none", model: selectedDetector.model, weight: selectedDetector.kind === "hand_pose" ? Math.min(recipe.handRefinement.weight ?? .58,poseUnitParameters(poseControl).weight) : recipe.handRefinement.weight ?? .58, image: fullDepthBase64, effective_region_mask: hand.mask, resize_mode: "Just Resize", low_vram: true, processor_res: 512, guidance_start: 0, guidance_end: selectedDetector.kind === "hand_pose" ? Math.min(.82,poseUnitParameters(poseControl).guidance_end) : .82, control_mode: selectedDetector.kind === "hand_pose" ? poseUnitParameters(poseControl).control_mode : "Balanced", pixel_perfect: false }] } },
           };
-          const handResult = await postJson(recipe.endpoint.replace(/\/txt2img$/, "/img2img"), handPayload);
+          const handResult = await sendGeneration({stage:"hand",characterId:propInteraction.characterId,relationId,details:`${hand.anchor.hand} hand, coherent palm and wrist`},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), handPayload);
           if (handResult.status < 200 || handResult.status >= 300) throw new Error(`${hand.anchor.hand} 手部修复返回 ${handResult.status}：${handResult.body.slice(0, 180)}`);
           const handResponse = JSON.parse(handResult.body);
           if (!handResponse.images?.[0]) throw new Error(`${hand.anchor.hand} 手部修复没有返回图片`);
@@ -1260,7 +1274,7 @@ try {
       const gazePassTrace = { stage: "gaze", executor: "relation_gaze", relationId, characterId: propInteraction.characterId || null, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", semanticStatus: "not_reviewed", output: null, targetCenter: structuredGazeTarget, gazeTargetKind: gazeTrace.gazeTargetKind, gazeTargetSource: gazeTrace.gazeTargetSource, direction: canonicalGazeDirection, headDirection: gazeTrace.headDirection, headTargetMatchesStructured, faceMaskBounds: gazeGeometry.faceMaskBounds, contextBounds: gazeGeometry.contextBounds, modelCropBounds:gazeTrace.modelCropBounds,targetBox: gazeGeometry.targetBox, modelSeesTarget:gazeTrace.modelSeesTarget,controlUnits: gazeControlSummary, poseControlApplied: Boolean(gazePoseUnit), identityControlApplied: Boolean(gazeIdentityUnit) };
       recipe.passTraces.push(gazePassTrace);
       try {
-        const gazeResult=await postJson(recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
+        const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
         if(gazeResult.status<200||gazeResult.status>=300)throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0,180)}`);
         const gazeResponse=JSON.parse(gazeResult.body);if(!gazeResponse.images?.[0])throw new Error("没有返回图片");
         response={...response,images:[await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)]};
@@ -1397,7 +1411,7 @@ try {
         : {}),
     };
     try {
-      const handoffResult = await postJson(
+      const handoffResult = await sendGeneration({stage:"handoff",characterId:handoffContract?.characterId || handoffRelation?.actorCharacterId,relationId:handoffContract?.relationId,details:[`the ${giverSide} holds the umbrella shaft while extending the handle`,`the ${receiverSide} approaches the handle with an open hand and a visible gap`,"continuous umbrella shaft connected to the canopy"].join(", ")},
         recipe.endpoint.replace(/\/txt2img$/, "/img2img"),
         handoffPayload,
       );
@@ -1574,7 +1588,7 @@ try {
         ...(gazeControlSummary.length ? { alwayson_scripts: { ControlNet: { args: [gazeIdentityUnit, gazePoseUnit].filter(Boolean) } } } : {}),
       };
       try {
-        const gazeResult = await postJson(recipe.endpoint.replace(/\/txt2img$/, "/img2img"), gazePayload);
+        const gazeResult = await sendGeneration({stage:"gaze",characterId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeCandidate.gazeTargetKind,targetDescription,gazeText,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), gazePayload);
         if (gazeResult.status < 200 || gazeResult.status >= 300) throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0, 180)}`);
         const gazeResponse = JSON.parse(gazeResult.body);
         if (!gazeResponse.images?.[0]) throw new Error("没有返回图片");
@@ -1627,6 +1641,9 @@ try {
     recipe.stageOutputs.push({ stage: "final_framing_post_crop", relationId: null, output });
     recipe.framingPostCrop = { ...recipe.framingPostCrop, finalApplied: true, finalSourceBounds: { left, top, width: cropSize, height: cropSize } };
   }
+  // Optional image repairs may degrade on transport failure; invalid prompt
+  // facts must still block the whole result before persistence or candidacy.
+  if (promptCompilationFailure) throw promptCompilationFailure;
   let info = {};
   try {
     info = JSON.parse(response.info || "{}");

@@ -18,7 +18,7 @@ test("explicit location survives legacy placeholders and unrelated places in sto
     const regional = buildRegionalPrompt(input, [], [character]);
     assert.match(normal.prompt, /parcel pickup station/);
     assert.match(regional.commonPrompt, /parcel pickup station/);
-    assert.ok(regional.commonPrompt.indexOf("parcel pickup station") < regional.commonPrompt.indexOf("close-up"), "concrete story setting precedes camera boilerplate");
+    assert.ok(regional.commonPrompt.indexOf("close-up") < regional.commonPrompt.indexOf("parcel pickup station"), "camera then concrete environment follow the shared block order");
     assert.match(regional.negativePrompt, /studio portrait backdrop/);
     assert.doesNotMatch(regional.commonPrompt, /specific everyday location/);
   }

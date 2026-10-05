@@ -1,10 +1,11 @@
+import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
 import { synchronizeBasicPosePromptV3 } from "@/lib/pose-v3/prompt-consistency";
 import { NextRequest, NextResponse } from "next/server";
 import { isGenericLocation } from "@/lib/story-location";
 import { callDeepSeekJson } from "@/lib/deepseek";
 import { prepareGenerationLocation } from "@/lib/generation-location";
-import { preparePoseExecutionV3 } from "../../../scripts/pose-execution-v3.mjs";
+import { compilePoseExecutionV3, preparePoseExecutionV3 } from "../../../scripts/pose-execution-v3.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -445,6 +446,7 @@ export async function POST(request: Request) {
     promptRepairs.push(...reconciled.repairs);
   }
   const promptContractErrors = [
+    ...compiled.promptPlan.errors,
     ...validateShotActionSpecificity(shot),
     ...validateShotHandVisibility(shot),
     ...readContracts.flatMap((contract) => validateFinalPrompt(prompt, contract).errors),
@@ -758,11 +760,11 @@ export async function POST(request: Request) {
     const regionalOverride = body.regionalPromptOverride as
       | { commonPrompt?: string; characterPrompts?: string[] }
       | undefined;
-    let regionalCommonPrompt = sanitizeEnglishPrompt(regionalOverride?.commonPrompt?.trim() || regionalSpec.commonPrompt);
+    let regionalCommonPrompt = sanitizeEnglishPrompt([regionalSpec.commonPrompt,regionalOverride?.commonPrompt ? extractPromptEditorialDiff(regionalSpec.commonPrompt,regionalOverride.commonPrompt) : ""].filter(Boolean).join(", "));
     let regionalCharacterPrompts =
       Array.isArray(regionalOverride?.characterPrompts) &&
       regionalOverride!.characterPrompts!.length === regionalSpec.regionPrompts.length
-        ? regionalOverride!.characterPrompts!.map((value) => sanitizeEnglishPrompt(String(value).trim()))
+        ? regionalOverride!.characterPrompts!.map((value,index) => sanitizeEnglishPrompt([regionalSpec.regionPrompts[index],extractPromptEditorialDiff(regionalSpec.regionPrompts[index],String(value))].filter(Boolean).join(", ")))
         : regionalSpec.regionPrompts;
     for (const contract of readContracts) {
       if (shot.characterIds.length > 1) {
@@ -783,8 +785,15 @@ export async function POST(request: Request) {
         const person = promptPose.scenePlan.people.find(p=>p.characterId===shot.characterIds[index]);
         return person ? synchronizeBasicPosePromptV3(text,person) : text;
       });
-      if (promptPose.scenePlan.people.length===1) regionalCommonPrompt=synchronizeBasicPosePromptV3(regionalCommonPrompt,promptPose.scenePlan.people[0]);
+      for (const facts of regionalSpec.promptPlan.facts.characters) {
+        const person = promptPose.scenePlan.people.find(p=>p.characterId===facts.characterId);
+        if (person) facts.fields = facts.fields.map(field=>field.group === "action" ? {...field,text:synchronizeBasicPosePromptV3(field.text,person),source:"effective_pose_contract"} : field);
+      }
     }
+    const commonCompilation = compilePromptFields([{id:"common.override",text:regionalCommonPrompt,source:"regional_editorial"}]);
+    const characterCompilations = regionalCharacterPrompts.map((text,index)=>compilePromptFields([{id:`character.${index}.override`,text,source:"regional_editorial+pose"}]));
+    regionalCommonPrompt = commonCompilation.prompt;
+    regionalCharacterPrompts = characterCompilations.map(p=>p.prompt);
     const regionalCombinedPrompt = [regionalCommonPrompt, ...regionalCharacterPrompts].join(" BREAK ");
     const regionalContractErrors = readContracts.flatMap((contract) =>
       validateFinalPrompt(regionalCombinedPrompt, contract).errors,
@@ -815,6 +824,12 @@ export async function POST(request: Request) {
       requestedPromptOverride,
       quality.characterCount,
     );
+    const editorialConflicts = validatePromptEditorial(regionalSpec.promptPlan,{
+      common:regionalOverride?.commonPrompt ? extractPromptEditorialDiff(regionalSpec.commonPrompt,regionalOverride.commonPrompt) : "",
+      characters:regionalOverride?.characterPrompts?.map((text,index)=>extractPromptEditorialDiff(regionalSpec.regionPrompts[index] || "",text)),
+      global:requestedPromptOverride,
+    });
+    if(editorialConflicts.length)return NextResponse.json({error:`提示词编辑与当前人物或人数冲突，请修改对应人物字段：${editorialConflicts.join("；")}`,code:"PROMPT_EDITORIAL_FACT_CONFLICT",conflicts:editorialConflicts},{status:422});
     promptRepairs.push(...canonicalPrompt.repairs);
     if (!canonicalPrompt.validation.valid)
       return NextResponse.json(
@@ -825,7 +840,7 @@ export async function POST(request: Request) {
         },
         { status: 422 },
       );
-    const appliedPrompt = promptPose?.scenePlan.people.length===1 ? synchronizeBasicPosePromptV3(canonicalPrompt.prompt,promptPose.scenePlan.people[0]) : canonicalPrompt.prompt;
+    const appliedPrompt = canonicalPrompt.prompt;
     const regionalPrompter =
       shot.characterIds.length > 1 && regionalPrompterAvailable
         ? {
@@ -857,7 +872,21 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     }
-    const effectiveNegativePrompt = negativePromptTrace.prompt;
+    if (promptPose) {
+      const execution = compilePoseExecutionV3(promptPose,regionalSpec.repairPasses);
+      regionalSpec.promptPlan.facts.relations = execution.repairPasses.propInteractions || [];
+    }
+    regionalSpec.promptPlan.facts.characters = regionalSpec.promptPlan.facts.characters.map((person,index)=>({
+      ...person,negative:[person.negative,characterCompilations[index]?.negativePrompt].filter(Boolean).join(", "),
+    }));
+    const effectiveFacts = createPromptPlan(regionalSpec.promptPlan.facts);
+    const promptPlan = finalizePromptPlan(effectiveFacts,{
+      commonPrompt:regionalCommonPrompt,characterPrompts:regionalCharacterPrompts,prompt:appliedPrompt,
+      negativePrompt:[negativePromptTrace.prompt,commonCompilation.negativePrompt,...(characterCompilations.length===1?[characterCompilations[0].negativePrompt]:[])].filter(Boolean).join(", "),editorial:requestedPromptOverride,
+    });
+    promptPlan.errors.push(...commonCompilation.errors,...characterCompilations.flatMap(p=>p.errors));
+    if (promptPlan.errors.length) return NextResponse.json({error:`提示词编译冲突：${promptPlan.errors.join("；")}`,code:"PROMPT_COMPILATION_CONFLICT",conflicts:promptPlan.errors},{status:422});
+    const effectiveNegativePrompt = promptPlan.negativePrompt;
     const negativeOverrideAccepted = Boolean(requestedNegativeOverride);
     const poseOverride =
       typeof body.poseImageOverride === "string" && body.poseImageOverride.trim()
@@ -923,7 +952,8 @@ export async function POST(request: Request) {
       references,
       regionalPrompter,
       generationSpec: {
-      compilerVersion: "sd15-staged-identity-v2",
+        compilerVersion: promptPlan.version,
+        promptPlan,
         visualSpec: shot.visualSpecConfirmed ? shot.visualSpec : null,
         reviewInputs: {
           source: shot.visualSpecConfirmed ? "confirmed_visual_spec" : "compiled_execution_contract",

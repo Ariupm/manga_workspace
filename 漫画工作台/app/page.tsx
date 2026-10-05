@@ -4786,6 +4786,7 @@ type SdRecipe = {
   denoisingStrength?: number;
   prompt?: string;
   negativePrompt?: string;
+  promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string}>;
   references?: Array<{
     role: string;
     assetId: string;
@@ -4796,6 +4797,7 @@ type SdRecipe = {
     weight: number;
   }>;
   generationSpec?: {
+    promptPlan?: {version:string;factsHash:string;commonPrompt:string;characterPrompts:string[];errors:string[];audit:Array<{factId:string;source:string;requested:string;applied:string;reason:string}>};
     commonPrompt?: string;
     characterRegions?: Array<{
       characterName: string;
@@ -4894,6 +4896,22 @@ function JobDetailsButton({ payload }: { payload: string }) {
                   </div>
                   {recipe.generationSpec && (
                     <>
+                      {recipe.generationSpec.promptPlan && (
+                        <details>
+                          <summary>提示词组织与来源</summary>
+                          <p>公共场景</p>
+                          <small>{recipe.generationSpec.promptPlan.commonPrompt}</small>
+                          {recipe.generationSpec.promptPlan.characterPrompts.map((text,index)=>(
+                            <p key={index}><b>{recipe.generationSpec?.characterRegions?.[index]?.characterName || `人物 ${index+1}`}</b><br/><small>{text}</small></p>
+                          ))}
+                          <details><summary>编译记录</summary>
+                            {recipe.generationSpec.promptPlan.audit.map((entry,index)=>(<p key={index}><small>{entry.factId} · {entry.source} · {entry.reason}<br/>{entry.applied || "已合并或分流"}</small></p>))}
+                          </details>
+                          {!!recipe.promptRequestTraces?.length && <details><summary>实际请求提示词</summary>
+                            {recipe.promptRequestTraces.map((trace,index)=>(<p key={index}><b>{trace.stage} · {trace.requestStatus}</b><br/><small>{trace.prompt}<br/>负向：{trace.negativePrompt}</small></p>))}
+                          </details>}
+                        </details>
+                      )}
                       <h3>结构化多人规格</h3>
                       <div className="recipe-references">
                         <article>

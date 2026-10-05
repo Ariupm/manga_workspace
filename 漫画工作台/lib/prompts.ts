@@ -1,4 +1,5 @@
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
+import { ART_STYLE, compilePromptFields, createPromptPlan, relationVisualText, uniquePrompt, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
 import {actionIntent,explicitHandMode} from "./pose-action-semantics";
 import {extraTemplateFromText} from "./pose-v3/action-catalog";
 import { englishTime } from "./story-time";
@@ -694,17 +695,23 @@ export function buildCanonicalGenerationPrompt(
     : "";
   const kind = framingKind(shot);
   const camera = resolveCameraPrompt(shot);
-  const framingInvariant = kind === "close_or_medium"
-    ? `${camera}, strict crop at the waist, no legs or full bodies`
-    : camera;
+  const framingInvariant = camera;
   const countInvariant = characterCount === 1
     ? "exactly one foreground person, solo"
     : `exactly ${characterCount} clearly distinct foreground people`;
-  const prompt = [contract.value, framingInvariant, countInvariant, editorial ? `editorial visual details, ${editorial}` : ""].filter(Boolean).join(", ");
+  const contractParts = contract.value.split(/\s+BREAK\s+/).map((text,index)=>compilePromptFields([{id:`contract.${index}`,text,source:"regional_contract"}]));
+  const execution = compilePromptFields([
+    {id:"camera",text:contract.value.includes(camera) ? "" : framingInvariant,source:"camera"},
+    {id:"count",text:/exactly \d+|exactly one|\bsolo\b/i.test(contract.value) ? "" : countInvariant,source:"character_count"},
+    {id:"editorial",text:editorial,source:"manual_edit"},
+  ]);
+  const blocks = contractParts.map(p=>p.prompt);
+  blocks[0] = [blocks[0],execution.prompt].filter(Boolean).join(", ");
+  const prompt = blocks.join(" BREAK ");
   const value = prompt.toLowerCase();
-  const errors: string[] = [];
+  const errors: string[] = [...contractParts.flatMap(p=>p.errors),...execution.errors];
   if (!value.includes(camera.toLowerCase().split(",")[0])) errors.push("最终 prompt 缺少结构化 camera 契约");
-  if (kind === "close_or_medium" && !/strict crop at the waist|no waist or legs visible|do not show legs or the full body/.test(value))
+  if (kind === "close_or_medium" && !/waist-up|chest-up|head-and-shoulders|face-dominant/.test(value))
     errors.push("近景/中景最终 prompt 缺少正向裁切契约");
   if (kind === "wide" && !/complete (?:figures|bodies) visible|complete bodies visible from head to feet/.test(value))
     errors.push("远景/全景最终 prompt 缺少完整人物景别契约");
@@ -737,7 +744,7 @@ export function buildCanonicalNegativePromptTrace(shot: Shot, contractNegative: 
   });
   const droppedTerms = editorialTerms.slice(maxEditorialTerms);
   const editorial = editorialTerms.slice(0, maxEditorialTerms).join(", ");
-  const contractLayer = compactPrompt([contract, framing].filter(Boolean).join(", "), 72);
+  const contractLayer = uniquePrompt([contract, framing].filter(Boolean).join(", "));
   return { prompt: [contractLayer, editorial].filter(Boolean).join(", "), requested: editorialTerms.join(", "), applied: editorial, droppedTerms, accepted: droppedTerms.length === 0 };
 }
 
@@ -1023,12 +1030,12 @@ export function resolveCameraPrompt(shot: Shot) {
   if (/medium close-?up|close shot/i.test(selected))
     return "medium close-up, chest-up framing, frame from chest to head";
   if (/close-?up/i.test(selected))
-    return "close-up, head-and-shoulders framing, no waist or legs visible";
+    return "close-up, head-and-shoulders framing";
   if (/wide shot|long shot/i.test(selected))
-    return "wide shot, complete figures visible with clear margin below both feet, both hands separated from the torso, readable environment";
+    return "wide shot, complete figures visible with clear margin below both feet, environment visible";
   if (/full shot/i.test(selected))
     return "full shot, complete bodies visible from head to feet, generous margin below the shoes, both hands and all limbs fully inside the frame";
-  return "medium shot, strict waist-up framing, frame from waist to head, avoid tight portrait framing, do not show legs or the full body";
+  return "medium shot, strict waist-up framing, frame from waist to head";
 }
 
 function reconcileHandsWithFraming(hands: string, action: string, cameraPrompt: string) {
@@ -1501,151 +1508,18 @@ export function buildGenerationPrompt(
   assets: Asset[],
   characters: Character[] = [],
 ) {
-  const quality = analyzeGenerationPrompt(shot, characters, assets);
-  const env = suggestEnvironment(shot);
-  const cameraPrompt = resolveCameraPrompt(shot);
-  const close = has(cameraPrompt, /close-?up|medium close/);
-  const wide = has(cameraPrompt, /full shot|wide shot|long shot/);
-  const framing = close
-    ? "upper body framing, recognizable environmental context in soft depth"
-    : wide
-      ? "full body, complete limbs, both feet visible, strong environmental storytelling"
-      : "natural torso framing, character clearly situated inside the environment";
-  const sceneLead = unique([
-    env.locationType,
-    env.location,
-    env.weather,
-    env.timeVisual,
-  ]);
-  const sceneDetails = unique([
-    env.foreground,
-    env.midground,
-    env.background,
-    env.depth,
-    env.keyLight,
-    env.ambientLight,
-    env.colorTemperature,
-    env.atmosphere,
-    shot.visualSpecConfirmed && shot.visualSpec ? "" : shot.sceneEn,
-  ]);
-  const chosenWeight =
-    env.emphasis === "high" ? 1.22 : env.emphasis === "low" ? 1.05 : 1.12;
-  const sceneLeadBlock = wide
-    ? `(narrative environment:${Math.max(1.15, chosenWeight)}), ${sceneLead.join(", ")}`
-    : close
-      ? `recognizable environment context, ${unique([env.location, env.timeVisual]).join(", ")}`
-      : `(story environment:${Math.min(1.12, chosenWeight)}), ${sceneLead.join(", ")}`;
-  const sceneDetailBlock = close
-    ? unique([env.background, env.keyLight]).join(", ")
-    : sceneDetails.join(", ");
-  const interactionContracts=shot.characterIds.map((id)=>interactionForShotFraming(deriveInteractionContract(shot,id),shot));
-  const allInteractionContracts=shot.characterIds.flatMap((id)=>deriveInteractionContracts(shot,id)).map((item)=>interactionForShotFraming(item,shot));
-  const characterBlocks = shot.characterIds.map((id, index) => {
-    const character = characters.find((item) => item.id === id);
-    if (!character) return "";
-    const look = defaultLook(shot, character, index, assets);
-    const outfit = assets.find(
-      (asset) => asset.id === look.outfitId && asset.characterId === character.id,
-    );
-    const shoes = assets.find(
-      (asset) => asset.id === look.shoeId && asset.characterId === character.id,
-    );
-    const hair =
-      look.hairColorEn && look.hairStyleEn
-        ? `(${clean(
-            `${look.hairStyleEn.replace(/\bhair\b/gi, "")} ${look.hairColorEn.replace(/\bhair\b/gi, "")} hair`,
-          )}:1.2)`
-        : clean(`${look.hairStyleEn} ${look.hairColorEn}`);
-    const interactionsForCharacter = allInteractionContracts.filter((item) => item.characterId === id);
-    return unique([
-      look.positionEn,
-      `(${stripTraits(character.appearanceEn)}:1.12)`,
-      character.invariantsEn?.join(", ") || "",
-      character.profile?.agePresentationEn || "",
-      character.profile?.faceShapeEn || "",
-      character.profile?.skinToneEn || "",
-      character.profile?.bodyTypeEn || "",
-      character.profile?.distinguishingFeaturesEn || "",
-      hair,
-      look.eyeColorEn ? `(${look.eyeColorEn}:1.15)` : "",
-      resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
-        ? `(wearing exactly this selected outfit with the same garment type, cut, colors and layers: ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.45)`
-        : "outfit matching the character",
-      resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) ||
-        "matching practical footwear",
-      interactionsForCharacter.map((item) => canonicalActionForInteraction(look.actionEn, item)).join(", "),
-      expressionPrompt(look.expressionEn),
-      `(${look.gazeEn}, head and pupils aligned toward the action target:1.28)`,
-      reconcileHandsWithFraming(look.handsEn, look.actionEn, cameraPrompt),
-      ...interactionsForCharacter.flatMap((item) => item.positive),
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.hair || "" : "",
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.bag || "" : "",
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.accessories.join(", ") || "" : "",
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.glasses || "" : "",
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.outerwearState || "" : "",
-      shot.visualSpecConfirmed ? shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.condition.join(", ") || "" : "",
-    ]).join(", ");
-  });
-  const prompt = compactPrompt(unique([
-    "(masterpiece, best quality:1.2)",
-    "anime illustration, clean line art, soft cel shading",
-    quality.countRule,
-    cameraPrompt,
-    framing,
-    sceneLeadBlock,
-    shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts.join(", ") || "" : "",
-    ...characterBlocks,
-    shot.visualSpecConfirmed && shot.visualSpec?.interactions?.length
-      ? shot.visualSpec.interactions.map((item) => `${item.type}, ${item.actorCharacterId} ${item.action} toward ${item.targetCharacterId || item.propId}, ${item.contactPoints.join(" and ")}, ${item.phase}`).join(", ") : "",
-    sceneDetailBlock,
-    quality.characterCount > 1 &&
-    has(shot.compositionEn, /one (?:woman|man|person)|single (?:woman|man|person)|solo|1(?:girl|boy)/)
-      ? `${quality.characterCount} distinct people separated in the frame with readable space between them`
-      : shot.compositionEn,
-    "natural anatomy consistent with the character, coherent pose, no text, no speech bubbles, no captions",
-  ]).join(", "), close ? 58 : wide ? 82 : 72);
-  const countNegative =
-    quality.characterCount === 1
-      ? "2girls, multiple girls, extra person, duplicate, clone, twins, split screen, collage, diptych, character sheet, turnaround sheet"
-      : "extra person, duplicate character, cloned character, merged bodies, fused faces, swapped clothes";
-  const gazeNegative = shot.characterIds.length > 0 && shot.characterIds.every((id,index)=>{const character=characters.find((item)=>item.id===id);return character?!explicitlyAllowsCameraGaze(defaultLook(shot,character,index,assets).gazeEn):false;})
-    ? "looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera"
-    : "";
-  const environmentNegative = close
-    ? "studio portrait backdrop"
-    : "plain background, empty background, studio backdrop, gradient background, featureless background, excessive background blur";
-  const earNegative = characters
-    .filter((character) => shot.characterIds.includes(character.id))
-    .every((character) => ![...(character.invariantsEn || []), character.appearanceEn || ""].some((value) => /elf|animal ear|兽耳|精灵耳/i.test(value)))
-    ? "pointed ears, elf ears, animal ears"
-    : "";
-  const negativePrompt = compactPrompt(unique([
-    "(low quality, worst quality:1.4), (blurry:1.2), bad anatomy, bad hands, extra fingers, missing fingers",
-    "ugly, deformed, crossed eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors",
-    earNegative,
-    countNegative,
-    gazeNegative,
-    ...interactionContracts.flatMap((item)=>item.negative),
-    environmentNegative,
-    "blown highlights, overexposed face, clipped white clothing, unreadable facial expression",
-    close ? "full body, full-length figure, visible legs, visible shoes, standing portrait" : "",
-    wide ? "cropped feet, missing legs, floating limbs, unbalanced stance" : "",
-    "chibi, nsfw, 3d, realistic, monochrome, grayscale, text, letters, watermark, logo",
-    shot.negativePromptEn,
-    ...characters
-      .filter((character) => shot.characterIds.includes(character.id))
-      .map((character) => character.profile?.outfitNegativeEn || ""),
-  ]).join(", "), 58);
+  const unified = buildRegionalPrompt(shot, assets, characters);
   const compiledLooks: Record<string, CharacterLook> = {};
   shot.characterIds.forEach((id, index) => {
-    const character = characters.find((item) => item.id === id);
+    const character = characters.find(item => item.id === id);
     if (character) compiledLooks[id] = defaultLook(shot, character, index, assets);
   });
   return {
-    prompt,
-    negativePrompt,
-    quality,
-    environment: env,
+    prompt: unified.prompt,
+    negativePrompt: unified.negativePrompt,
+    promptPlan: unified.promptPlan,
+    quality: analyzeGenerationPrompt(shot, characters, assets),
+    environment: suggestEnvironment(shot),
     characterLooks: compiledLooks,
   };
 }
@@ -1675,34 +1549,27 @@ export function buildRegionalPrompt(
   const hasObjectTransfer = plannedInteractions.some((item)=>item.type === "object_transfer") || umbrellaStory(shot);
   const hasUmbrellaHandover = hasObjectTransfer && (!plannedInteractions.some((item)=>item.propId) || plannedInteractions.some((item)=>/umbrella|伞/i.test(item.propId)));
   const sharedInteraction = usePlannedInteraction
-    ? plannedInteractions.map((item)=>`${item.type} involving ${item.propId || "a character target"}, actor ${item.actorCharacterId}, target ${item.targetCharacterId || item.propId}, action ${item.action}, contact at ${item.contactPoints.join(" and ")}, gaze toward ${item.gazeTarget}, action phase ${item.phase}`).join("; ")
+    ? plannedInteractions.map((item)=>item.action).join("; ")
     : hasUmbrellaHandover
-    ? "clear umbrella handover at the center of the frame, the person on the right still holds the umbrella and visibly extends its handle toward the person on the left, the person on the left visibly reaches to accept it, their open hands approach the same handle without touching each other, both people look at each other, narrative instant before the receiver takes possession, the giver remains the sole holder of the umbrella"
-    : "both people visibly performing the same shared story event, clear cause-and-response body language";
+    ? "umbrella handover between the two people"
+    : "";
   const rainDetails = shot.visualSpecConfirmed && shot.visualSpec ? env.weather : /雨|rain/i.test(`${shot.scene} ${shot.description} ${env.weather}`)
     ? "active rain visibly falling, wet reflective pavement, umbrella droplets, puddle ripples"
     : env.weather;
   const principalCount = quality.characterCount > 1
     ? `exactly ${quality.characterCount} clearly rendered foreground principal people, sparse tiny blurred anonymous pedestrian silhouettes only in the far background`
-    : quality.countRule;
-  const basePrompt = sanitizeEnglishPrompt(compactPrompt(unique([
-    "anime illustration, clean line art, soft cel shading",
-    env.location,
-    env.midground,
-    env.background,
-    env.locationType,
-    !isMulti && env.depth === "clear foreground, midground and background separation" ? "" : env.depth,
-    principalCount,
-    `${camera}, ${isMulti?"all faces clearly readable, complete interacting arms visible":"face and acting hands clearly readable"}${mediumOrClose ? ", strict upper-body crop, lower frame edge crosses the torso at the waist, thighs knees legs and feet remain outside the image" : ""}${hasObjectTransfer?", the handover centered between them":""}`,
-    env.foreground,
-    rainDetails,
-    env.timeVisual,
-    env.keyLight,
-    env.ambientLight,
-    isMulti?`(shared character interaction:1.3), ${sharedInteraction}`:"",
-    isMulti?"single continuous narrative scene, strong subject separation, all people sharing the same environment, no split screen":"narrative scene",
-    "camera angle and story occlusion, light motivated by the scene",
-  ]).join(", "), 72));
+    : "exactly one foreground person, solo";
+  const commonFields: PromptField[] = [
+    {id:"camera",group:"camera",text:resolvedCamera,source:"resolved_camera"},
+    {id:"location",group:"environment",text:[env.location,env.midground,env.background,env.foreground,rainDetails].filter(Boolean).join(", "),source:shot.visualSpecConfirmed?"confirmed_scene":"resolved_scene"},
+    {id:"count",group:"count",text:principalCount,source:"character_ids"},
+    {id:"composition",group:"composition",text:isMulti?"single continuous narrative scene, distinct foreground people":"",source:"character_count"},
+    {id:"event",group:"event",text:isMulti?sharedInteraction:"",source:"interaction_contract"},
+    {id:"lighting",group:"lighting",text:[env.timeVisual.replace(/, preserve the declared scene lighting and light-source state/g,""),env.keyLight,env.ambientLight].filter(Boolean).join(", "),source:"resolved_scene"},
+    {id:"style",group:"style",text:ART_STYLE,source:"project_style"},
+  ];
+  const basePrompt = compilePromptFields(commonFields).prompt;
+  const characterFacts: PromptCharacterFacts[] = [];
   const characterRegions: RegionalCharacterRegion[] = shot.characterIds.map((id, index) => {
     const character = characters.find((item) => item.id === id);
     if (!character)
@@ -1720,36 +1587,42 @@ export function buildRegionalPrompt(
       !outfit ? `${character.name}未选择已确认服装资产，使用人物档案文字兜底` : "",
       !shoes ? `${character.name}未选择已确认鞋履资产，使用人物档案文字兜底` : "",
     ].filter(Boolean);
-    const prompt = sanitizeEnglishPrompt(compactPrompt(unique([
+    const state = shot.visualSpecConfirmed ? shot.visualSpec?.characters.find(item=>item.characterId===id)?.appearanceState : undefined;
+    const manualHair = Boolean(shot.characterLooks?.[id]?.hairStyleEn || shot.characterLooks?.[id]?.hairColorEn);
+    const stateHair = !manualHair && state?.hair && !/unchanged|matching|no .*change/i.test(state.hair) ? state.hair : "";
+    const sourceFor = (key: keyof CharacterLook) => shot.characterLooks?.[id]?.[key] ? "manual_character_look" : shot.visualSpecConfirmed ? "confirmed_visual_spec" : "character_asset_or_story";
+    const identity = unique([
       "one person",
       englishVisual(character.profile?.agePresentationEn),
-      englishVisual(look.positionEn, index === 0 ? "on the left" : "on the right"),
-      englishVisual(stripTraits(character.appearanceEn)) ? `(${englishVisual(stripTraits(character.appearanceEn))}:1.2)` : "",
+      englishVisual(stripTraits(character.appearanceEn)).split(",").filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term)).join(", "),
       englishVisual(character.profile?.faceShapeEn) ? `(${englishVisual(character.profile?.faceShapeEn)}:1.22)` : "",
-      englishVisual(character.profile?.skinToneEn) ? `(${englishVisual(character.profile?.skinToneEn)}, clean consistent natural skin:1.15)` : "",
-      englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",
+      englishVisual(character.profile?.skinToneEn) ? `(${englishVisual(character.profile?.skinToneEn)}:1.15)` : "",
       englishVisual(character.profile?.distinguishingFeaturesEn) ? `(${englishVisual(character.profile?.distinguishingFeaturesEn)}:1.18)` : "",
-      character.invariantsEn?.length ? `(${englishVisual(character.invariantsEn.join(", "), "canonical character invariants")}:1.28)` : "",
-      `(${englishVisual(clean(`${look.hairStyleEn} ${look.hairColorEn}`), "hair matching the identity reference")}:1.45)`,
+      character.invariantsEn?.filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term)).map(term=>englishVisual(term)).join(", ") || "",
+      `(${englishVisual(stateHair || clean(`${look.hairStyleEn} ${look.hairColorEn}`))}:1.45)`,
       englishVisual(look.eyeColorEn) ? `(${englishVisual(look.eyeColorEn)}:1.25)` : "",
+    ]).join(", ");
+    const fields: PromptField[] = [
+      {id:`${id}.position`,group:"position",text:englishVisual(look.positionEn),source:sourceFor("positionEn")},
+      {id:`${id}.identity`,group:"identity",text:identity,source:stateHair?"confirmed_hair_state+character_profile":"character_profile+effective_traits"},
+      {id:`${id}.body`,group:"body",text:englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",source:"character_profile"},
+      {id:`${id}.clothing`,group:"clothing",text:[
       resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
         ? `(wearing ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.5)`
-        : "outfit matching the character",
-      resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn),
-      englishVisual(interactions.map((interaction)=>canonicalActionForInteraction(look.actionEn, interaction)).join(", "), "performing the current story action"),
-      englishVisual(expressionPrompt(look.expressionEn), "readable story-appropriate expression"),
-      `(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,
-      englishVisual(reconcileHandsWithFraming(look.handsEn, look.actionEn, camera), "hands following the described action"),
-      ...interactions.flatMap((interaction)=>interaction.positive),
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.hair) : "",
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.bag) : "",
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.accessories.join(", ")) : "",
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.glasses) : "",
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.outerwearState) : "",
-      shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.condition.join(", ")) : "",
-      isMulti?"interacting with the other people rather than posing for a portrait":"performing the specified action rather than posing for a portrait",
-      "same established facial identity, readable symmetrical eyes, defined facial features",
-    ]).join(", "), 42));
+        : "",
+      /wide shot|full shot/.test(resolvedCamera) ? resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) : "",
+      state?.bag,state?.accessories.join(", "),state?.glasses,state?.outerwearState,
+      ].filter(Boolean).join(", "),source:outfit?`selected_asset:${outfit.id}`:"character_profile"},
+      {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:sourceFor("actionEn")},
+      {id:`${id}.hands`,group:"hands",text:[englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),...interactions.map(i=>relationVisualText(i))].join(", "),source:"interaction_contract+effective_hands"},
+      {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
+      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:sourceFor("gazeEn")},
+      {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
+      {id:`${id}.occlusion`,group:"occlusion",text:englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),source:"confirmed_visual_spec"},
+    ];
+    const compiledFields = compilePromptFields(fields,character.profile?.outfitNegativeEn || "");
+    characterFacts.push({characterId:id,fields,negative:compiledFields.negativePrompt});
+    const prompt = compiledFields.prompt;
     return {
       characterId: id,
       characterName: character.name,
@@ -1768,14 +1641,14 @@ export function buildRegionalPrompt(
   });
   const negativeBlocks = {
     quality: "(low quality, worst quality:1.4), blurry face, featureless face, muddy details",
-    environment: /studio|plain background|seamless backdrop/i.test(env.location) ? "" : "empty background, studio portrait backdrop, featureless background",
-    identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
+    environment: /studio|plain background|seamless backdrop/i.test(env.location) ? "" : "plain background, empty background, studio portrait backdrop, featureless background",
+    identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes, wrong garment category, wrong garment length, wrong clothing colors",
     anatomy: "deformed limbs, extra or missing limbs, fused hands, malformed wrists, extra or missing fingers",
     interaction: hasObjectTransfer ? "holding hands, linked arms, posing for camera, both people incorrectly owning the same prop, disconnected prop, unclear transfer" : "static portrait pose, unrelated actions",
     // A confirmed weather specification is authoritative; an umbrella or old scene
     // description cannot introduce contrary weather exclusions.
-    weather: !shot.visualSpecConfirmed && /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, no falling rain, sunny weather" : "",
-    composition: quality.characterCount > 1 ? "extra foreground principal person, third detailed foreground character, crowded foreground, duplicated person, clone, twins, split screen, collage, character sheet" : `extra person, duplicate${mediumOrClose ? ", visible thighs, visible knees, visible legs, visible feet, full body" : ""}`,
+    weather: !shot.visualSpecConfirmed && /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, sunny weather" : "",
+    composition: quality.characterCount > 1 ? "extra foreground principal person, crowded foreground, duplicated person, clone, split screen, collage, character sheet" : `extra person, duplicate, clone, split screen, collage, character sheet${mediumOrClose ? ", full-body composition" : ""}`,
     text: "chibi, nsfw, 3d, photorealistic, monochrome, grayscale, text, letters, watermark, logo, speech bubbles, captions",
   };
   // Shared negative conditioning affects every region, including actors explicitly
@@ -1783,14 +1656,18 @@ export function buildRegionalPrompt(
   if(shot.characterIds.length > 0 && shot.characterIds.every((id,index)=>{const character=characters.find(item=>item.id===id);return character?!explicitlyAllowsCameraGaze(defaultLook(shot,character,index,assets).gazeEn):false;}))negativeBlocks.composition += ", looking at viewer, eye contact with camera, front-facing portrait gaze";
   const interactionContracts=shot.characterIds.map((id)=>interactionForShotFraming(deriveInteractionContract(shot,id),shot));
   const allInteractionContracts=orderInteractionContractsForExecution(shot,shot.characterIds.flatMap((id)=>deriveInteractionContracts(shot,id)).map((item)=>interactionForShotFraming(item,shot)));
-  negativeBlocks.interaction=[negativeBlocks.interaction,...allInteractionContracts.flatMap((item)=>item.negative)].filter(Boolean).join(", ");
+  if (!isMulti) negativeBlocks.interaction=[negativeBlocks.interaction,...allInteractionContracts.flatMap(item=>item.negative)].filter(Boolean).join(", ");
+  if (shot.characterIds.every(id=>{const character=characters.find(c=>c.id===id);return character && !/elf|animal ear|兽耳|精灵耳/i.test([character.appearanceEn,...character.invariantsEn].join(" "));}))negativeBlocks.identity+=", pointed ears, elf ears, animal ears";
   const outfitNegatives = characters
     .filter((character) => shot.characterIds.includes(character.id))
     .map((character) => character.profile?.outfitNegativeEn || "")
     .filter(Boolean)
     .join(", ");
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
-  const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60));
+  // Outfit exclusions are scoped to their owner, not broadcast to other people.
+  negativeBlocks.identity = negativeBlocks.identity.replace(outfitNegatives, "");
+  const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks});
+  const negativePrompt = promptPlan.negativePrompt;
   const regionPrompts = characterRegions.map((region) => region.prompt);
   const characterInteractionContracts = shot.characterIds.flatMap((id) => deriveInteractionContracts(shot, id)).map((item)=>interactionForShotFraming(item,shot));
   const poseHeight = /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512;
@@ -1802,6 +1679,7 @@ export function buildRegionalPrompt(
       : buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight)
     : null;
   return {
+    promptPlan,
     commonPrompt: basePrompt,
     basePrompt,
     regionPrompts,

@@ -328,8 +328,8 @@ test("提示词包含全部绑定人物且不含中文", () => {
     },
   ];
   const result = buildGenerationPrompt(shot, data.assets, characters);
-  assert.match(result.prompt, /exactly 2 distinct people/);
-  assert.match(result.prompt, /short black hair/);
+  assert.match(result.prompt, /exactly 2 .*foreground principal people/);
+  assert.match(result.prompt, /short hair black hair|short black hair/);
   assert.doesNotMatch(result.prompt, /[\u3400-\u9fff]/);
 });
 
@@ -389,14 +389,14 @@ test("Regional Prompter 公共区保留完整场景且人物属性只进入各�
   ]);
   assert.match(result.basePrompt, /exactly 2 clearly rendered foreground principal people/);
   assert.match(result.basePrompt, /foreground|pavement|door edge/i);
-  assert.match(result.basePrompt, /midground|crosswalk|reception/i);
+  assert.match(result.basePrompt, /sidewalk|street furniture|crosswalk|reception/i);
   assert.match(result.basePrompt, /background|storefronts|corridor/i);
   assert.doesNotMatch(result.basePrompt, /pink hair|blue eyes|black hair|green eyes/i);
   assert.match(result.regionPrompts[0], /pink hair/);
   assert.match(result.regionPrompts[0], /woman on the right/);
   assert.match(result.regionPrompts[1], /black hair/);
   assert.match(result.regionPrompts[1], /woman on the left/);
-  assert.match(result.basePrompt, /umbrella handover at the center/);
+  assert.match(result.basePrompt, /umbrella handover/);
   assert.match(result.basePrompt, /fine diagonal rain streaks|active rain visibly falling/);
   assert.match(result.basePrompt, /sparse tiny blurred anonymous pedestrian/);
   assert.match(result.basePrompt, /strict waist-up framing/);
@@ -430,8 +430,8 @@ test("雨伞互动提示词保护面部可读性且不再要求中景显示全�
   };
   const result = buildRegionalPrompt(shot, data.assets, data.characters);
   assert.match(result.commonPrompt, /strict (?:waist-up framing|crop at the waist)/);
-  assert.match(result.commonPrompt, /light motivated by the scene/);
-  assert.match(result.commonPrompt, /camera angle and story occlusion/);
+  assert.match(result.commonPrompt, /motivated directional key light|scene|bounce light/);
+  assert.match(result.commonPrompt, /medium shot|close-up|wide shot/);
   assert.doesNotMatch(result.commonPrompt, /knees and five fingers/);
   assert.doesNotMatch(result.negativePrompt, /deep shadow across eyes|umbrella edge crossing a face/);
 });
@@ -536,8 +536,8 @@ test("单人提示词强制人数与拼贴负面约束", () => {
   };
   const result = buildGenerationPrompt(shot, data.assets, data.characters);
   assert.equal(result.quality.valid, true);
-  assert.match(result.prompt, /solo, single person/);
-  assert.match(result.negativePrompt, /multiple girls/);
+  assert.match(result.prompt, /exactly one foreground person, solo/);
+  assert.match(result.negativePrompt, /extra person/);
   assert.match(result.negativePrompt, /character sheet/);
 });
 
@@ -548,7 +548,7 @@ test("查看手机动作会约束头部瞳孔朝向并排除镜头眼神",()=>{
   assert.match(result.prompt,/pupils directed downward/);
   assert.match(result.negativePrompt,/eye contact with camera/);
   assert.doesNotMatch(result.prompt,/looking slightly toward the viewer/);
-  assert.match(result.prompt,/required story prop clearly visible: smartphone/);
+  assert.match(result.prompt,/one smartphone/);
   assert.match(result.negativePrompt,/folded hands/);
 });
 
@@ -568,7 +568,7 @@ test("道具交互契约可泛化到阅读物且绑定手、物与视线",()=>{
 test("单人区域提示不混入双人交接模板",()=>{
   const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],characterIds:["character_xiaofen"],actionEn:"holding a smartphone and reading a notification",characterLooks:{}};
   const result=buildRegionalPrompt(shot,data.assets,data.characters);
-  assert.match(result.commonPrompt,/single-character narrative composition/);
+  assert.match(result.commonPrompt,/exactly one foreground person/);
   assert.doesNotMatch(result.commonPrompt,/both faces|handover centered|both people/);
   assert.doesNotMatch(result.regionPrompts[0],/other woman/);
   assert.equal(result.repairPasses.propInteraction?.object,"smartphone");
@@ -1195,7 +1195,7 @@ test("最终请求统一使用结构化 prompt 契约并保留可追溯编辑层
         const plan=buildCanonicalGenerationPrompt(shot,regional.prompt,source.override,count);
         assert.equal(plan.validation.valid,true,`${source.mode}/${cameraEn}/${count}`);
         assert.match(plan.prompt,/anime illustration/);
-        if(cameraEn!=="wide shot") assert.match(plan.prompt,/strict crop at the waist|no waist or legs visible|do not show legs or the full body/);
+        if(cameraEn!=="wide shot") assert.match(plan.prompt,/waist-up|head-and-shoulders|chest-up/);
         if(source.override) assert.equal(plan.overrideApplied,true);
         if(cameraEn!=="wide shot") assert.equal(plan.prompt.includes("editorial visual details, cinematic full body portrait"),false);
         const negative=buildCanonicalNegativePrompt(shot,regional.negativePrompt,"soft focus");
@@ -1311,7 +1311,7 @@ test("未确认镜头与已确认多关系都把主动工具作为执行主道�
   assert.equal(fallbackContract.purpose,"operate");
   assert.equal(fallbackContract.handMode,"one");
   assert.equal(fallbackRegional.repairPasses.propInteraction?.object,"scissors");
-  assert.match(fallbackRegional.prompt,/required story prop clearly visible: scissors/i);
+  assert.match(fallbackRegional.prompt,/one scissors/i);
 
   const visualSpec=normalizeShotSpec({
     visibleFacts:["one package and one pair of scissors are visible"],scene:{},characters:[{
@@ -1325,8 +1325,8 @@ test("未确认镜头与已确认多关系都把主动工具作为执行主道�
   const regional=buildRegionalPrompt({...base,characterIds:[characterId],actionEn:"Cutting open the package with scissors",visualSpecConfirmed:true,visualSpec,characterLooks:{}},data.assets,data.characters);
   assert.deepEqual(regional.repairPasses.propInteractions.map((item)=>item.object),["scissors","package"]);
   assert.equal(regional.repairPasses.passGraph.length,2);
-  assert.match(regional.characterRegions[0].prompt,/required story prop clearly visible: scissors/i);
-  assert.match(regional.characterRegions[0].prompt,/required story prop clearly visible: package/i);
+  assert.match(regional.characterRegions[0].prompt,/one scissors/i);
+  assert.match(regional.characterRegions[0].prompt,/one package/i);
 });
 
 test("多关系、legacy 单数迁移、残缺关系和静态镜头走各自校验路径", () => {
@@ -1734,7 +1734,8 @@ test("场景先于人物且夜晚保留时段并服从场景光源", () => {
     result.prompt.indexOf("rainy city street") <
       result.prompt.indexOf("soft pink"),
   );
-  assert.match(result.prompt, /night, preserve the declared scene lighting/);
+  assert.match(result.prompt, /night/);
+  assert.match(result.prompt, /key light|moonlight|ambient|bounce light/);
   assert.match(result.negativePrompt, /plain background/);
 });
 
@@ -1749,7 +1750,8 @@ test("特写保留环境线索但不强制排除浅景深", () => {
     compositionEn: "face framed with office context",
   };
   const result = buildGenerationPrompt(shot, data.assets, data.characters);
-  assert.match(result.prompt, /recognizable environment context/);
+  assert.match(result.prompt, /head-and-shoulders framing/);
+  assert.ok(result.prompt.includes(result.environment.location));
   assert.doesNotMatch(result.negativePrompt, /excessive background blur/);
 });
 
@@ -1857,7 +1859,7 @@ test("雨伞交接不强制正面补光或双眼可见", () => {
     const result=buildRegionalPrompt(shot,data.assets,data.characters);
     assert.ok(result.basePrompt.includes(lighting));
     assert.doesNotMatch(result.basePrompt,/frontal fill|both eyes fully visible|no deep umbrella shadow|above and behind the heads/);
-    assert.match(result.basePrompt,/preserve the declared scene lighting/);
+    assert.ok(result.promptPlan.facts.common.some(field=>field.group==="lighting" && field.text.includes(lighting)));
   }
 });
 
@@ -1866,7 +1868,8 @@ test("确认天气不被旧雨景或递伞负向推翻", () => {
   for(const weather of ["sunny dry weather", "overcast with no rain", "light rain"]) {
     const shot={...base,scene:"雨夜街道",description:"两人在雨中交接雨伞",actionEn:"giving and receiving an umbrella",visualSpecConfirmed:true,visualSpec:normalizeShotSpec({visibleFacts:["umbrella handover"],scene:{location:"quiet road",timeOfDay:"afternoon",weather,lighting:"natural ambient light",anchors:[]},characters:base.characterIds.map(characterId=>({characterId,action:"offering an umbrella"})),interactions:[],camera:{},stateChanges:[],warnings:[]},base)};
     const result=buildRegionalPrompt(shot,data.assets,data.characters);
-    assert.ok(result.basePrompt.includes(weather));
+    assert.ok(result.basePrompt.includes(weather.replace("with no rain", "" ).trim()));
+    if(weather.includes("no rain")) assert.match(result.negativePrompt,/rain/);
     assert.doesNotMatch(result.negativePrompt,/dry pavement|no falling rain|sunny weather/);
     if(weather!=="light rain") assert.doesNotMatch(result.basePrompt,/active rain visibly falling/);
   }

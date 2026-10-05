@@ -1,0 +1,16 @@
+export type PromptField = {id:string;group?:string;text:string;source:string};
+export type PromptCompilation = {prompt:string;negativePrompt:string;audit:any[];errors:string[];statistics:{characters:number;terms:number}};
+export type PromptCharacterFacts = {characterId:string;fields:PromptField[];negative?:string;region?:{xStart:number;xEnd:number}};
+export type PromptPlan = {version:string;factsHash:string;facts:{common:PromptField[];characters:PromptCharacterFacts[];relations:any[];style:string;negativeBlocks:Record<string,string>};commonPrompt:string;characterPrompts:string[];negativePrompt:string;characterNegatives:{characterId:string;prompt:string}[];audit:any[];errors:string[];appliedPrompt?:string;executionHash?:string};
+export const PROMPT_COMPILER_VERSION:string;
+export const ART_STYLE:string;
+export function relationVisualText(relation:any,stage?:string):string;
+export function promptTerms(value:string):string[];
+export function uniquePrompt(value:string):string;
+export function compilePromptFields(fields:PromptField[],negative?:string):PromptCompilation;
+export function createPromptPlan(input:{common:PromptField[];characters:PromptCharacterFacts[];relations?:any[];negativeBlocks?:Record<string,string>;style?:string}):PromptPlan;
+export function validatePromptEditorial(plan:PromptPlan,edits?:{common?:string;characters?:string[];global?:string}):string[];
+export function compileStagePrompt(plan:PromptPlan,context:{stage:string;characterId:string;relationId?:string;details?:string;negative?:string}):PromptCompilation;
+export function finalizePromptPlan(plan:PromptPlan,context:{commonPrompt:string;characterPrompts:string[];prompt:string;negativePrompt:string;editorial?:string}):PromptPlan;
+export function prepareGenerationPromptRequest(recipe:any,payload:any,context:{stage:string;characterId?:string;relationId?:string;details?:string;negative?:string}):any;
+export function assertPromptPlanRecipe(recipe:any):void;

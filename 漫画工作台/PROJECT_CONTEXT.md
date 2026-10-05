@@ -8,6 +8,8 @@
 
 ## 技术栈与目录
 
+- 新任务提示词统一由 `scripts/prompt-compiler.mjs` 编译为公共正向、人物正向、分范围负向和阶段投影；recipe 保存 comic-facts-1 快照，worker 所有图像请求通过共享适配器。详见 `PROMPT_ARCHITECTURE_REPAIR_2026-10-05.md`；历史配方保留旧执行路径，程序验收未包含生图。
+
 - Next.js + TypeScript + SQLite
 - 主界面：`app/page.tsx`
 - API：`app/api/`
