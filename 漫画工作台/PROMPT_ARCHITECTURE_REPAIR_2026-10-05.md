@@ -80,3 +80,41 @@ BREAK 只分隔公共块与每个人物块；不会跨人物去重。普通预�
 ## 保留的运行风险
 
 提示词冲突识别是有界规则，不能理解所有自由英文表达；模糊否定会报错，任意新表述的全部语义矛盾不能保证自动发现。没有静默截断，但模型自身 token 上限仍可能影响长提示词。资产适配、模型随机性、真实视觉执行率和第三方插件效果仍是运行风险，本轮没有以测试结果宣称视觉效果已改善。
+
+## 用户复现后的第二轮修复与结果
+
+第一轮仅完成了组织框架，用户提供的输出证明事实解析和 worker 基础政策仍有缺口，不能以第一轮测试通过代表架构已达到全部目标。本轮重新打开 ISSUE-PROMPT-011，修复上游和执行消费。
+
+确认根因：书籍类别泛化、expectedCount 固定为 1、取物 affordance 固定写“接近”而当前阶段是接触、把同步协议数组整体复制进视觉文本、旧自动视线默认为书页、衣物文本不按景别投影，以及 worker 延后道具政策再次追加一个物体和手部动作。手动阶段覆盖原先只改 Pose/局部关系，没有重编基础人物块。
+
+新增统一职责：
+
+- 交互契约保存具体对象、expectedCount、明确支持物、同一动作阶段。数量从本人动作解析，不能借背景或其他人物。未知量词仍按有界解析处理。
+- 多段动作只对已识别“取出后接续触摸/查看”的末段建立当前可见阶段，保留推导假设；明确已确认或人工指定阶段优先。while 同时动作不作为取出完成依据。
+- 人物字段把手部描述与每条交互关系分开；buildEffectivePromptPlan 供 API 与 UI 共用。Pose 改阶段/左右手后重编关系，不保留旧接近/接触文本。新 UI 可查看当前画面事实与姿态的编译预览。
+- 胸上/腰上提示词不要求隐藏的裙、裤、鞋；全景保留整套服装。连衣裙使用可见上半部分，原衣物资产与绑定保持。画外衣物局部 mask 仍如实跳过。
+- 数量进入 recipe、propInstancePlan、执行关系和控制轮廓；多件便携道具共享一组空间包络，保留对应数量的独立轮廓，不复制手或重复投影。1 件道具保留既有几何尺寸。
+- 新配方的基础“道具细节延后”只简化表面细节，不重写数量、手部或视线，不跨 BREAK 追加到最后人物；原基础裁切辅助也不再给新配方追加姿态。历史配方保持原路径。
+- 已识别的泛化套话移出正向并留审计。字段 audit.applied 只报告实际保留词项，不把已删内容记成已应用。明确的数量/接触编辑冲突在实际发送前拒绝。
+
+用正式数据库 shot 1260 的当前输入做只读快照，独立执行纯编译与 payload 适配，没有创建任务、连接 SD 或生成图片。得到的基础正向如下（API 与 UI 使用同一事实投影）：
+
+```text
+medium close-up, chest-up framing, frame from chest to head, home interior, exactly one foreground person, solo, daytime, anime illustration, clean line art, soft cel shading BREAK centered in the frame, one person, adult woman, gentle oval face, (waist-length layered hair with airy side-swept bangs soft pink hair:1.45), (warm pink-brown eyes:1.25), (wearing cream-yellow top:1.5), touching the covers, two books, right hand contacting the books, books held above the package, fingertips touching the book covers, relaxed brows, slight closed-mouth smile, (eyes focused on the book covers:1.3)
+```
+
+数量为 2、阶段为 follow_through、控制 body 轮廓数为 2；显式操作对象为 book，视线为 book covers。默认泛化灯光已删除，仅保留输入所支持的 daytime；没有凭空添光源或家具。
+
+| 目标 | 第二轮程序验收 |
+|---|---|
+| 具体道具与数量不改写 | 两本书原始案例、三份文件、两瓶饮料、一册笔记本与信件；多人分别 2/1 本书保留本人范围 |
+| 单一接触阶段 | 准备/接触/完成三阶段覆盖，基础 payload 与道具/手部 pass 一致；准备无触摸，完成无接近或仍在支撑面 |
+| 后序政策不反向覆盖 | 实际执行的细节延后、上身政策和请求适配组合测试，数量与 BREAK 范围保持 |
+| 视线与衣物符合当前画面 | 封面目标、手动门口视线优先；上衣/裤裙/连衣裙与全景矩阵 |
+| 控制继承 | 同一投影下保留道具数、mask、ControlNet weight/guidance_end；2/3/5 件、四类形状的组轮廓与范围检查 |
+| 正负与审计真实 | 正向无遗留 no/not 和内部协议；多人负向不广播，已删除占位审计不伪报应用 |
+| 失败与审批闭合 | 新快照指纹、未知版本、旧配方、草稿整体确认复用测试继续通过；像素/后处理/自动门禁及事务候选路径保留 |
+
+本轮 220/220 项目测试、68/68 worker/动作政策/投影/遮罩/合成/支持/叠加测试通过，类型、worker 语法和生产构建通过。完整链再次核对：剧情与人工选择→视觉规格→共享事实/提示词/交互→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手/视线→质量门→草稿整体确认→正式候选。无任务 ID 硬编码，未更改用户要求的姿态 advisory 政策，编译错误仍按原新配方门禁阻断。
+
+结论：本轮已达到上述有界的提示词架构程序验收目标；仍仅标记 fixed_pending_review。**程序逻辑验收通过，未进行图片生成或视觉效果验收。** 数量解析不覆盖所有自然语言，复合动作阶段推导及并排组轮廓是明确记录的代表性假设；实际模型执行率仍需产品运行观察。

@@ -5,20 +5,31 @@
 
 ### 检测到的代码变更
 - PROJECT_ISSUES.md
+- PROJECT_MEMORY.pending.md
 - app/api/studio/route.ts
 - app/page.tsx
+- lib/pose-v2.ts
+- lib/pose-v3/planner.ts
+- lib/pose-v3/prompt-consistency.ts
 - lib/prompts.ts
-- scripts/sd-worker.mjs
-- tests/story-location.test.ts
-- tests/studio.test.ts
-- tsconfig.json
+- lib/story-action-contract.ts
+- lib/story-gaze.ts
+- lib/story-location.ts
+- scripts/action-mechanism.d.mts
+- scripts/action-mechanism.mjs
+- scripts/pose-execution-v3.d.mts
 - scripts/prompt-compiler.d.mts
 - scripts/prompt-compiler.mjs
+- scripts/sd-worker-logic.d.mts
+- scripts/sd-worker-logic.mjs
+- scripts/sd-worker.mjs
 - tests/prompt-compiler.test.ts
+- tests/story-gaze.test.ts
+- tests/studio.test.ts
 
 ### 最近一次测试摘要
 ```text
-同步器自动调用失败：spawnSync pnpm ENOENT（Windows 子进程命令解析）。本轮已独立执行 pnpm test：215/215 通过；worker/动作逻辑：48/48 通过；类型、语法与生产构建通过。详见 PROMPT_ARCHITECTURE_REPAIR_2026-10-05.md。
+同步器自动测试调用失败：spawnSync pnpm ENOENT（Windows命令解析）；已独立执行项目测试220/220、执行逻辑测试68/68、类型/语法检查和生产构建，全部通过。真实shot 1260仅只读输入及纯编译，无图片生成。长期事实已整理进三份短记忆，详见提示词修复报告第二轮章节。
 ```
 
 ### 人工确认项

@@ -577,12 +577,12 @@ function splitPromptClauses(prompt = "") {
   return clauses;
 }
 
-export function upperBodyVisiblePrompt(prompt = "", { suppressForegroundClutter = false, raisedHandContact = false } = {}) {
+export function upperBodyVisiblePrompt(prompt = "", { suppressForegroundClutter = false, raisedHandContact = false, structuredVisual = false } = {}) {
   // Framing cannot infer whether furniture, footwear or roads are story targets.
   // Keep the canonical clauses intact; only remove the exact generic decoration.
   return splitPromptClauses(String(prompt || ""))
     .filter((clause) => !suppressForegroundClutter || clause !== "subtle foreground object framing the scene")
-    .concat([
+    .concat(structuredVisual ? [] : [
       "upper-body crop with acting hands and story-relevant background visible",
       ...(raisedHandContact ? [
         "upright torso with acting elbows bent beside the ribcage",
@@ -627,7 +627,7 @@ export function gazeRefinementPrompt({ direction = "", targetKind = "target", ob
     "natural eyelids matching the head turn, no eye contact with viewer", readable(sceneContext)].filter(Boolean).join(", ");
 }
 
-export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = []) {
+export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [], options = {}) {
   const objects = interactions.filter((item) => item?.required !== false && item?.object).map((item) => String(item.object).toLowerCase().replace(/_/g, " "));
   if (!objects.length) return { prompt: String(prompt || ""), removed: [], objects: [] };
   const removed = [];
@@ -642,7 +642,10 @@ export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [])
       return "simplified non-legible prop surface detail";
     });
   });
-  const portable = interactions.filter((item) => item?.required !== false && item?.handMode && item.shape !== "umbrella").map((item) => {
+  // New plans already contain scoped count/contact/gaze facts in each region.
+  // Deferral may simplify surfaces; it must not append a second contract to the
+  // last BREAK region. Legacy recipes keep their original text construction.
+  const portable = (options.structuredVisual ? [] : interactions.filter((item) => item?.required !== false && item?.handMode && item.shape !== "umbrella")).map((item) => {
     const contacts = item.contactAnchors || [];
     const silhouette = /portrait_rect|landscape_rect/.test(item.shape || "") ? "rectangular" : item.shape === "cylinder" ? "cylindrical" : item.shape === "elongated" ? "elongated" : "compact";
     const objectClass = String(item.object || "story object").toLowerCase().replace(/_/g, " ");
@@ -666,7 +669,7 @@ export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [])
     prompt: kept.join(", "),
     removed,
     objects,
-    negative: "readable prop text, intricate prop surface content, duplicate prop, extra object outside the declared geometry scaffold, oversized scaffold, body-sized object, giant foreground object, circular furniture around the hands, necklace or dangling cord replacing the handheld object",
+    negative: `readable prop text, intricate prop surface content, ${options.structuredVisual&&interactions.some(i=>i.expectedCount>1)?'incorrect prop count':'duplicate prop'}, extra object outside the declared geometry scaffold, oversized scaffold, body-sized object, giant foreground object, circular furniture around the hands, necklace or dangling cord replacing the handheld object`,
   };
 }
 

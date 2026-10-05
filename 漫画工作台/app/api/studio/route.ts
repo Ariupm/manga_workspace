@@ -1,11 +1,10 @@
 import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
-import { synchronizeBasicPosePromptV3 } from "@/lib/pose-v3/prompt-consistency";
 import { NextRequest, NextResponse } from "next/server";
 import { isGenericLocation } from "@/lib/story-location";
 import { callDeepSeekJson } from "@/lib/deepseek";
 import { prepareGenerationLocation } from "@/lib/generation-location";
-import { compilePoseExecutionV3, preparePoseExecutionV3 } from "../../../scripts/pose-execution-v3.mjs";
+import { preparePoseExecutionV3 } from "../../../scripts/pose-execution-v3.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -48,6 +47,7 @@ import { normalizeSemanticReviewItems, validateSemanticReviewSubmission, type Se
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
+  buildEffectivePromptPlan,
   buildCanonicalGenerationPrompt,
   buildCanonicalNegativePrompt,
   buildCanonicalNegativePromptTrace,
@@ -761,33 +761,18 @@ export async function POST(request: Request) {
       | { commonPrompt?: string; characterPrompts?: string[] }
       | undefined;
     let regionalCommonPrompt = sanitizeEnglishPrompt([regionalSpec.commonPrompt,regionalOverride?.commonPrompt ? extractPromptEditorialDiff(regionalSpec.commonPrompt,regionalOverride.commonPrompt) : ""].filter(Boolean).join(", "));
-    let regionalCharacterPrompts =
-      Array.isArray(regionalOverride?.characterPrompts) &&
-      regionalOverride!.characterPrompts!.length === regionalSpec.regionPrompts.length
-        ? regionalOverride!.characterPrompts!.map((value,index) => sanitizeEnglishPrompt([regionalSpec.regionPrompts[index],extractPromptEditorialDiff(regionalSpec.regionPrompts[index],String(value))].filter(Boolean).join(", ")))
-        : regionalSpec.regionPrompts;
+    const promptPose = regionalSpec.poseControl?.posePlanVersion === "3.0" ? applyPoseControlOverrideV3(regionalSpec.poseControl, body.poseControlOverride) : null;
+    const effectivePromptFacts = buildEffectivePromptPlan(regionalSpec,promptPose);
+    let regionalCharacterPrompts = effectivePromptFacts.characterPrompts.map((text,index)=>sanitizeEnglishPrompt([
+      text,Array.isArray(regionalOverride?.characterPrompts) && regionalOverride.characterPrompts.length===regionalSpec.regionPrompts.length
+        ? extractPromptEditorialDiff(regionalSpec.regionPrompts[index],String(regionalOverride.characterPrompts[index])) : "",
+    ].filter(Boolean).join(", ")));
     for (const contract of readContracts) {
-      if (shot.characterIds.length > 1) {
-        const commonReconciled = reconcileFinalPrompt(regionalCommonPrompt, contract);
-        regionalCommonPrompt = commonReconciled.prompt;
-        promptRepairs.push(...commonReconciled.repairs.map((item) => `regional common: ${item}`));
-      }
       const regionIndex = shot.characterIds.indexOf(contract.characterId);
       if (regionIndex >= 0 && regionalCharacterPrompts[regionIndex]) {
         const characterReconciled = reconcileFinalPrompt(regionalCharacterPrompts[regionIndex], contract);
         regionalCharacterPrompts[regionIndex] = characterReconciled.prompt;
         promptRepairs.push(...characterReconciled.repairs.map((item) => `regional character ${contract.characterId}: ${item}`));
-      }
-    }
-    const promptPose = regionalSpec.poseControl?.posePlanVersion === "3.0" ? applyPoseControlOverrideV3(regionalSpec.poseControl, body.poseControlOverride) : null;
-    if (promptPose) {
-      regionalCharacterPrompts = regionalCharacterPrompts.map((text,index) => {
-        const person = promptPose.scenePlan.people.find(p=>p.characterId===shot.characterIds[index]);
-        return person ? synchronizeBasicPosePromptV3(text,person) : text;
-      });
-      for (const facts of regionalSpec.promptPlan.facts.characters) {
-        const person = promptPose.scenePlan.people.find(p=>p.characterId===facts.characterId);
-        if (person) facts.fields = facts.fields.map(field=>field.group === "action" ? {...field,text:synchronizeBasicPosePromptV3(field.text,person),source:"effective_pose_contract"} : field);
       }
     }
     const commonCompilation = compilePromptFields([{id:"common.override",text:regionalCommonPrompt,source:"regional_editorial"}]);
@@ -824,7 +809,7 @@ export async function POST(request: Request) {
       requestedPromptOverride,
       quality.characterCount,
     );
-    const editorialConflicts = validatePromptEditorial(regionalSpec.promptPlan,{
+    const editorialConflicts = validatePromptEditorial(effectivePromptFacts,{
       common:regionalOverride?.commonPrompt ? extractPromptEditorialDiff(regionalSpec.commonPrompt,regionalOverride.commonPrompt) : "",
       characters:regionalOverride?.characterPrompts?.map((text,index)=>extractPromptEditorialDiff(regionalSpec.regionPrompts[index] || "",text)),
       global:requestedPromptOverride,
@@ -872,14 +857,10 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     }
-    if (promptPose) {
-      const execution = compilePoseExecutionV3(promptPose,regionalSpec.repairPasses);
-      regionalSpec.promptPlan.facts.relations = execution.repairPasses.propInteractions || [];
-    }
-    regionalSpec.promptPlan.facts.characters = regionalSpec.promptPlan.facts.characters.map((person,index)=>({
+    effectivePromptFacts.facts.characters = effectivePromptFacts.facts.characters.map((person,index)=>({
       ...person,negative:[person.negative,characterCompilations[index]?.negativePrompt].filter(Boolean).join(", "),
     }));
-    const effectiveFacts = createPromptPlan(regionalSpec.promptPlan.facts);
+    const effectiveFacts = createPromptPlan(effectivePromptFacts.facts);
     const promptPlan = finalizePromptPlan(effectiveFacts,{
       commonPrompt:regionalCommonPrompt,characterPrompts:regionalCharacterPrompts,prompt:appliedPrompt,
       negativePrompt:[negativePromptTrace.prompt,commonCompilation.negativePrompt,...(characterCompilations.length===1?[characterCompilations[0].negativePrompt]:[])].filter(Boolean).join(", "),editorial:requestedPromptOverride,

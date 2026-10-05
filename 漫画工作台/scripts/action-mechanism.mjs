@@ -58,7 +58,12 @@ export function resolveActionMechanism(input,phase='contact'){
   const support=g.supportY??c.y;
   const lifted={x:c.x,y:support-.10};
   center=g.actionId==='place'?(phase==='anticipation'?lifted:{x:c.x,y:support}):(phase==='follow_through'?lifted:{x:c.x,y:support});
-  grip={...center};outline=[path(rect(center,w,h))];
+  grip={...center};
+  const count=g.objectCount??1;
+  if(!Number.isInteger(count)||count<1||count>16){g.outline=[];return g;}
+  // Multiple items are one authored group footprint, with distinct silhouettes;
+  // no second translation/projection and no multiplication of hand anchors.
+  outline=Array.from({length:count},(_,i)=>path(rect({x:center.x+(i-(count-1)/2)*w/count,y:center.y},w/count*(count===1?1:.9),h),'body'));
  }
  if(['open','close'].includes(g.actionId)){g.stateBefore=g.actionId==='open'?'closed':'open';g.stateAfter=g.actionId==='open'?'open':'closed';}
  g.phase=phase;g.progress=amount;g.objectCenter=center;g.gripPoint=grip;g.outline=outline;
@@ -69,6 +74,18 @@ export function actionOutlineBounds(geometry){
  if(!points.length)return null;
  const xs=points.map(p=>p.x),ys=points.map(p=>p.y);
  return{x:Math.min(...xs),y:Math.min(...ys),width:Math.max(...xs)-Math.min(...xs),height:Math.max(...ys)-Math.min(...ys)};
+}
+
+/** Multiple portable items share one footprint; contacts still belong to the actor. */
+export function propGroupOutline(relation,center,width,height){
+ const count=relation?.expectedCount||1;
+ if(count===1)return null;
+ if(!Number.isInteger(count)||count<1||count>16)throw new Error('Unsupported prop group count');
+ const itemWidth=width/count*.9;
+ return {outline:Array.from({length:count},(_,i)=>{
+  const c={x:center.x+(i-(count-1)/2)*width/count,y:center.y};
+  return path(relation.shape==='dish'?circle(c,Math.min(itemWidth,height)/2):rect(c,itemWidth,height));
+ })};
 }
 export function relocateActionGeometry(g,target){
  if(g?.modelVersion!=='action-mechanism-1'||!g.objectCenter)return {...g,objectCenter:target};
@@ -85,6 +102,7 @@ export function actionOutlineMarkup(geometry,width,height){
 export function mechanismGeometryFailures(g){
  if(g?.modelVersion!=='action-mechanism-1')return [];
  const errors=[];
+ if(g.objectCount!=null&&(!Number.isInteger(g.objectCount)||g.objectCount<1||g.objectCount>16))errors.push('道具组数量必须在1到16之间');
  const points=[g.baseCenter,g.objectCenter,g.gripPoint,g.axis,g.pivot,g.workPoint,g.toolEnd,...(g.outline||[]).flatMap(p=>p.points)].filter(Boolean);
  if(points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)))errors.push('动作机构包含无效坐标');
  if(!g.outline?.length)errors.push('动作机构没有执行轮廓');

@@ -75,6 +75,7 @@ export type PoseInteractionKindV2 =
   | "confrontation";
 
 export type PoseInteractionInput = {
+  expectedCount?: number;
   actionPlan?:import("./story-action-contract").StoryActionContract;
   shape?: string;
   orientation?: string;
@@ -628,7 +629,7 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
     const locomotion = primaryAction === "locomotion"
       ? deriveLocomotionPlan(text, phase, intensity, variantId, framingMode)
       : null;
-    const relationTargets = resolvedInteractionGazeTargets.filter(({ relation }) => relation.required).map(({ relation, gazeTarget: relationGazeTarget }) => ({ actionPlan:relation.actionPlan, relationId: relation.relationId, object: relation.object, purpose: relation.purpose, target: { x: clamp(relation.objectCenter.x, 0.1, 0.9), y: clamp(relation.objectCenter.y, 0.2, 0.85) }, gazeTarget: relationGazeTarget, handMode: relation.handMode, activeHand: relation.activeHand || (relation.handMode === "two" ? "both" : "right"), objectInstanceId: relation.objectInstanceId, contactAnchors: relation.contactAnchors?.map((anchor) => ({ hand: anchor.hand, x: clamp(anchor.x, .05, .95), y: clamp(anchor.y, .1, .9) })) }));
+    const relationTargets = resolvedInteractionGazeTargets.filter(({ relation }) => relation.required).map(({ relation, gazeTarget: relationGazeTarget }) => ({ actionPlan:relation.actionPlan, expectedCount:relation.expectedCount, relationId: relation.relationId, object: relation.object, purpose: relation.purpose, target: { x: clamp(relation.objectCenter.x, 0.1, 0.9), y: clamp(relation.objectCenter.y, 0.2, 0.85) }, gazeTarget: relationGazeTarget, handMode: relation.handMode, activeHand: relation.activeHand || (relation.handMode === "two" ? "both" : "right"), objectInstanceId: relation.objectInstanceId, contactAnchors: relation.contactAnchors?.map((anchor) => ({ hand: anchor.hand, x: clamp(anchor.x, .05, .95), y: clamp(anchor.y, .1, .9) })) }));
     return {
       characterId,
       actions,

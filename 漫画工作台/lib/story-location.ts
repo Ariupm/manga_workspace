@@ -13,6 +13,7 @@ const locations: Array<{ pattern: RegExp; value: Location }> = [
   { pattern: /办公室|公司|办公|office/i, value: { locationType: "workplace", location: "modern office", foreground: "desk edge", midground: "office desks and chairs", background: "office windows and corridor" } },
   { pattern: /车站|地铁|公交|train station|transit station|subway|railway/i, value: { locationType: "public transit setting", location: "transit station", foreground: "platform marking", midground: "waiting area and railings", background: "receding platform architecture" } },
   { pattern: /街道|街边|人行道|街头|道路|通勤|street|sidewalk|road/i, value: { locationType: "urban exterior", location: "city street", foreground: "curb edge", midground: "sidewalk and street furniture", background: "receding buildings and storefronts" } },
+  { pattern: /(?:的家|在家|家里|家中)$|^(?:home|someone's home)$/i, value: { locationType: "residential interior", location: "home interior", foreground: "", midground: "", background: "" } },
 ];
 
 export function resolveStoryLocation(scene = "", sceneEn = ""): Location | null {

@@ -12,15 +12,16 @@ export function storyActionPhase(text:string):PosePhase{
  return 'contact';
 }
 /** Enrich the existing prop contract; do not re-generate identity, clothing or camera decisions. */
-export function inferStoryActionContract(input:{object:string;purpose:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
+export function inferStoryActionContract(input:{object:string;expectedCount?:number;purpose:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
  const positive=positiveActionText(action);
  const intent=forcedActionId||actionIntent(positive)||extraTemplateFromText(positive)||(input.purpose==='operate'&&/using|hammering|tighten|screwing|painting|用|敲|拧紧|绘画/i.test(positive)?'tool':null);
  const id=intent==='reach'?'pick':intent;
  if(!id||!['open','close','operate_environment','write','tool','push','pull','pick','place'].includes(id))return null;
  const explicitPhase=/anticipation|prepar|before|about to|follow.?through|finished|completed|after|released|\bcontact\b|准备|尚未|接近|完成|松开|接触|抓住/i.test(phaseText);
- const phase=explicitPhase?storyActionPhase(phaseText):intent==='reach'?'anticipation':storyActionPhase(action+' '+phaseText),object=input.object.toLowerCase();
+ const finishingTouch=id==='pick' && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(action);
+ const phase=explicitPhase?storyActionPhase(phaseText):intent==='reach'?'anticipation':finishingTouch?'follow_through':storyActionPhase(action+' '+phaseText),object=input.object.toLowerCase();
  const dir=/toward(?:s)? (?:the )?left|to (?:the )?left|向左|左侧/i.test(action)?-1:1;
- const geometry:ActionGeometryInput={actionId:id,phase,source:confirmed?'confirmed_interaction':'story',assumptions:['representative parametric staging, not measured object dimensions'],baseCenter:{...input.objectCenter},axis:{x:dir,y:0}};
+ const geometry:ActionGeometryInput={actionId:id,phase,objectCount:input.expectedCount||1,source:confirmed?'confirmed_interaction':'story',assumptions:['representative parametric staging, not measured object dimensions',...(finishingTouch&&!explicitPhase?['final visible action clause follows retrieval']:[])],baseCenter:{...input.objectCenter},axis:{x:dir,y:0}};
  if(['open','close'].includes(id)){
   if(/drawer|sliding|slide|抽屉|推拉门|滑动/.test(object+' '+action))Object.assign(geometry,{mechanism:'slide',controlShape:'panel',travel:.055,extent:{width:.12,height:.09}});
   else if(/door|window|hinged|门|窗|铰链/.test(object+' '+action))Object.assign(geometry,{mechanism:'hinge',controlShape:'panel',angle:1,hingeSide:/right.?hinge|hinge.*right|右.*铰链/i.test(action)?'right':'left',extent:{width:.13,height:.20}});
@@ -46,6 +47,7 @@ export function inferStoryActionContract(input:{object:string;purpose:string;obj
   }
  }
  if(geometry.controlShape)geometry.modelVersion='action-mechanism-1';
+ if((input.expectedCount||1)>1)geometry.assumptions=[...geometry.assumptions!,'representative side-by-side item layout within one group footprint'];
  const resolved=resolveActionMechanism(geometry,phase);
  return{version:'story-action-1',actionId:id,phase,geometry:resolved,source:confirmed?'confirmed_interaction':'story',evidence:action,assumptions:geometry.assumptions||[]};
 }

@@ -9,6 +9,7 @@
 ## 技术栈与目录
 
 - 新任务提示词统一由 `scripts/prompt-compiler.mjs` 编译为公共正向、人物正向、分范围负向和阶段投影；recipe 保存 comic-facts-1 快照，worker 所有图像请求通过共享适配器。详见 `PROMPT_ARCHITECTURE_REPAIR_2026-10-05.md`；历史配方保留旧执行路径，程序验收未包含生图。
+- 第二轮以实际两本书输入复核：交互数量/阶段进入控制轮廓，API/UI 共用 buildEffectivePromptPlan；新配方基础延后政策不再追加另一套数量/动作文字。220 项项目测试和 68 项执行逻辑测试通过，未进行视觉验收。
 
 - Next.js + TypeScript + SQLite
 - 主界面：`app/page.tsx`

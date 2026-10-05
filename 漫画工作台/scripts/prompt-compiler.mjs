@@ -20,17 +20,62 @@ export function promptTerms(value) {
 const key = value => clean(value).toLowerCase().replace(/[()]/g, '').replace(/:\d+(?:\.\d+)?/g, '').replace(/\b(?:clear|clearly|consistent|canonical|natural|established|declared)\s+/g, '').trim();
 export const uniquePrompt = value => [...new Map(promptTerms(value).map(term => [key(term), term])).values()].join(', ');
 
+/** Concrete object and count belong to the actor's action, never background mentions. */
+export function resolvePropVisualFacts(object, action = '') {
+  const generic = /^(?:book[_ ]or[_ ]document|drink[_ ]container|food[_ ]container)$/i.test(object);
+  const families = /book|document/i.test(object) ? ['notebook','magazine','document','letter','novel','book']
+    : /drink[_ ]container/i.test(object) ? ['bottle','mug','cup','glass']
+    : /food[_ ]container/i.test(object) ? ['bowl','plate'] : [object];
+  const noun = generic ? families.find(n=>new RegExp(`\\b${n}(?:s|es)?\\b`,'i').test(action)) || object.replace(/_/g,' ') : object;
+  const count = explicitPropCount(noun,action) ?? 1;
+  return {object:noun,expectedCount:count};
+}
+function explicitPropCount(noun,text) {
+  const escaped=noun.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const match=text.match(new RegExp(`\\b(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(?:(?:closed|open|stacked|small|large|red|blue|green|white|black)\\s+){0,3}${escaped}(?:s|es)?\\b`,'i'));
+  return match ? ({one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10}[match[1].toLowerCase()] ?? Number(match[1])) : null;
+}
+export function propVisualLabel(relation) {
+  const count = relation.expectedCount || 1, noun = relation.object;
+  const plural = /(?:scissors|pliers|s)$/i.test(noun) ? noun : /(?:box|glass)$/i.test(noun) ? `${noun}es` : `${noun}s`;
+  return count === 1 ? `one ${noun}` : `${{2:'two',3:'three',4:'four',5:'five'}[count] || count} ${plural}`;
+}
+export function transferSupportLabel(action, context='') {
+  const authored=action.match(/\b(?:from|on|onto|off)\s+(?:(?:a|an|the)\s+)?(?:open\s+)?(package|parcel|box|table|shelf|counter|desk|floor|ground)\b/i);
+  if(authored)return authored[1].toLowerCase();
+  // Only a single-actor caller supplies prose fallback; never borrow another
+  // actor's support or a mere background object mention.
+  if(/从[^，。;]{0,8}(?:包裹|快递盒|箱子)(?:里|中)?[^，。;]{0,8}(?:拿出|取出)/.test(context))return 'package';
+  return '';
+}
+
+/** Keep authored upper garment details; hidden lower garments stay in asset facts. */
+export function visibleClothingText(value, camera) {
+  if (/wide shot|full shot|long shot/i.test(camera)) return value;
+  return promptTerms(value.replace(/\b(?:with|and|paired with|over)\s+(?=(?:a\s+)?[^,;]{0,35}\b(?:skirt|pants|trousers|jeans|shorts|shoes|sneakers|boots)\b)/gi, ', '))
+    .filter(term=>! /\b(?:skirt|pants|trousers|jeans|shorts|shoes|sneakers|boots|socks)\b/i.test(term))
+    .map(term=>/\b(?:dress|gown|jumpsuit)\b/i.test(term) ? `upper portion of ${term.replace(/\b(?:midi|maxi|floor-length|knee-length)\s+/gi,'')}` : term).join(', ');
+}
+
 export function relationVisualText(relation, stage = 'prop') {
   if (!relation?.required) return '';
   const state = relationActionState(relation);
   const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
-  const object = relation.object;
+  const label = propVisualLabel(relation), object = (relation.expectedCount||1)>1 ? label.replace(/^\S+\s+/,'') : relation.object;
   const contact = state?.contactState === 'approach' ? `${hands} approaching the ${object} with a visible gap`
     : state?.contactState === 'released' ? `${object} on its support, hands separated from the ${object}`
     : `${hands} contacting the ${object}`;
-  const visualTerms = synchronizedActionTerms(relation).filter(term => !/required story prop|story instance|interaction purpose|surface and exclusion|exclusion regions|wrist anchors|normalized/i.test(term));
-  return [stage === 'hand' ? '' : `one ${object}`, state && state.contactState !== 'contact' ? '' : relation.affordance,
-    contact, ...(stage === 'hand' && contactPassAllowed(relation) ? actionContactTerms(relation) : visualTerms),
+  // Structured state is authoritative. Legacy positives can contain stale
+  // approach/reading/count commands, so do not copy their protocol wholesale.
+  const geometry = relation.actionRelationAudit?.geometry || relation.actionPlan?.geometry;
+  const visualTerms = geometry?.mechanism === 'transfer' ? [] : synchronizedActionTerms(relation).filter(term => !/required story prop|story instance|interaction purpose|surface and exclusion|exclusion regions|wrist anchors|normalized|orientation determined|visible surface follows|action stage|action in progress|before contact|completed action|object position consistent|hands? physically|acting hand at|hand approaching|object remains|object is held|\(.*eyes focused/i.test(term));
+  const support=relation.supportLabel ? `the ${relation.supportLabel}` : 'a support surface';
+  const supported = state?.objectState === 'on_support' ? `${object} resting on ${support}` : state?.objectState === 'held' ? `${object} held above ${relation.supportLabel?`the ${relation.supportLabel}`:'the previous support surface'}` : '';
+  const affordance = state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
+  const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
+  return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
+    contact, ...(stage === 'hand' && contactPassAllowed(relation) ? coverContact ? [] : actionContactTerms(relation) : visualTerms),
+    stage === 'hand' ? '' : supported, coverContact,
     stage === 'hand' || relation.orientation === 'contextual' || relation.orientation === 'not_applicable' ? '' : `${object} in ${relation.orientation} orientation`,
     stage === 'hand' || relation.viewerSurface === 'contextual' ? '' : relation.viewerSurface === 'back' ? `${object} back casing facing the viewer` : `${object} ${relation.viewerSurface} visible`,
   ].filter(Boolean).join(', ');
@@ -41,6 +86,7 @@ export function relationVisualText(relation, stage = 'prop') {
 export function compilePromptFields(fields = [], negative = '') {
   const accepted = [], negatives = promptTerms(negative), audit = [], errors = [], seen = new Set();
   for (const field of fields) {
+    const appliedTerms=[];
     let text = clean(field.text);
     if (!text) continue;
     const original = text;
@@ -81,6 +127,9 @@ export function compilePromptFields(fields = [], negative = '') {
     text = text.replace(/,\s*(?=:\d)/g, '').replace(/\(\s*,/g, '(');
     for (const term of promptTerms(text)) {
       if (!/[a-z]/i.test(term)) continue;
+      if (/^(?:calm weather|hands naturally positioned for the described action and framing|acting hands visible and following the described action|contextual orientation determined by the current action|visible surface follows camera and action geometry|object position consistent with its support and transfer stage|action in progress|ambient illumination consistent with the declared scene lighting|motivated directional key light|soft environment bounce light|natural gaze follows the surrounding story action)$/i.test(term)) {
+        audit.push({factId:field.id,source:field.source,requested:term,applied:'',reason:'non_visual_placeholder'});continue;
+      }
       if (/\b(?:no|not|never|without|avoid|do not)\b/i.test(term)) {
         errors.push(`${field.id}: unsupported negative instruction: ${term}`); continue;
       }
@@ -89,9 +138,10 @@ export function compilePromptFields(fields = [], negative = '') {
       }
       const fingerprint = key(term);
       if (seen.has(fingerprint)) { audit.push({ factId: field.id, source: field.source, requested: term, applied: '', reason: 'duplicate' }); continue; }
-      seen.add(fingerprint); accepted.push(term);
+      seen.add(fingerprint); accepted.push(term);appliedTerms.push(term);
     }
-    audit.push({ factId: field.id, source: field.source, requested: original, applied: text, reason: original === text ? 'retained' : 'semantic_rewrite' });
+    const applied=appliedTerms.join(', ');
+    audit.push({ factId: field.id, source: field.source, requested: original, applied, reason: original === applied ? 'retained' : 'semantic_rewrite' });
   }
   return { prompt: accepted.join(', '), negativePrompt: uniquePrompt(negatives.filter(Boolean).join(', ')), audit, errors, statistics: { characters: accepted.join(', ').length, terms: accepted.length } };
 }
@@ -102,7 +152,31 @@ export function createPromptPlan({ common, characters, relations = [], negativeB
   const commonNegatives = people.length === 1 ? people[0].compiled.negativePrompt : promptTerms(people[0]?.compiled.negativePrompt).filter(term => people.every(p => promptTerms(p.compiled.negativePrompt).includes(term))).join(', ');
   const negative = uniquePrompt([...Object.values(negativeBlocks), shared.negativePrompt, commonNegatives].filter(Boolean).join(', '));
   const snapshot = { common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
-  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit)], errors: [...shared.errors, ...people.flatMap(p => p.compiled.errors)] };
+  const relationErrors=relations.filter(r=>!Number.isInteger(r.expectedCount??1)||(r.expectedCount??1)<1||(r.expectedCount??1)>16).map(r=>`${r.relationId}: prop count must be an integer from 1 to 16`);
+  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit)], errors: [...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors] };
+}
+
+/** Recompile owned relation fields after Pose changes; never append a second state. */
+export function rebindPromptPlanRelations(plan, relations) {
+  const characters=plan.facts.characters.map(person=>{
+    const owned=relations.filter(r=>r.characterId===person.characterId&&r.required);
+    const changed=owned.filter(r=>{
+      const old=plan.facts.relations.find(p=>p.relationId===r.relationId&&p.characterId===r.characterId);
+      return old && (JSON.stringify(relationActionState(old))!==JSON.stringify(relationActionState(r)) || old.handMode!==r.handMode || old.activeHand!==r.activeHand);
+    });
+    const fields=person.fields.filter(f=>f.group!=='interaction').map(f=>{
+      if(f.group==='action'&&changed.some(r=>r.actionPlan))return {...f,text:'',source:'effective_interaction_replaced_old_action'};
+      if(f.group==='hands'&&changed.length){
+        const text=promptTerms(f.text).filter(t=>!changed.some(r=>t.toLowerCase().includes(r.object.toLowerCase())&&/hand|grip|hold|contact|touch/i.test(t))).join(', ');
+        return {...f,text,source:'effective_interaction_reconciled_hands'};
+      }
+      return f;
+    });
+    const insertion=fields.findIndex(f=>f.group==='expression');
+    fields.splice(insertion<0?fields.length:insertion,0,...owned.map(r=>({id:`${person.characterId}.interaction.${r.relationId}`,group:'interaction',text:relationVisualText(r),source:'effective_interaction_contract'})));
+    return {...person,fields};
+  });
+  return createPromptPlan({...plan.facts,characters,relations});
 }
 
 /** Bounded checks for edits to owned attributes; new visual details remain free. */
@@ -124,6 +198,17 @@ export function validatePromptEditorial(plan, { common = '', characters = [], gl
   ];
   const normalized = value => value==='waist-length'?'long':value.replace('grey','gray').replace(/^blond$/,'blonde');
   plan.facts.characters.forEach((person,index)=>{
+    for(const relation of plan.facts.relations.filter(r=>r.characterId===person.characterId&&r.required)) {
+      for(const text of [characters[index] || '',global]) {
+        const count=explicitPropCount(relation.object,text);
+        if(count!==null&&count!==(relation.expectedCount||1))errors.push(`${person.characterId}.prop_count: editorial conflicts with ${relation.expectedCount||1} ${relation.object}`);
+        const state=relationActionState(relation);
+        for(const term of promptTerms(text).filter(t=>t.toLowerCase().includes(relation.object.toLowerCase()))) {
+          if(state?.contactState==='approach' && /\b(?:holding|gripping|contacting|touching)\b/i.test(term))errors.push(`${person.characterId}.contact: editorial contact conflicts with approach phase`);
+          if(state?.contactState==='contact' && /\bapproaching\b|visible gap/i.test(term))errors.push(`${person.characterId}.contact: editorial gap conflicts with contact phase`);
+        }
+      }
+    }
     const identity=person.fields.filter(f=>f.group==='identity').map(f=>f.text).join(', ');
     for(const [attribute,pattern] of attrs) {
       const effective=[...identity.matchAll(pattern)].map(m=>normalized(m[1].toLowerCase()));
@@ -169,7 +254,7 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const personExclusions = promptTerms(person.negative).filter(term => ['identity','gaze'].includes(stage)
     ? !/garment|clothing|coat|skirt|dress|bag|shoe|full body|legs/i.test(term)
     : stage === 'outfit' ? !/eye contact|looking at|gaze|pupils/i.test(term) : false).join(', ');
-  const localNegative = [personExclusions, relation?.negative?.join(', '), exclusions, negative].filter(Boolean).join(', ');
+  const localNegative = [personExclusions, relation?.negative?.join(', '), relation?.expectedCount>1 ? exclusions.replace('duplicated prop','incorrect prop count') : exclusions, negative].filter(Boolean).join(', ');
   return compilePromptFields([...selected, { id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' }, { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
 }
 

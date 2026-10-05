@@ -14,7 +14,9 @@ export function storyGazeFallback(shot: Shot, characterId: string): string {
   const clause = clauses[0];
   const candidates = rankInteractionPropCandidates({ target: "", action: "", contact: "", gaze: clause, facts: "", context: "" });
   if (candidates.length !== 1) return "";
-  const nouns: Record<string, string> = { smartphone: "smartphone screen", book_or_document: "book or document", package: "parcel", drink_container: "drink container", food_container: "food container", handheld_tool: "handheld tool" };
+  const readingObject=/文件|document/i.test(clause)?'document':/信件|letter/i.test(clause)?'letter':/笔记本|notebook/i.test(clause)?'notebook':'book';
+  const readingTarget=/封面|cover/i.test(clause)?`${readingObject} cover`:/书页|pages?/i.test(clause)?`${readingObject} pages`:readingObject;
+  const nouns: Record<string, string> = { smartphone: "smartphone screen", book_or_document: readingTarget, package: "parcel", drink_container: /瓶|bottle/i.test(clause)?"bottle":/杯|cup|mug/i.test(clause)?"cup":"drink container", food_container: /碗|bowl/i.test(clause)?"bowl":/盘|plate/i.test(clause)?"plate":"food container", handheld_tool: "handheld tool" };
   const target = nouns[candidates[0].propId] || candidates[0].propId.replace(/_/g, " ");
   const down = /低头|look(?:s|ing)?\s+down/i.test(clause);
   return `${down ? "head tilted down, eyes looking downward at" : "head and eyes focused on"} the ${target}, no eye contact with camera`;

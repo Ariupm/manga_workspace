@@ -44,7 +44,7 @@ test("动作默认视线区分取物和交接，不从普通 hand 字样虚构�
   for (const action of ["offering an umbrella", "receiving a package", "handing over a cup"])
     assert.match(inferGazeFromAction(action), /handover target/);
   assert.match(inferGazeFromAction("reading a phone message"), /smartphone screen/);
-  assert.match(inferGazeFromAction("reading a book"), /toward the page/);
+  assert.match(inferGazeFromAction("reading a book"), /book pages/);
 });
 
 test("缺省手部遵循人物动作，伸手未接触时不强制提前接触", () => {
@@ -556,7 +556,7 @@ test("道具交互契约可泛化到阅读物且绑定手、物与视线",()=>{
   const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],characterIds:["character_xiaofen"],actionEn:"reading an open book on the sofa",characterLooks:{}};
   const contract=deriveInteractionContract(shot,"character_xiaofen");
   assert.equal(contract.required,true);
-  assert.equal(contract.object,"book or document");
+  assert.equal(contract.object,"book");
   assert.equal(contract.shape,"landscape_rect");
   assert.equal(contract.characterId,"character_xiaofen");
   assert.ok(contract.objectCenter.y>.5);
@@ -1520,7 +1520,8 @@ test("具体地点已知时系统可补全空泛单人提示词", () => {
   const repaired = { ...broken, ...suggestPromptFixes(broken) };
   const result = buildGenerationPrompt(repaired, data.assets, data.characters);
   assert.equal(result.quality.valid, true, JSON.stringify({ scene: repaired.scene, environment: result.environment, errors: result.quality.errors }));
-  assert.match(result.prompt, /hands naturally positioned|acting hands visible/);
+  assert.match(result.prompt, /standing upright in three-quarter view/);
+  assert.doesNotMatch(result.prompt, /hands naturally positioned for the described action/);
   assert.doesNotMatch(
     result.prompt,
     /natural storytelling action|coherent story environment/,
@@ -1726,6 +1727,7 @@ test("场景先于人物且夜晚保留时段并服从场景光源", () => {
       foreground: "wet pavement",
       midground: "puddle reflections",
       background: "illuminated office windows",
+      keyLight: "cool light from office windows",
       depth: "clear foreground midground and background separation",
     },
   };
@@ -1735,7 +1737,7 @@ test("场景先于人物且夜晚保留时段并服从场景光源", () => {
       result.prompt.indexOf("soft pink"),
   );
   assert.match(result.prompt, /night/);
-  assert.match(result.prompt, /key light|moonlight|ambient|bounce light/);
+  assert.match(result.prompt, /cool light from office windows/);
   assert.match(result.negativePrompt, /plain background/);
 });
 

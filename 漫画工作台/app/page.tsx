@@ -75,6 +75,7 @@ import { applyPoseControlOverrideV3, poseTemplateRegistryV3, poseTemplateCategor
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
+  buildEffectivePromptPlan,
   suggestPromptFixes,
 } from "@/lib/prompts";
 import type { PosePoint } from "@/lib/prompts";
@@ -1796,6 +1797,12 @@ function PanelEditor({
     ? editablePositive.split(/\s*,\s*/).filter((term) => term.trim() && !positive.toLowerCase().includes(term.trim().toLowerCase())).join(", ")
     : "";
   const prompt = `${effectivePositive}\n\nNegative: ${editableNegative}`;
+  const executionPromptPreview=(()=>{
+    try {
+      const plan=buildEffectivePromptPlan(regionalCompiled,effectivePoseControl?.posePlanVersion==='3.0'?effectivePoseControl as PoseControlV3:null);
+      return {prompt:[plan.commonPrompt,...plan.characterPrompts].join(' BREAK '),errors:plan.errors};
+    } catch(error){return {prompt:'',errors:[error instanceof Error?error.message:String(error)]};}
+  })();
   const fullPreviewSvg = effectivePoseControl?.posePlanVersion === "3.0" ? fullPosePreviewSvg(effectivePoseControl.fullPeople, effectivePoseControl.scenePlan.projection, effectivePoseControl.width, effectivePoseControl.height, effectivePoseControl.scenePlan.relations) : null;
   const displayedPoseSvg = posePreviewMode === "full" && fullPreviewSvg ? fullPreviewSvg : effectivePoseControl?.svg;
   const posePreview = poseImageOverride || (displayedPoseSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(displayedPoseSvg)}` : "");
@@ -2436,6 +2443,9 @@ function PanelEditor({
             </header>
             {!promptCollapsed && (
               <>
+                <details><summary>当前画面事实与姿态编译预览</summary>
+                  <p><small>{executionPromptPreview.prompt || executionPromptPreview.errors.join('；')}</small></p>
+                </details>
                 <div className={`prompt-workbench-grid ${shot.characterIds.length > 1 ? "regional" : ""}`}>
                   {shot.characterIds.length > 1 ? (
                     <>

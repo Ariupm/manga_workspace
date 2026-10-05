@@ -1,5 +1,8 @@
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
-import { ART_STYLE, compilePromptFields, createPromptPlan, relationVisualText, uniquePrompt, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
+import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
+import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
+import {synchronizeBasicPosePromptV3} from "./pose-v3/prompt-consistency";
+import type {PoseControlV3} from "./pose-v3/schema";
 import {actionIntent,explicitHandMode} from "./pose-action-semantics";
 import {extraTemplateFromText} from "./pose-v3/action-catalog";
 import { englishTime } from "./story-time";
@@ -48,7 +51,11 @@ const has = (value: string, pattern: RegExp) =>
 export const inferGazeFromAction = (action: string) => {
   const source=clean(action).toLowerCase();
   if(/phone|smartphone|screen|texting|message/.test(source))return "head tilted slightly down, eyes focused on the smartphone screen, pupils directed downward, no eye contact with camera";
-  if(/book|page|reading|document|letter/.test(source))return "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera";
+  if(/book|page|reading|document|letter|notebook|magazine/.test(source)) {
+    const noun=resolvePropVisualFacts("book or document",source).object;
+    const target=/covers?/.test(source)?`${noun} covers`:/read|pages?|writing/.test(source)?`${noun} pages`:noun;
+    return `eyes focused on the ${target}, no eye contact with camera`;
+  }
   if(/\b(?:offer(?:ing|ed|s)?|receiv(?:e|ing|ed|es)|accept(?:ing|ed|s)?|hand(?:ing|ed|s)?\s+(?:over|to))\b/.test(source))return "eyes focused on the handover target, no eye contact with camera";
   if(/\b(?:reach(?:ing|ed|es)?|pick(?:ing|ed|s)?|grasp(?:ing|ed|s)?|grab(?:bing|bed|s)?)\b/.test(source))return "eyes focused on the object being reached for, no eye contact with camera";
   if(/walk|run|move|leave|enter/.test(source))return "looking toward the direction of movement, no eye contact with camera";
@@ -63,6 +70,7 @@ export const inferHandsFromAction = (action: string) => {
 };
 export const expressionPrompt = (value: string, fallback = "readable story-appropriate expression") => {
   const source = clean(value);
+  if (/^(?:satisfied|content|contented|满意|满足)$/i.test(source)) return "relaxed brows, slight closed-mouth smile";
   if (/^(?:happy|joy|joyful|excited|delighted|期待|开心|高兴|惊喜)$/i.test(source))
     return "genuine happy anticipation, warm open smile, raised cheeks, bright engaged eyes, clearly readable joyful expression";
   if (/^(?:surprise|surprised|惊讶|震惊)$/i.test(source))
@@ -101,7 +109,8 @@ export type InteractionContract = {
   viewerSurface: "back"|"screen"|"side"|"contextual";
   gazeMode: "object"|"work_point"|"target"|"independent";
   objectInstanceId: string;
-  expectedCount: 1;
+  expectedCount: number;
+  supportLabel?: string;
   ownership: { actorCharacterIds: string[]; ownerBefore: string | null; ownerAfter: string | null };
   surfacePlan: { plane: "screen"|"back"|"side"|"three_quarter"|"contextual"; visibleFace: string; normal: { x: number; y: number }; screenContentLayout: string | null; exclusionRegions: Array<{ xStart: number; xEnd: number; yStart: number; yEnd: number }> };
   contactAnchors: Array<{ hand: "left"|"right"; x: number; y: number; role: "active"|"support" }>;
@@ -372,7 +381,8 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   // Preserve the concrete tool noun for downstream object passes (scissors,
   // screwdriver, etc.); broad semantic groups keep their established display
   // label unless a confirmed relation supplied an explicit propId.
-  const storyObject = structuredProp || (["handheld tool","environment fixture","spoon"].includes(match.object) && rankedProp && rankedProp !== "handheld_tool" ? rankedProp : match.object);
+  const visualObject = resolvePropVisualFacts(structuredProp || (["handheld tool","environment fixture","spoon"].includes(match.object) && rankedProp && rankedProp !== "handheld_tool" ? rankedProp : match.object),relationActionText);
+  const storyObject = visualObject.object;
   let purpose:InteractionContract["purpose"]="inspect",orientation:InteractionContract["orientation"]="contextual",viewerSurface:InteractionContract["viewerSurface"]="contextual",gazeMode:InteractionContract["gazeMode"]="object";
   let handMode=match.handMode,shape=match.shape,y=match.y,affordance=match.affordance;
   const localActionClause=relationActionText.split(/\b(?:while|and)\b|[,;]/i).find(c=>match.pattern.test(c))||relationActionText;
@@ -404,7 +414,8 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const meaningfulContactText=relationContactText.replace(/both visible hands follow the described action|both visible hands following the described action/gi,"");
   const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(relationActionText);
   if(declaredMode)handMode=declaredMode;
-  const savedGaze=englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId));
+  const rawSavedGaze=englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId));
+  const savedGaze=rawSavedGaze === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? inferGazeFromAction(relationActionText) : rawSavedGaze;
   // A carried object does not own the actor's gaze. Keep explicit direction
   // consistent in natural language and the structured target used by Pose/passes.
   const gazeDirectionText = savedGaze.replace(/\b(?:no eye contact with (?:the )?(?:camera|viewer)|not looking (?:at|towards?) (?:the )?(?:camera|viewer))\b/gi, "");
@@ -430,17 +441,18 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const contract:InteractionContract = {
     relationId,required:true,characterId:characterId||"",targetCharacterId,relationType:plannedInteraction?.type || undefined,object:storyObject,affordance,region,
     objectCenter,gaze,gazeTarget,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
-    ...geometry,
+    ...geometry,expectedCount:visualObject.expectedCount,supportLabel:transferSupportLabel(relationActionText,useSceneFallback?shot.description:""),
     positive:[
       `(required story prop clearly visible: ${storyObject}:1.38)`,
       `(interaction purpose ${purpose}; ${affordance}:1.32)`,orientationText,surfaceText,
-      `(exactly one ${storyObject} story instance; preserve the declared object surface and exclusion regions:1.24)`,
+      `(exactly ${visualObject.expectedCount} ${storyObject}${visualObject.expectedCount>1?'s':''} story instance; preserve the declared object surface and exclusion regions:1.24)`,
       `(${handMode === "one" ? "the declared hand physically contacts" : "both hands physically contact"} the ${storyObject}; wrists and the object-hand contact are clearly readable:1.3)`,
       gazeMode!=="independent"?`(${gaze}:1.35)`:gaze,
     ],
-    negative:[`missing ${storyObject}`,`hidden ${storyObject}`,`duplicate ${storyObject}`,`extra ${storyObject} outside the story instance`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
+    negative:[`missing ${storyObject}`,`hidden ${storyObject}`,visualObject.expectedCount===1?`duplicate ${storyObject}`:`incorrect ${storyObject} count`,`extra ${storyObject} outside the story instance`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
   };
-  return attachStoryActionContract(contract,localActionClause,plannedInteraction?.phase||"",Boolean(plannedInteraction));
+  const stagedAction = intent === "pick" && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(relationActionText) ? relationActionText : localActionClause;
+  return attachStoryActionContract(contract,stagedAction,plannedInteraction?.phase||"",Boolean(plannedInteraction));
 }
 
 function attachStoryActionContract(contract:InteractionContract,action:string,phaseText:string,confirmed:boolean):InteractionContract {
@@ -760,6 +772,10 @@ export function extractPromptEditorialDiff(base = "", edited = "") {
 }
 
 function canonicalActionForInteraction(action: string, interaction: InteractionContract) {
+  if (interaction.actionPlan?.phase === "follow_through" && interaction.actionPlan.actionId === "pick") {
+    const finalClause = action.split(/\b(?:and|then)\b/i).at(-1)?.trim();
+    if (finalClause && /^(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)/i.test(finalClause)) return finalClause;
+  }
   return reconcileFinalPrompt(action, interaction).prompt;
 }
 
@@ -1008,7 +1024,7 @@ function defaultLook(
           : "on the right side"),
     actionEn: resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn),
     expressionEn: saved.expressionEn || planned?.expression || shot.expressionEn,
-    gazeEn: saved.gazeEn || planned?.gazeTarget || storyGazeFallback(shot, character.id) || inferGazeFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
+    gazeEn: (saved.gazeEn === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? "" : saved.gazeEn) || planned?.gazeTarget || storyGazeFallback(shot, character.id) || inferGazeFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
     handsEn:
       saved.handsEn || planned?.hands ||
       inferHandsFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
@@ -1450,6 +1466,7 @@ function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContrac
 
 const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
   actionPlan:interaction.actionPlan,
+  expectedCount:interaction.expectedCount,
   shape: interaction.shape,
   orientation: interaction.orientation,
   relationId: interaction.relationId,
@@ -1524,6 +1541,20 @@ export function buildGenerationPrompt(
   };
 }
 
+/** API and UI use the same effective Pose-to-prompt projection. */
+export function buildEffectivePromptPlan(regional:ReturnType<typeof buildRegionalPrompt>,control:PoseControlV3|null):PromptPlan {
+  if(!control)return createPromptPlan(structuredClone(regional.promptPlan.facts));
+  const execution=compilePoseExecutionV3(control,regional.repairPasses,{advisory:true});
+  const projected=rebindPromptPlanRelations(regional.promptPlan,execution.repairPasses.propInteractions||[]);
+  for(const facts of projected.facts.characters){
+    const person=control.scenePlan.people.find(p=>p.characterId===facts.characterId);
+    if(!person)continue;
+    facts.fields=facts.fields.map(field=>field.group==='action'?{...field,text:synchronizeBasicPosePromptV3(field.text,person,{structuredRelations:true}),source:'effective_pose_contract'}:field);
+    facts.fields.push({id:`${facts.characterId}.pose`,group:'pose',text:synchronizeBasicPosePromptV3('',person,{structuredRelations:true}),source:'effective_pose_contract'});
+  }
+  return createPromptPlan(projected.facts);
+}
+
 export function buildRegionalPrompt(
   shot: Shot,
   assets: Asset[],
@@ -1594,7 +1625,7 @@ export function buildRegionalPrompt(
     const identity = unique([
       "one person",
       englishVisual(character.profile?.agePresentationEn),
-      englishVisual(stripTraits(character.appearanceEn)).split(",").filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term)).join(", "),
+      englishVisual(stripTraits(character.appearanceEn)).split(",").filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term) && !clean(stateHair || look.hairStyleEn).toLowerCase().includes(clean(term).toLowerCase())).join(", "),
       englishVisual(character.profile?.faceShapeEn) ? `(${englishVisual(character.profile?.faceShapeEn)}:1.22)` : "",
       englishVisual(character.profile?.skinToneEn) ? `(${englishVisual(character.profile?.skinToneEn)}:1.15)` : "",
       englishVisual(character.profile?.distinguishingFeaturesEn) ? `(${englishVisual(character.profile?.distinguishingFeaturesEn)}:1.18)` : "",
@@ -1607,14 +1638,15 @@ export function buildRegionalPrompt(
       {id:`${id}.identity`,group:"identity",text:identity,source:stateHair?"confirmed_hair_state+character_profile":"character_profile+effective_traits"},
       {id:`${id}.body`,group:"body",text:englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",source:"character_profile"},
       {id:`${id}.clothing`,group:"clothing",text:[
-      resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
-        ? `(wearing ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.5)`
+      visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)
+        ? `(wearing ${visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)}:1.5)`
         : "",
       /wide shot|full shot/.test(resolvedCamera) ? resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) : "",
       state?.bag,state?.accessories.join(", "),state?.glasses,state?.outerwearState,
       ].filter(Boolean).join(", "),source:outfit?`selected_asset:${outfit.id}`:"character_profile"},
       {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:sourceFor("actionEn")},
-      {id:`${id}.hands`,group:"hands",text:[englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),...interactions.map(i=>relationVisualText(i))].join(", "),source:"interaction_contract+effective_hands"},
+      {id:`${id}.hands`,group:"hands",text:englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:sourceFor("handsEn")},
+      ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i),source:"interaction_contract"})),
       {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
       {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
@@ -1648,7 +1680,7 @@ export function buildRegionalPrompt(
     // A confirmed weather specification is authoritative; an umbrella or old scene
     // description cannot introduce contrary weather exclusions.
     weather: !shot.visualSpecConfirmed && /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, sunny weather" : "",
-    composition: quality.characterCount > 1 ? "extra foreground principal person, crowded foreground, duplicated person, clone, split screen, collage, character sheet" : `extra person, duplicate, clone, split screen, collage, character sheet${mediumOrClose ? ", full-body composition" : ""}`,
+    composition: quality.characterCount > 1 ? "extra foreground principal person, crowded foreground, duplicated person, clone, split screen, collage, character sheet" : `extra person, duplicated person, clone, split screen, collage, character sheet${mediumOrClose ? ", full-body composition" : ""}`,
     text: "chibi, nsfw, 3d, photorealistic, monochrome, grayscale, text, letters, watermark, logo, speech bubbles, captions",
   };
   // Shared negative conditioning affects every region, including actors explicitly

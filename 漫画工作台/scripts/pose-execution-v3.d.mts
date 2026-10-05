@@ -9,5 +9,5 @@ export type PoseExecutionV3 = {
   scenePlan: PoseScenePlanV3 & { coordinateSpace: "projected_canvas" };
   repairPasses: RepairPasses;
 };
-export function compilePoseExecutionV3(control: PoseControlV3, repairPasses?: Partial<RepairPasses>): PoseExecutionV3;
+export function compilePoseExecutionV3(control: PoseControlV3, repairPasses?: Partial<RepairPasses>, options?:{advisory?:boolean}): PoseExecutionV3;
 export function preparePoseExecutionV3<T>(recipe: T): T & { poseExecution?: PoseExecutionV3 };

@@ -7,7 +7,7 @@ const character = { id: "actor", name: "Actor", appearanceEn: "adult person", vi
 const base = { id: 2, characterIds: ["actor"], title: "包裹", description: "小粉抱着快递包裹，低头看着包裹，笑容满面。", scene: "快递站", sceneEn: "", timeOfDay: "白天", actionEn: "Holding the package", expressionEn: "delighted", camera: "特写", cameraEn: "close-up", compositionEn: "", characterLooks: {}, environment: {} } as unknown as Shot;
 
 test("explicit prose gaze reaches ordinary, Regional and prop contracts without losing the object target", () => {
-  for (const [noun, english] of [["包裹", /parcel/], ["手机", /smartphone screen/], ["书", /book or document/], ["水杯", /drink container/], ["剪刀", /scissors/]] as const) {
+  for (const [noun, english] of [["包裹", /parcel/], ["手机", /smartphone screen/], ["书", /book/], ["水杯", /cup/], ["剪刀", /scissors/]] as const) {
     const shot = { ...base, description: `她低头看着${noun}` };
     const gaze = storyGazeFallback(shot, "actor");
     assert.match(gaze, /head tilted down/);

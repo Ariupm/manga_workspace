@@ -1,4 +1,4 @@
-import {actionOutlineBounds,actionOutlineMarkup} from "./action-mechanism.mjs";
+import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action-mechanism.mjs";
 import { assertPromptPlanRecipe, prepareGenerationPromptRequest } from "./prompt-compiler.mjs";
 import {contactPassAllowed,actionContactTerms} from "./action-stage-policy.mjs";
 import {poseUnitParameters} from "./pose-conditioning-policy.mjs";
@@ -91,8 +91,8 @@ function propAppearanceContract(interaction = {}) {
   const shape = String(interaction.shape || "");
   const plane = String(interaction.surfacePlan?.plane || "contextual");
   const positive = [
-    shape === "portrait_rect" ? "one thin rigid portrait rectangle with a continuous outer silhouette" : "",
-    shape === "landscape_rect" ? "one thin rigid landscape rectangle with a continuous outer silhouette" : "",
+    shape === "portrait_rect" ? `${interaction.expectedCount>1?"each item is a":"one"} thin rigid portrait rectangle with a continuous outer silhouette` : "",
+    shape === "landscape_rect" ? `${interaction.expectedCount>1?"each item is a":"one"} thin rigid landscape rectangle with a continuous outer silhouette` : "",
     plane === "screen" ? "one uninterrupted glass display surface contained inside the object frame" : "",
   ];
   const negative = [];
@@ -229,7 +229,7 @@ try {
   );
   let controlUnits = [];
   const requiredBaseInteractions = (recipe.generationSpec?.repairPasses?.propInteractions || []).filter((item) => item?.required !== false);
-  const deferredBase = deferRequiredPropsFromBasePrompt(recipe.prompt, requiredBaseInteractions);
+  const deferredBase = deferRequiredPropsFromBasePrompt(recipe.prompt, requiredBaseInteractions,{structuredVisual:Boolean(recipe.generationSpec?.promptPlan)});
   recipe.generationSpec.deferRequiredProps = requiredBaseInteractions.length > 0;
   recipe.generationSpec.deferredBasePrompt = requiredBaseInteractions.length ? { objects: deferredBase.objects, removedClauseCount: deferredBase.removed.length } : null;
   const allReferences = recipe.references || [];
@@ -333,7 +333,8 @@ try {
     const pw = recipe.width * guideGeometry.bodySize.width;
     const ph = recipe.height * guideGeometry.bodySize.height;
     const shape = initialPropInteraction.shape || "landscape_rect";
-    const shapeMarkup = actionOutlineMarkup(initialGeometry.actionGeometry,recipe.width,recipe.height) || (shape === "umbrella"
+    const groupOutline=propGroupOutline(initialPropInteraction,guideGeometry.center,guideGeometry.bodySize.width,guideGeometry.bodySize.height);
+    const shapeMarkup = actionOutlineMarkup(initialGeometry.actionGeometry,recipe.width,recipe.height) || actionOutlineMarkup(groupOutline,recipe.width,recipe.height) || (shape === "umbrella"
       ? `<path d="M ${px - pw * .5} ${py - ph * .1} Q ${px} ${py - ph * .7} ${px + pw * .5} ${py - ph * .1}"/><path d="M ${px} ${py - ph * .45} L ${px} ${py + ph * .48}"/>`
       : shape === "elongated"
         ? `<path d="M ${px - pw * .42} ${py + ph * .28} L ${px + pw * .42} ${py - ph * .28}"/>`
@@ -554,7 +555,7 @@ try {
       ? "foreground human body, secondary human head or torso below the acting hands, unrelated foreground hands, foreground legs, foreground lap, point-of-view limbs, first-person hands, over-the-shoulder body"
       : "";
     const requestPayload = {
-      prompt: baseUpperBody ? upperBodyVisiblePrompt(baseRequestPrompt, { suppressForegroundClutter, raisedHandContact }) : baseRequestPrompt,
+      prompt: baseUpperBody ? upperBodyVisiblePrompt(baseRequestPrompt, { suppressForegroundClutter, raisedHandContact, structuredVisual:Boolean(recipe.generationSpec?.promptPlan) }) : baseRequestPrompt,
       negative_prompt: [
         recipe.generationSpec.deferRequiredProps
           ? [recipe.negativePrompt, deferredBase.negative].join(", ")
@@ -909,7 +910,8 @@ try {
     const mask=(await sharp(maskSvg).png().toBuffer()).toString("base64");
     const shape=propInteraction.shape||"landscape_rect",stroke=Math.max(5,Math.round(Math.min(width,height)*.012));
     const sx=centerX-radiusX*.46,sy=centerY-radiusY*.5,sw=radiusX*.92,sh=radiusY;
-    const shapeMarkup=actionOutlineMarkup(geometry.actionGeometry,width,height)||((shape==="portrait_rect"||shape==="landscape_rect")
+    const groupOutline=propGroupOutline(propInteraction,geometry.center,geometry.bodySize.width,geometry.bodySize.height);
+    const shapeMarkup=actionOutlineMarkup(geometry.actionGeometry,width,height)||actionOutlineMarkup(groupOutline,width,height)||((shape==="portrait_rect"||shape==="landscape_rect")
       ? portrait
         ? `<rect x="${centerX-objectHalfWidth}" y="${centerY-objectHalfHeight}" width="${objectWidth}" height="${objectHeight}" rx="${stroke*1.6}"/>`
         : landscape
