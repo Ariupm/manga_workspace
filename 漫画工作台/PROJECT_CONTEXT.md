@@ -8,6 +8,8 @@
 
 ## 技术栈与目录
 
+- 2026-10-05 job545续修：pre-contact优先解析为anticipation；按本人手侧/对象补齐携带位置，已知prop目录键转自然名词但保留实例。新poseUsage冻结authored-region-1，关闭骨架按characterId读取已声明区域并审计mask；不是脸部定位，旧配方不升级。详见JOB545_ACTION_REPAIR_2026-10-05.md，程序验收未生图。
+
 - 2026-10-05：单格新增持久化 `poseControlEnabled`，新 recipe 冻结 `pose-usage-1`。关闭保留骨架资产/参数，停用骨架、关联轮廓、无独立图像定位的局部精修及裁切，身份参考留在人物区域基础请求。仍使用现有 SD WebUI 后端，未接入 FLUX.2 或 Qwen-Image-Edit/ComfyUI。
 - 新提示词快照带 `prompt-consistency-1`：公共镜头展示、人物优先顺序、关联工具/目标上下文共用有效事实，实际请求检查明确矛盾与语义漂移。旧快照保持原路径；规则有界，不能保证任意文本或模型视觉执行无误。
 

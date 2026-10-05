@@ -1,4 +1,4 @@
-import {usesPoseGeometry,assertControlPolicyRequest} from './generation-control-policy.mjs';
+import {usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
 import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
 import {relationGazeDescription,isLastRelationGaze,propPhysicalAppearance} from './sd-worker-logic.mjs';
 import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action-mechanism.mjs";
@@ -200,6 +200,7 @@ try {
     if (!fs.existsSync(referencePath)) continue;
     let effectiveRegionMask;
     let identityMaskPlan = null;
+    let regionMaskPlan = null;
     if (geometryEnabled && reference.role === "identity") {
       const characterRegions = recipe.generationSpec?.characterRegions || [];
       const characterIndex = characterRegions.findIndex((item) => item.characterId === reference.characterId);
@@ -217,14 +218,10 @@ try {
         `<svg xmlns="http://www.w3.org/2000/svg" width="${recipe.width}" height="${recipe.height}"><rect width="100%" height="100%" fill="black"/><ellipse cx="${geometry.cx}" cy="${geometry.cy}" rx="${geometry.rx}" ry="${geometry.ry}" fill="white"/></svg>`,
       );
       effectiveRegionMask = (await sharp(svg).png().toBuffer()).toString("base64");
-    } else if (reference.region) {
+    } else if ((reference.region || !geometryEnabled) && (regionMaskPlan = referenceRegionPlan(recipe, reference))) {
       const width = recipe.width;
       const height = recipe.height;
-      const x = Math.round(reference.region.xStart * width);
-      const regionWidth = Math.max(
-        1,
-        Math.round((reference.region.xEnd - reference.region.xStart) * width),
-      );
+      const {x, width:regionWidth} = regionMaskPlan.bounds;
       const svg = Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><rect x="${x}" y="0" width="${regionWidth}" height="${height}" fill="white"/></svg>`,
       );
@@ -255,6 +252,7 @@ try {
       characterId: reference.characterId || null,
       initialReferenceIndex,
       identityMaskPlan,
+      regionMaskPlan,
       });
   }
   if (poseImageBase64 && poseControl?.model) {
@@ -379,11 +377,12 @@ try {
       controlApplied: appliedControlUnits.has(unit),
       effectiveRegionMaskPrepared: Boolean(unit.effective_region_mask),
       effectiveRegionMaskApplied: appliedControlUnits.has(unit) && Boolean(unit.effective_region_mask),
-      maskShape: unit.identityMaskPlan?.shape || null,
-      maskBounds: unit.identityMaskPlan?.bounds || null,
-      normalizedMaskBounds: unit.identityMaskPlan?.normalizedBounds || null,
+      maskShape: unit.identityMaskPlan?.shape || unit.regionMaskPlan?.shape || null,
+      maskBounds: unit.identityMaskPlan?.bounds || unit.regionMaskPlan?.bounds || null,
+      normalizedMaskBounds: unit.identityMaskPlan?.normalizedBounds || unit.regionMaskPlan?.normalizedBounds || null,
       maskCenter: unit.identityMaskPlan?.center || null,
-      characterRegion: unit.identityMaskPlan?.region || null,
+      characterRegion: unit.identityMaskPlan?.region || unit.regionMaskPlan?.region || null,
+      regionSource: unit.regionMaskPlan?.source || null,
       coordinateSources: unit.identityMaskPlan ? { x: unit.identityMaskPlan.sourceX, y: unit.identityMaskPlan.sourceY, shotClass: unit.identityMaskPlan.shotClass } : null,
     }));
   recipe.profileExecution = {
@@ -432,8 +431,8 @@ try {
     deferredReason: unit.deferredReason || null,
     characterId: unit.characterId || null,
     effectiveRegionMaskApplied: Boolean(unit.effective_region_mask),
-    effectiveRegionMaskBounds: unit.identityMaskPlan?.bounds || null,
-    normalizedEffectiveRegionMaskBounds: unit.identityMaskPlan?.normalizedBounds || null,
+    effectiveRegionMaskBounds: unit.identityMaskPlan?.bounds || unit.regionMaskPlan?.bounds || null,
+    normalizedEffectiveRegionMaskBounds: unit.identityMaskPlan?.normalizedBounds || unit.regionMaskPlan?.normalizedBounds || null,
   }));
   let polling = false;
   const progressUrl = new URL(
@@ -539,7 +538,7 @@ try {
       prompt: requestPayload.prompt,
       negativePrompt: requestPayload.negative_prompt,
       regionalPrompterEnabled: Boolean(recipe.regionalPrompter?.enabled),
-      controlUnits: controlUnits.map((unit) => ({ module: unit.module, model: unit.model, weight: unit.weight, control_mode: unit.control_mode, relationId: unit.relationId || null, stage: unit.stage || "initial", characterId: unit.characterId || null, effectiveRegionMaskApplied: Boolean(unit.effective_region_mask), effectiveRegionMaskBounds: unit.identityMaskPlan?.bounds || null })),
+      controlUnits: controlUnits.map((unit) => ({ module: unit.module, model: unit.model, weight: unit.weight, control_mode: unit.control_mode, relationId: unit.relationId || null, stage: unit.stage || "initial", characterId: unit.characterId || null, effectiveRegionMaskApplied: Boolean(unit.effective_region_mask), effectiveRegionMaskBounds: unit.identityMaskPlan?.bounds || unit.regionMaskPlan?.bounds || null })),
       recordedAt: new Date().toISOString(),
     };
     if (phase === "final") {

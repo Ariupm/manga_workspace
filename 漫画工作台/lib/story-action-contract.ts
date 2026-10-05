@@ -7,7 +7,7 @@ import {actionStageState,actionStageVerb,actionStageObjectTerms} from '../script
 
 export type StoryActionContract={version:'story-action-1';actionId:string;phase:PosePhase;geometry:ActionGeometryInput;source:'story'|'confirmed_interaction';evidence:string;assumptions:string[]};
 export function storyActionPhase(text:string):PosePhase{
- if(/anticipation|prepar|about to|before|准备|将要|尚未|接近/i.test(text))return 'anticipation';
+ if(/anticipation|prepar|about to|before|\bpre[-_ ]contact\b|准备|将要|尚未|接近/i.test(text))return 'anticipation';
  if(/follow.?through|finished|completed|after|released|\bpicked up\b|已经|完成|松开|放好|关好|打开后|拿到|取到/i.test(text))return 'follow_through';
  return 'contact';
 }

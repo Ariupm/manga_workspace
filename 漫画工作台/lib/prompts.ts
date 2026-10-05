@@ -93,6 +93,7 @@ const explicitlyAllowsCameraGaze=(value:string)=> {
 };
 
 export type InteractionContract = {
+  contactDescription?: string;
   factSource?: 'structured_visual_facts' | 'legacy_text_inference_or_default';
   visualFacts?: InteractionVisualFacts;
   actionPlan?:StoryActionContract;
@@ -355,10 +356,22 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   ].filter(value => !isNarrativeActionInstruction(value))).join("; ");
   const structuredFacts = plannedInteraction && 'visualFacts' in plannedInteraction ? normalizeInteractionFacts(plannedInteraction.visualFacts) : undefined;
   const structuredProp = structuredFacts?.object.label || plannedInteraction?.propId || "";
-  const relationContactText = plannedInteraction ? [
+  const declaredContactText = plannedInteraction ? [
     "contactPoints" in plannedInteraction ? plannedInteraction.contactPoints.join(" ") : "",
     "contactPoint" in plannedInteraction ? plannedInteraction.contactPoint : "",
   ].join(" ") : look?.handsEn || planned?.hands || "";
+  // A relation's sparse contact list often only says "left hand". Supplement
+  // it with this actor's matching hand/object clause, never the other hand's
+  // operation or another actor's text. Structured visualFacts still win below.
+  const contactObject = resolvePropVisualFacts(structuredProp, relationActionText).object;
+  const contactFamily = interactionObjects.find(entry => entry.pattern.test(contactObject));
+  const namedHand = /\bleft hand\b/i.test(declaredContactText) ? 'left' : /\bright hand\b/i.test(declaredContactText) ? 'right' : '';
+  const handClauses = (look?.handsEn || planned?.hands || '').split(/;|\bwhile\b|(?:,|\band)\s*(?=(?:the\s+)?(?:left|right)\s+hand)/i);
+  const matchingHandText = plannedInteraction && !structuredFacts ? handClauses.filter(clause => {
+    const namesObject = contactFamily ? contactFamily.pattern.test(clause) : Boolean(contactObject) && clause.toLowerCase().includes(contactObject.toLowerCase());
+    return namesObject && (!namedHand || new RegExp(`\\b${namedHand} hand\\b`, 'i').test(clause));
+  }).join('; ') : '';
+  const relationContactText = [declaredContactText, matchingHandText].filter(Boolean).join('; ');
   const rankedProp = structuredProp ? null : rankInteractionPropCandidates({
     target: planned?.actionTarget || "",
     action: relationActionText,
@@ -397,23 +410,24 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const localActionClause=relationActionText.split(/\b(?:while|and)\b|[,;]/i).find(c=>match.pattern.test(c))||relationActionText;
   const intent=actionIntent(localActionClause);
   const phone=/smartphone/.test(match.object);
-  const phoneReadEvidence=/\b(?:read(?:ing)?|message|notification|texting)\b|(?:eyes?|gaze|pupils?)\s+(?:focused|directed|looking)?[^;,.]*\b(?:phone|smartphone)?\s*screen\b|\b(?:phone|smartphone)\s+screen\b/i.test(source);
-  const twoHandFrontEvidence=/\b(?:both|two)\s+(?:visible\s+)?hands?\b[^;,.]*\b(?:hold(?:ing|s)?|operate|use|support)/i.test(source)&&/\b(?:in front of (?:the )?(?:chest|torso)|at (?:the )?(?:chest|torso)|screen)\b/i.test(source);
-  const explicitPhoneCall=/\b(?:phone|telephone)?\s*call(?:ing)?\b|\b(?:making|taking|answering|on)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)\b[^;,.]*\b(?:beside|against|to|at)\s+(?:her|his|their|the)?\s*ear\b|\b(?:listening|talking|speaking)\b[^;,.]*\b(?:phone|smartphone)\b/i.test(source);
-  const screenEvidence=/phone screen (?:shows|displays)|notification (?:card|banner) visible|capture both face and phone screen|screen readable to (?:the )?viewer/i.test(source);
+  const usageSource = plannedInteraction ? `${relationActionText}; ${relationContactText}` : source;
+  const phoneReadEvidence=/\b(?:read(?:ing)?|message|notification|texting)\b|(?:eyes?|gaze|pupils?)\s+(?:focused|directed|looking)?[^;,.]*\b(?:phone|smartphone)?\s*screen\b|\b(?:phone|smartphone)\s+screen\b/i.test(usageSource);
+  const twoHandFrontEvidence=/\b(?:both|two)\s+(?:visible\s+)?hands?\b[^;,.]*\b(?:hold(?:ing|s)?|operate|use|support)/i.test(usageSource)&&/\b(?:in front of (?:the )?(?:chest|torso)|at (?:the )?(?:chest|torso)|screen)\b/i.test(usageSource);
+  const explicitPhoneCall=/\b(?:phone|telephone)?\s*call(?:ing)?\b|\b(?:making|taking|answering|on)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)\b[^;,.]*\b(?:beside|against|to|at)\s+(?:her|his|their|the)?\s*ear\b|\b(?:listening|talking|speaking)\b[^;,.]*\b(?:phone|smartphone)\b/i.test(usageSource);
+  const screenEvidence=/phone screen (?:shows|displays)|notification (?:card|banner) visible|capture both face and phone screen|screen readable to (?:the )?viewer/i.test(usageSource);
   const objectTransferEvidence = plannedInteraction?.type === "object_transfer" || /\b(?:hand over|handing over|give|giving|pass|passing|offer|offering)\b|递给|递出|交给|交接|传递/i.test(relationActionText);
   const carriedWithoutUse = !phoneReadEvidence && !explicitPhoneCall && !objectTransferEvidence
     && !/\b(?:read|reading|watch|watching|scan|scanning|photograph|texting|operate|operating|write|writing|drink|drinking)\b/i.test(relationActionText)
     && /\b(?:carry|carrying)\b|\b(?:at|by)\s+(?:her|his|their|the)\s+side\b|抱|提着/i.test(`${relationActionText}; ${relationContactText}`);
   if(intent==="place"||intent==="pick"||intent==="reach"){purpose=intent==="place"?"place":"pick";gazeMode="object";handMode="one";affordance="hand approaches the object at its declared support, without assuming reading";}
-  else if(["open","close","operate_environment","push","pull"].includes(intent||"")){purpose="operate";gazeMode="work_point";handMode=explicitHandMode(source)||"one";affordance="hand at the declared operating point; mechanism constraints require an action relation plan";}
+  else if(["open","close","operate_environment","push","pull"].includes(intent||"")){purpose="operate";gazeMode="work_point";handMode=explicitHandMode(usageSource)||"one";affordance="hand at the declared operating point; mechanism constraints require an action relation plan";}
   else if(carriedWithoutUse){purpose="carry";gazeMode="independent";orientation=phone?"portrait":"contextual";viewerSurface="contextual";affordance="carried in the declared hand position, with the free hand continuing its separate story action; not raised for reading or operating";}
   else if(phone&&(phoneReadEvidence||twoHandFrontEvidence)){purpose=phoneReadEvidence?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";handMode="two";shape="portrait_rect";affordance=screenEvidence?"held vertically with both hands at a three-quarter angle, the character can read the screen while a parcel notification card and icon remain visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso with both hands, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(phone&&explicitPhoneCall){purpose="call";orientation="portrait";viewerSurface="side";gazeMode="independent";handMode="one";y=.34;affordance="held beside one ear by one hand, with the device side edge readable and the other hand free";}
-  else if(phone&&/watch(?:ing)? (?:a )?video|video playback|movie|landscape mode/i.test(source)){purpose="watch";orientation="landscape";viewerSurface="back";gazeMode="object";handMode="two";shape="landscape_rect";affordance="held horizontally in landscape orientation with both hands, screen facing the character and back casing facing the viewer";}
-  else if(phone&&/photo|photograph|camera|record(?:ing)?|film(?:ing)?|selfie/i.test(source)){purpose="capture";orientation="contextual";viewerSurface="screen";gazeMode="object";handMode=/both hands|two hands/i.test(source)?"two":"one";y=.46;affordance="raised toward the intended subject, camera side facing the subject and screen side facing the character";}
-  else if(phone&&/scan|qr|barcode/i.test(source)){purpose="scan";orientation="portrait";viewerSurface="side";gazeMode="target";handMode="one";y=.5;affordance="held in one hand and aimed toward the code or document being scanned";}
-  else if(phone){purpose=/read|message|notification|texting/i.test(source)?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";shape="portrait_rect";affordance=screenEvidence?"held vertically at a three-quarter angle so the character can read the notification while the parcel icon remains visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
+  else if(phone&&/watch(?:ing)? (?:a )?video|video playback|movie|landscape mode/i.test(usageSource)){purpose="watch";orientation="landscape";viewerSurface="back";gazeMode="object";handMode="two";shape="landscape_rect";affordance="held horizontally in landscape orientation with both hands, screen facing the character and back casing facing the viewer";}
+  else if(phone&&/photo|photograph|camera|record(?:ing)?|film(?:ing)?|selfie/i.test(usageSource)){purpose="capture";orientation="contextual";viewerSurface="screen";gazeMode="object";handMode=/both hands|two hands/i.test(usageSource)?"two":"one";y=.46;affordance="raised toward the intended subject, camera side facing the subject and screen side facing the character";}
+  else if(phone&&/scan|qr|barcode/i.test(usageSource)){purpose="scan";orientation="portrait";viewerSurface="side";gazeMode="target";handMode="one";y=.5;affordance="held in one hand and aimed toward the code or document being scanned";}
+  else if(phone){purpose=/read|message|notification|texting/i.test(usageSource)?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";shape="portrait_rect";affordance=screenEvidence?"held vertically at a three-quarter angle so the character can read the notification while the parcel icon remains visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(/drink|sip|喝/i.test(relationActionText)&&/drink container/.test(match.object)){purpose="drink";orientation="upright";viewerSurface="side";gazeMode="independent";handMode="one";y=.4;affordance="held upright by one hand with its rim approaching the mouth";}
   else if(objectTransferEvidence){purpose="offer";orientation="contextual";viewerSurface="contextual";gazeMode="target";}
   else if(/handheld tool|environment fixture/.test(match.object)){purpose="operate";orientation="contextual";viewerSurface="side";gazeMode="work_point";affordance="gripped at the handle by one visible hand, working end contacting the intended work point and clearly separated from the fingers";}
@@ -448,6 +462,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     : undefined);
   const gazeTarget = gazeTargetForInteraction({kind:gazeMode,objectCenter,objectInstanceId:geometry.objectInstanceId,targetCharacterId,targetRegion,surfaceNormal:geometry.surfacePlan.normal});
   const contract:InteractionContract = {
+    contactDescription: relationContactText,
     relationId,required:true,characterId:characterId||"",targetCharacterId,relationType:plannedInteraction?.type || undefined,object:storyObject,affordance,region,
     objectCenter,gaze,gazeTarget,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
     ...geometry,expectedCount:visualObject.expectedCount,supportLabel:transferSupportLabel(relationActionText,useSceneFallback?shot.description:""),
@@ -648,7 +663,7 @@ export function deriveInteractionContracts(shot: Shot, characterId?: string): In
     // OpenPose's anatomical left is positive X in the canonical front-facing
     // frame. A relation's array index is not a spatial instruction.
     const hand = contract.handMode === "one" ? contract.contactAnchors[0]?.hand : null;
-    const atSide = contract.purpose === "carry" && /\b(?:at|by)\s+(?:her|his|their|the)\s+side\b|身侧|身体一侧/i.test(contactText);
+    const atSide = contract.purpose === "carry" && /\b(?:at|by)\s+(?:her|his|their|the)\s+side\b|身侧|身体一侧/i.test(contract.contactDescription || contactText);
     const span = contract.region.xEnd - contract.region.xStart;
     const contactShift = contract.actionPlan ? 0 : hand ? (hand === "left" ? 1 : -1) * span * (atSide ? .16 : .055) : 0;
     const objectCenter = { ...contract.objectCenter, x: clamp(contract.objectCenter.x + contactShift, contract.region.xStart + span * .08, contract.region.xEnd - span * .08) };

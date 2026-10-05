@@ -1,5 +1,49 @@
 # 漫画工作台问题台账
 
+## ISSUE-PROMPT-013 旧交互阶段及局部手部事实误编译为胸前接触动作
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：job545侧身取包裹生成摆拍，要求进一步修改；关联ISSUE-PROMPT-012、ISSUE-GAZE-006和ISSUE-POSE-REACH-001。
+- 已确认事实：只读job545实际请求含prop_smartphone/prop_package；pre-contact被storyActionPhase解析为contact；手机关系仅有left hand接触点，未消费本人hands中的at her side，落入胸前inspect默认模板。
+- 高概率原因：阶段正则把pre-contact中的contact当作接触；关系用途输入遗漏匹配的手部对象分句；目录ID未转换成视觉名称。
+- 未验证假设：这些确定性冲突对摆拍的视觉贡献比例未知，不能认定是唯一原因。
+- 反证或冲突：基础模型与参考图可能共同影响；不以单图判断修复通过，不更改历史任务或已确认规格。
+- 复现步骤：构造旧规格两条关系：右手reaching for package/phase=pre-contact，左手holding smartphone/contactPoints=left hand；本人hands明确手机在身侧。调用deriveInteractionContracts及buildEffectivePromptPlan检查关系和payload。
+- 涉及文件：lib/prompts.ts、lib/story-action-contract.ts、scripts/prompt-compiler.mjs、tests/action-prompt-regression.test.ts。
+- 影响范围：无visualFacts的旧交互规格新编译，单/多人和不同景别；带明确visualFacts的优先级保留。
+- 建议方案：前接触阶段优先识别，按人物/手/对象补充用途证据，已知目录ID转自然名词，保留实例键。
+- 验收标准：pre-contact不执行握持补全；携带与阅读/通话隔离；自然名词贯通所有阶段，角色、手侧、数量及实例不串用。
+- 解决 Agent 修改：前接触别名优先；关系按本人手侧及对象补充手部证据，用途不借其他对象；目录键转自然名词且实例ID保持。携带文字与几何偏移共享contactDescription，逗号分句串手回归已修复。
+- 解决 Agent 测试：250/250内存库项目测试、69/69执行层测试、类型/语法检查及生产构建通过。job545原规格只读重编译为package pick/anticipation/right和smartphone carry/left，实例ID保持；单/多人、近中全景、开/关骨架和基础/全部局部编译矩阵通过。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：模型随机性与实际视觉执行率未验证；未知ID不可无依据猜名。
+- 诊断 Agent 复核证据：job545 recipe/请求快照与纯函数复现。
+- 诊断 Agent 复核结论：确定性程序缺陷，待修复后独立复核，不标记verified。
+- 后续处理：交独立诊断Agent复核；新草稿任务消费修复，不升级旧任务或改写已确认规格。
+- 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手/视线局部pass→自动硬门/草稿一次整体确认→事务式正式候选逐节点复核，详见JOB545_ACTION_REPAIR_2026-10-05.md。人数/景别/身份/服装/动作/视线/手/道具/支持/遮挡/环境未相互覆盖；匹配本人区域与关系，不引入任务特例。发现补充手部证据按逗号串手及文字位置未同步几何两处同根因冲突，已修复并回归。关闭骨架不借旧坐标猜mask，人物区域不伪称脸部定位；旧配方版本兼容，未应用不记成功，失败门禁和候选路径闭合。模型随机性与实际视觉执行率保留运行风险。
+
+## ISSUE-CONTROL-004 关闭骨架时单人身份参考漏读已声明人物区域
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：job545摆拍原因分析后进一步修改；关联ISSUE-POSE-053。
+- 已确认事实：单人reference.region=null，但generationSpec.characterRegions存在本人区域；worker关闭Pose分支只读取reference.region，导致基础身份参考没有区域mask。job545审计effectiveRegionMaskApplied=false。
+- 高概率原因：关闭几何的分支未按characterId读取已声明区域。
+- 未验证假设：限制到人物区域能否改善身体/头部朝向未验证，人物区域不是独立脸部定位。
+- 反证或冲突：不得用关闭的骨架坐标猜脸部mask，不擅自降低身份权重或恢复局部pass。
+- 复现步骤：poseUsage.enabled=false、identity reference.region=null，同时characterRegions保存对应characterId及region，检查worker mask分支。
+- 涉及文件：scripts/generation-control-policy.mjs及声明、scripts/sd-worker.mjs、tests/action-prompt-regression.test.ts。
+- 影响范围：关闭Pose的新配方基础身份参考区域，单/多人按ID匹配；已有显式region优先。
+- 建议方案：同一纯函数解析有效人物区域并验证边界，生成区域mask并如实审计。
+- 验收标准：不读取Pose；不用数组位置借用其他人区域；显式region优先；缺少区域不伪造定位；旧配方路径保持。
+- 解决 Agent 修改：新增authored-region-1配方版本；关闭骨架时按characterId读取已声明区域，显式reference.region优先并校验边界。区域mask与来源进入身份/control/request审计；不猜脸部位置、不改权重、不恢复局部pass，旧配方保持。
+- 解决 Agent 测试：250/250内存库项目测试、69/69执行层测试、类型/语法检查及生产构建通过。job545原规格只读重编译为package pick/anticipation/right和smartphone carry/left，实例ID保持；单/多人、近中全景、开/关骨架和基础/全部局部编译矩阵通过。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：区域控制不是脸部隔离，不能保证消除正脸参考对身体或视线的影响。
+- 诊断 Agent 复核证据：job545实际recipe及worker静态分支。
+- 诊断 Agent 复核结论：确定性遗漏，待独立复核，不标记verified。
+- 后续处理：交独立诊断Agent复核；新草稿任务消费修复，不升级旧任务或改写已确认规格。
+- 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手/视线局部pass→自动硬门/草稿一次整体确认→事务式正式候选逐节点复核，详见JOB545_ACTION_REPAIR_2026-10-05.md。人数/景别/身份/服装/动作/视线/手/道具/支持/遮挡/环境未相互覆盖；匹配本人区域与关系，不引入任务特例。发现补充手部证据按逗号串手及文字位置未同步几何两处同根因冲突，已修复并回归。关闭骨架不借旧坐标猜mask，人物区域不伪称脸部定位；旧配方版本兼容，未应用不记成功，失败门禁和候选路径闭合。模型随机性与实际视觉执行率保留运行风险。
+
 ## ISSUE-POSE-053 骨架启用选择及关联几何执行隔离
 
 - 优先级：P1

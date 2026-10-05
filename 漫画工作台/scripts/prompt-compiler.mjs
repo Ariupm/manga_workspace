@@ -24,6 +24,10 @@ export const uniquePrompt = value => [...new Map(promptTerms(value).map(term => 
 
 /** Concrete object and count belong to the actor's action, never background mentions. */
 export function resolvePropVisualFacts(object, action = '') {
+  // Known legacy catalog IDs are keys, not visual labels. Do not guess labels
+  // for opaque/custom IDs or strip meaningful modifiers from authored names.
+  const legacyId = String(object).match(/^prop_(smartphone|phone|package|parcel|box|book|document|umbrella|bottle|cup|bag|scissors)(?:_\d+)?$/i);
+  if (legacyId) object = legacyId[1].toLowerCase() === 'phone' ? 'smartphone' : legacyId[1].toLowerCase();
   const generic = /^(?:book[_ ]or[_ ]document|drink[_ ]container|food[_ ]container)$/i.test(object);
   const families = /book|document/i.test(object) ? ['notebook','magazine','document','letter','novel','book']
     : /drink[_ ]container/i.test(object) ? ['bottle','mug','cup','glass']
