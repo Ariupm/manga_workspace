@@ -77,7 +77,7 @@ export function buildCharacterAssetBundle(
   const mode = cropMode(shot.visualSpec?.camera?.shotSize || shot.cameraEn || shot.camera);
   const references: RenderReference[] = [];
   const push = (reference: RenderReference) => {
-    if (reference.path && !references.some((item) => item.role === reference.role && item.path === reference.path)) references.push(reference);
+    if (shot.referenceImagesEnabled !== false && reference.path && !references.some((item) => item.role === reference.role && item.path === reference.path)) references.push(reference);
   };
   for (const reference of character.references.filter((item) => item.confirmed)) {
     const role = roleForReferenceType(reference.type);
@@ -102,7 +102,7 @@ export function buildCharacterAssetBundle(
     version: `${character.profileVersion || 1}:${character.identityMasterReferenceId || "legacy"}:${selectedOutfitId || "profile"}`,
     invariants: character.invariantsEn || [],
     references: references.sort((a, b) => b.priority - a.priority),
-    warnings,
+    warnings: shot.referenceImagesEnabled === false ? [] : warnings,
   };
 }
 

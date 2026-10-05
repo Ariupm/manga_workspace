@@ -304,6 +304,7 @@ export type Shot = {
   generationWidth: number;
   generationHeight: number;
   poseControlEnabled?: boolean;
+  referenceImagesEnabled?: boolean;
   cropX: number;
   cropY: number;
   cropScale: number;

@@ -1,4 +1,4 @@
-import {poseUsagePlan} from '../../../scripts/generation-control-policy.mjs';
+import {poseUsagePlan,referenceImageUsagePlan} from '../../../scripts/generation-control-policy.mjs';
 import {cpuGenerationPolicy} from '../../../scripts/cpu-generation-policy.mjs';
 import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
 import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
@@ -338,6 +338,8 @@ export async function POST(request: Request) {
   if (shot.visualSpec && !shot.visualSpecConfirmed)
     return NextResponse.json({error: "此分格有新的待确认视觉规格。请在连续性页面确认规格后生成，避免使用旧提示词。", code: "VISUAL_SPEC_PENDING_CONFIRMATION", shotId: shot.id, visualSpecVersion: shot.visualSpecVersion}, {status: 409});
   if (body.poseControlEnabled !== undefined && typeof body.poseControlEnabled !== 'boolean') return NextResponse.json({error:'骨架启用选项必须是布尔值',code:'INVALID_POSE_USAGE'},{status:422});
+  if (body.referenceImagesEnabled !== undefined && typeof body.referenceImagesEnabled !== 'boolean') return NextResponse.json({error:'参考图选项必须是布尔值',code:'INVALID_REFERENCE_USAGE'},{status:422});
+  const referenceImageUsage = referenceImageUsagePlan(body.referenceImagesEnabled ?? shot.referenceImagesEnabled ?? true);
   const poseUsage = poseUsagePlan(body.poseControlEnabled ?? shot.poseControlEnabled ?? true);
   const assets = getAssets();
   const characters = getCharacters();
@@ -551,7 +553,7 @@ export async function POST(request: Request) {
     );
     const clipVisionHealthy =
       fs.existsSync(clipVisionPath) && fs.statSync(clipVisionPath).size > 2_000_000_000;
-    if (!clipVisionHealthy)
+    if (referenceImageUsage.enabled && !clipVisionHealthy)
       return NextResponse.json(
         {
           error: "IP-Adapter 的 CLIP-H 视觉编码器缺失或下载不完整。请完成 clip_h.pth 下载并重启 SD WebUI 后再生成，避免角色资产控制被静默跳过。",
@@ -638,7 +640,7 @@ export async function POST(request: Request) {
       );
     const cfgScale = Number(process.env.SD_CFG_SCALE || 6.5);
     const seed = Number(body.seed ?? process.env.SD_SEED ?? -1);
-    const identities = shot.characterIds.map((characterId, index) => {
+    const identities = (referenceImageUsage.enabled ? shot.characterIds : []).map((characterId, index) => {
       const character = characters.find((item) => item.id === characterId);
       const face = character?.references.find(
         (reference) => reference.type === "face" && reference.confirmed,
@@ -731,13 +733,15 @@ export async function POST(request: Request) {
       return {
         entry: entry!,
         isolated,
-        decision: generationProfile === "gpu_full"
+        decision: !referenceImageUsage.enabled
+          ? { status: "text_only" as const, safety: "disabled_by_user" as const, controlApplied: false }
+          : generationProfile === "gpu_full"
           ? baseDecision
           : { status: "text_only" as const, safety: "cpu_profile_text_only" as const, controlApplied: false },
       };
     });
     const outfitReferences = outfitPlans
-      .filter(({ entry, decision }) => outfitAdapter.validFile && fs.existsSync(path.resolve(process.cwd(), entry.asset.path)) && (decision.controlApplied || generationProfile !== "gpu_full"))
+      .filter(({ entry, decision }) => referenceImageUsage.enabled && outfitAdapter.validFile && fs.existsSync(path.resolve(process.cwd(), entry.asset.path)) && (decision.controlApplied || generationProfile !== "gpu_full"))
       .map(({ entry, isolated, decision }) => ({
       role: "outfit",
       characterId: entry.characterId,
@@ -917,6 +921,7 @@ export async function POST(request: Request) {
     const recipe = {
       provider: "sd-webui",
       poseUsage,
+      referenceImageUsage,
       posePreflightPolicy: "advisory",
       posePreflightWarnings: [...new Set(posePreflightWarnings)],
       phase: "draft",
@@ -985,7 +990,7 @@ export async function POST(request: Request) {
           expectedFaceWidthPx: expectedFaceWidth,
           minimumReadableFaceWidthPx: 64,
           preferredExpressionFaceWidthPx: 96,
-          requiresFaceRefinement: poseUsage.enabled,
+          requiresFaceRefinement: poseUsage.enabled && referenceImageUsage.enabled,
           warnings: [
             ...([...new Set(promptRepairs)].length ? [`服务端已按动作契约自动修复最终提示词：${[...new Set(promptRepairs)].join("；")}`] : []),
             ...regionalSpec.assetWarnings,
@@ -998,7 +1003,7 @@ export async function POST(request: Request) {
             ...outfitPlans
               .filter((plan) => !plan.isolated)
               .map((plan) => `${plan.entry.asset.name} 不是去人脸纯服装参考，本次仅使用其结构化文字，避免身份和构图污染`),
-            ...(outfits.length && !outfitReferences.length ? ["服装参考未进入 ControlNet：当前镜头仅使用服装文字，必须人工复核服装一致性"] : []),
+            ...(outfits.length && !outfitReferences.length ? ["当前镜头仅使用服装文字设定"] : []),
             ...(/雨|rain|umbrella|伞/i.test(`${shot.scene} ${shot.description}`)
               ? ["雨伞、刘海和逆光可能遮挡面部；当前场景光线和遮挡关系将保留"]
               : []),
@@ -1012,13 +1017,13 @@ export async function POST(request: Request) {
         },
       },
       poseControl,
-      appearanceCoverage: appearanceControlCoverage(
+      appearanceCoverage: !referenceImageUsage.enabled ? shot.characterIds.map(characterId => ({characterId,face:"text_only",hair:"text_only",outfit:"text_only",detail:"用户关闭人物参考图，保留人物与服装文字设定"})) : appearanceControlCoverage(
         poseUsage.enabled ? references : references.filter((reference) =>
           reference && (reference.role === "identity" || !("stagedOnly" in reference && reference.stagedOnly))),
         shot.characterIds,
       ),
       identityRefinement: {
-        enabled: poseUsage.enabled,
+        enabled: poseUsage.enabled && referenceImageUsage.enabled,
         scope: "face_only_high_resolution",
         draftDenoisingStrength: 0.38,
         finalDenoisingStrength: 0.32,
@@ -1045,10 +1050,10 @@ export async function POST(request: Request) {
       locationCompilationTrace,
       characterLooks: compiled.characterLooks,
       adapterStatus: {
-        identity: faceAdapter.validFile
+        identity: !referenceImageUsage.enabled ? "disabled_by_user" : faceAdapter.validFile
           ? "ip-adapter-plus-face_sd15"
           : "reference_only",
-        outfit: outfitReferences.length && outfitAdapter.validFile
+        outfit: !referenceImageUsage.enabled ? "disabled_by_user" : outfitReferences.length && outfitAdapter.validFile
           ? "ip-adapter-plus_sd15"
           : outfits.length
             ? "text_only_manual_review"
@@ -1057,7 +1062,7 @@ export async function POST(request: Request) {
         depth: "unavailable_manual_required",
         hands: !poseUsage.enabled ? "disabled_by_user" : handRefinerAvailable ? "depth_hand_refiner" : "manual_review_required",
         fallbackReason:
-          faceAdapter.validFile && outfitAdapter.validFile && (!poseUsage.enabled || !regionalSpec.poseControl || openPoseAvailable)
+          (!referenceImageUsage.enabled || (faceAdapter.validFile && outfitAdapter.validFile)) && (!poseUsage.enabled || !regionalSpec.poseControl || openPoseAvailable)
             ? null
             : "IP-Adapter 或 OpenPose ControlNet 模型不可用",
       },

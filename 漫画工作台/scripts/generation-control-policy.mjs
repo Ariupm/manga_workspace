@@ -1,3 +1,15 @@
+/** Image conditioning is independent from Pose and defaults to historical behavior. */
+export function usesReferenceImages(recipe = {}) {
+  return recipe.referenceImageUsage?.enabled !== false;
+}
+export function referenceImageUsagePlan(enabled = true) {
+  if (typeof enabled !== 'boolean') throw new Error('referenceImagesEnabled must be boolean');
+  return {version:'reference-images-1', enabled, status:enabled ? 'requested' : 'disabled_by_user'};
+}
+export function activeReferenceImages(recipe = {}, references = recipe.references || []) {
+  return usesReferenceImages(recipe) ? references : [];
+}
+
 /** Explicit user choice; recipes without the policy retain historical behavior. */
 export function usesPoseGeometry(recipe = {}) {
   return recipe.poseUsage?.version !== 'pose-usage-1' || recipe.poseUsage.enabled !== false;
@@ -30,6 +42,12 @@ export function referenceRegionPlan(recipe, reference) {
 
 /** Off means no planned spatial controls or guessed local masks, at any stage. */
 export function assertControlPolicyRequest(recipe, payload, context) {
+  if (!usesReferenceImages(recipe)) {
+    for (const unit of payload.alwayson_scripts?.ControlNet?.args || []) {
+      if (['identity','outfit'].includes(unit.role) || /ip[-_ ]?adapter|reference[-_ ]?only|face[-_ ]?id/i.test(`${unit.module || ''} ${unit.model || ''}`))
+        throw new Error('Disabled reference images: image conditioning cannot be sent');
+    }
+  }
   if (usesPoseGeometry(recipe)) return;
   if (context.stage !== 'base' || payload.mask) throw new Error('Disabled pose: local pass requires independent image localization');
   for (const unit of payload.alwayson_scripts?.ControlNet?.args || []) {

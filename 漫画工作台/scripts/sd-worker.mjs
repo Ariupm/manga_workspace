@@ -1,4 +1,4 @@
-import {usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
+import {activeReferenceImages,usesReferenceImages,usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
 import {deferDraftHandDetail} from './cpu-generation-policy.mjs';
 import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
 import {relationGazeDescription,isLastRelationGaze,propPhysicalAppearance} from './sd-worker-logic.mjs';
@@ -191,7 +191,8 @@ try {
   const deferredBase = geometryEnabled ? deferRequiredPropsFromBasePrompt(recipe.prompt, requiredBaseInteractions,{structuredVisual:Boolean(recipe.generationSpec?.promptPlan)}) : {prompt:recipe.prompt,objects:[],removed:[]};
   recipe.generationSpec.deferRequiredProps = geometryEnabled && requiredBaseInteractions.length > 0;
   recipe.generationSpec.deferredBasePrompt = geometryEnabled && requiredBaseInteractions.length ? { objects: deferredBase.objects, removedClauseCount: deferredBase.removed.length } : null;
-  const allReferences = recipe.references || [];
+  const allReferences = activeReferenceImages(recipe);
+  recipe.referenceImageExecution = {enabled:usesReferenceImages(recipe),status:usesReferenceImages(recipe)?"requested":"disabled_by_user",activeReferenceCount:allReferences.length};
   const initialReferences =
     !geometryEnabled ? allReferences.filter(reference => reference.role === "identity" || !reference.stagedOnly) :
     recipe.characterCount > 1 && recipe.identityRefinement?.enabled
@@ -399,7 +400,7 @@ try {
     omittedInitialControlStages,
     deferredDraftControlStages,
     draftRefinementsEnabled: geometryEnabled && (phase !== "draft" || profilePlan.runDraftRefinements),
-    executionStrategy: !geometryEnabled ? "prompt_and_character_references_without_pose_geometry" : profilePlan.cpu ? "required_base_controls_with_optional_budget" : "parallel_base_controls_with_serial_refinements",
+    executionStrategy: !geometryEnabled ? (usesReferenceImages(recipe) ? "prompt_and_character_references_without_pose_geometry" : "prompt_only_without_pose_geometry") : profilePlan.cpu ? "required_base_controls_with_optional_budget" : "parallel_base_controls_with_serial_refinements",
     preferredBaseControlBudget: profilePlan.preferredInitialControlUnits || profilePlan.maxInitialControlUnits,
     requiredBudgetExpansion: profilePlan.cpu && controlUnits.length > profilePlan.preferredInitialControlUnits,
   };
@@ -637,7 +638,7 @@ try {
   // the pose/structure controls. It also prevents a broad identity reference
   // from competing with later off-camera gaze reconstruction.
   const skipStandaloneIdentity = false;
-  const identityReferences = (recipe.references || []).filter(
+  const identityReferences = allReferences.filter(
     (reference) => reference.role === "identity",
   );
   if (
@@ -745,7 +746,7 @@ try {
     }
     response = { ...response, images: [currentImage] };
   }
-  const outfitReferences = (recipe.references || []).filter((reference) => reference.role === "outfit");
+  const outfitReferences = allReferences.filter((reference) => reference.role === "outfit");
   if (runRefinements && outfitReferences.length) {
     let currentImage = response.images[0];
     for (const [outfitIndex, reference] of outfitReferences.entries()) {
@@ -1639,7 +1640,7 @@ try {
     if(!meta.width||!meta.height||meta.width<256||meta.height<256) blockers.push("image_dimensions_below_256px");
     if(imageBuffer.length<20_000) blockers.push("image_payload_suspiciously_small");
     pixelQa={status:blockers.length?"blocked":"passed",blockers,warnings:[],width:meta.width,height:meta.height,checkedAt:new Date().toISOString()};
-    const reviewContract=semanticReviewContractForStage({generationSpec:recipe.generationSpec,references:recipe.references||[],adapterStatus:recipe.adapterStatus||{},characterLooks:recipe.characterLooks||{},environment:recipe.environment||{}}, phase);
+    const reviewContract=semanticReviewContractForStage({generationSpec:recipe.generationSpec,references:activeReferenceImages(recipe),adapterStatus:recipe.adapterStatus||{},characterLooks:recipe.characterLooks||{},environment:recipe.environment||{}}, phase);
     semanticQa={status:reviewContract.items.length?"manual_required":"passed",blockers:[],labels:reviewContract.labels,items:reviewContract.items,version:reviewContract.version,warnings:reviewContract.items.length?["No pixel-level semantic detector is configured; these are review requirements, not detected failures"]:[],checkedAt:new Date().toISOString()};
   } catch(error) { pixelQa={status:"blocked",blockers:[`pixel_decode_failed:${error instanceof Error?error.message:String(error)}`],warnings:[],checkedAt:new Date().toISOString()}; semanticQa={status:"blocked",blockers:["semantic_decode_failed"],labels:[],warnings:[],checkedAt:new Date().toISOString()}; }
   payload.recipe = {

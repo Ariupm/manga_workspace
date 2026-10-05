@@ -1,3 +1,4 @@
+import { referenceImageUsagePlan, activeReferenceImages } from "../scripts/generation-control-policy.mjs";
 import { draftHasHardFailure } from "../scripts/draft-approval-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -115,6 +116,7 @@ ensureColumns("shots", [
   ["generation_width", "INTEGER NOT NULL DEFAULT 512"],
   ["generation_height", "INTEGER NOT NULL DEFAULT 512"],
   ["pose_control_enabled", "INTEGER NOT NULL DEFAULT 1"],
+  ["reference_images_enabled", "INTEGER NOT NULL DEFAULT 1"],
   ["visual_spec_json", "TEXT NOT NULL DEFAULT 'null'"],
   ["visual_spec_source", "TEXT NOT NULL DEFAULT 'rules'"],
   ["visual_spec_version", "INTEGER NOT NULL DEFAULT 0"],
@@ -799,6 +801,7 @@ export function getStudioData(
         generationWidth: shot.generation_width || 512,
         generationHeight: shot.generation_height || 512,
         poseControlEnabled: shot.pose_control_enabled !== 0,
+        referenceImagesEnabled: shot.reference_images_enabled !== 0,
         cropX: shot.crop_x,
         cropY: shot.crop_y,
         cropScale: shot.crop_scale,
@@ -1219,7 +1222,7 @@ export function approveSdDraft(projectId: number, jobId: number, semanticReview?
     approvedDraftPreviewPath: payload.draftImagePath,
     approvedDraftPath: payload.recipe?.framingPostCrop?.sourceImagePath || payload.draftImagePath,
     semanticApproval: semanticValidation.approval || { version: "semantic-review-v1", source: "manual_draft_approval", approvedAt: new Date().toISOString(), verdicts: {}, notes: "", reviewedItems: [] },
-    references: payload.recipe.finalReferences || payload.recipe.references,
+    references: activeReferenceImages(payload.recipe, payload.recipe.finalReferences || payload.recipe.references),
   };
   db.prepare(
     "UPDATE jobs SET status='final_queued',payload=?,progress=0,error='',stage='成品任务已排队',updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -1668,6 +1671,7 @@ export function confirmCharacterAssetCandidate(characterId: string, candidateId:
 }
 
 export function updateShot(id: number, patch: Record<string, unknown>) {
+  if ('referenceImagesEnabled' in patch && typeof patch.referenceImagesEnabled !== 'boolean') throw new Error('参考图选项必须是布尔值');
   if ('poseControlEnabled' in patch && typeof patch.poseControlEnabled !== 'boolean') throw new Error('骨架启用选项必须是布尔值');
   const cameraTranslations: Record<string, string> = {
     远景: "wide shot",
@@ -1709,12 +1713,13 @@ export function updateShot(id: number, patch: Record<string, unknown>) {
     generationWidth: "generation_width",
     generationHeight: "generation_height",
     poseControlEnabled: "pose_control_enabled",
+    referenceImagesEnabled: "reference_images_enabled",
   };
   for (const [key, column] of Object.entries(allowed))
     if (key in patch) {
       const numeric = Number(patch[key]);
       const value =
-        key === "locked" || key === "poseControlEnabled"
+        key === "locked" || key === "poseControlEnabled" || key === "referenceImagesEnabled"
           ? Number(Boolean(patch[key]))
           : key === "characterIds"
             ? JSON.stringify(Array.isArray(patch[key]) ? patch[key] : [])
@@ -2154,6 +2159,7 @@ export function getShotGenerationInput(shotId: number) {
     generationWidth: shot.generation_width || 512,
     generationHeight: shot.generation_height || 512,
     poseControlEnabled: shot.pose_control_enabled !== 0,
+    referenceImagesEnabled: shot.reference_images_enabled !== 0,
     cropScale: shot.crop_scale,
     layoutColSpan: shot.layout_col_span,
     layoutRowSpan: shot.layout_row_span,
@@ -2306,6 +2312,7 @@ export function queueCodexPage(pageId: number) {
       candidateCount: renderPlan.candidateCount,
       renderPlan,
       references: renderPlan.references,
+      referenceImageUsage: referenceImageUsagePlan(shot.referenceImagesEnabled ?? true),
     };
     db.prepare(
       "INSERT INTO jobs(shot_id,provider,status,payload) VALUES(?,?,?,?)",

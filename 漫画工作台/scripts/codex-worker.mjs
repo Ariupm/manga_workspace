@@ -1,3 +1,4 @@
+import {activeReferenceImages} from "./generation-control-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -83,7 +84,7 @@ async function ensureControlBoard(payload, jobId) {
 }
 
 function validReferenceFiles(payload) {
-  return (payload.references || []).map((reference) => ({ ...reference, absolutePath: path.resolve(root, reference.path) }))
+  return activeReferenceImages(payload).map((reference) => ({ ...reference, absolutePath: path.resolve(root, reference.path) }))
     .filter((reference) => {
       try { return fs.statSync(reference.absolutePath).isFile(); } catch { return false; }
     });

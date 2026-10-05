@@ -1,5 +1,10 @@
 # 项目上下文
 
+## 2026-10-05：人物参考图可选（ISSUE-REFERENCE-001）
+
+- 单格新增“使用人物参考图”开关，默认开启；referenceImagesEnabled持久化，SD recipe/Codex payload冻结referenceImageUsage。关闭移除人物/服装等外观图片条件，保留文字设定和独立骨架选择；成品沿用草稿，历史任务不重写。
+- 259项项目测试、77项执行层测试、类型检查与构建通过；程序逻辑验收通过，未进行图片生成或视觉效果验收。
+
 > 新对话默认先读本文件，再按需读取 `PROJECT_GOTCHAS.md` 和 `PROJECT_DECISIONS.md`。
 
 ## 项目目标

@@ -2496,10 +2496,16 @@ function PanelEditor({
                 </div>
                 {shot.poseControlEnabled!==false&&actionContractPoseUnavailable&&<p className="asset-warning">当前动作关系没有有效构图，不能降级使用旧骨架。请调整景别、人物区域或目标位置。</p>}
                 <label className="pose-usage-toggle">
+                  <input type="checkbox" checked={shot.referenceImagesEnabled !== false}
+                    onChange={event => void mutate("updateShot", {shotId:shot.id,patch:{referenceImagesEnabled:event.target.checked}})} />
+                  使用人物参考图
+                  <small>包含人物身份和服装参考。关闭后保留文字设定，不发送这些图片；人物外观可能变化。草稿确认后的成品沿用草稿选择。</small>
+                </label>
+                <label className="pose-usage-toggle">
                   <input type="checkbox" checked={shot.poseControlEnabled !== false}
                     onChange={event => void mutate("updateShot", {shotId:shot.id,patch:{poseControlEnabled:event.target.checked}})} />
                   启用现有骨架控制
-                  <small>{shot.poseControlEnabled === false ? "骨架已保留但不用于生成；关联的道具轮廓、骨架定位精修和裁切也停用。保留人物参考，动作由提示词表达。" : "使用现有骨架及参数约束动作。关闭后可随时重新启用。"}</small>
+                  <small>{shot.poseControlEnabled === false ? "骨架已保留但不用于生成；关联的道具轮廓、骨架定位精修和裁切也停用。动作由提示词表达，人物参考由独立开关决定。" : "使用现有骨架及参数约束动作。关闭后可随时重新启用。"}</small>
                 </label>
                 {effectivePoseControl && (
                   <section className="pose-control-card">
@@ -4833,6 +4839,7 @@ type SdRecipe = {
   negativePrompt?: string;
   appearanceCoverage?: Array<{characterId:string;face:string;hair:string;outfit:string;detail:string}>;
   poseUsage?: {version:string;enabled:boolean;status:string};
+  referenceImageUsage?: {version:string;enabled:boolean;status:string};
   geometryPassAudit?: {status:string;reason:string;skipped:string[]};
   promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string;phase?:string;durationMs?:number}>;
   references?: Array<{
@@ -4944,7 +4951,8 @@ function JobDetailsButton({ payload }: { payload: string }) {
                   </div>
                   {recipe.generationSpec && (
                     <>
-                      {recipe.poseUsage && <p><b>骨架控制：{recipe.poseUsage.enabled ? "启用" : "用户关闭"}</b>{!recipe.poseUsage.enabled && " · 保留骨架，使用提示词与人物参考；骨架定位的局部精修和裁切停用。"}</p>}
+                      {recipe.referenceImageUsage && <p><b>人物参考图：{recipe.referenceImageUsage.enabled ? "启用" : "用户关闭（仅保留文字设定）"}</b></p>}
+                      {recipe.poseUsage && <p><b>骨架控制：{recipe.poseUsage.enabled ? "启用" : "用户关闭"}</b>{!recipe.poseUsage.enabled && " · 保留骨架，动作使用提示词；骨架定位的局部精修和裁切停用。"}</p>}
                       {recipe.geometryPassAudit && <details><summary>本次跳过的骨架关联处理</summary><small>{recipe.geometryPassAudit.skipped.join(' · ')}</small></details>}
                       {recipe.generationSpec.promptPlan && (
                         <details>
