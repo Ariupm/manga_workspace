@@ -696,3 +696,32 @@ export function semanticReviewContractForStage(args = {}, stage = "final") {
   const items = contract.items.filter((item) => draftIds.has(item.id));
   return { ...contract, version: "semantic-review-v1", items, labels: items.map((item) => item.id) };
 }
+
+/** Labels and coordinates resolve the same target, including cross-object gaze. */
+export function relationGazeDescription(relation, relations=[]) {
+ const id=relation.gazeTarget?.targetId||relation.visualFacts?.gaze?.targetId;
+ const target=relations.find(r=>r.objectInstanceId===id);
+ const label=target?.object||(id===relation.objectInstanceId?relation.object:'');
+ const surface=relation.visualFacts?.gaze?.surface||'';
+ return label?[label,surface].filter(Boolean).join(' '):relation.gaze||'story target';
+}
+export function isLastRelationGaze(relation, relations=[]) {
+ const own=relations.filter(r=>r.required&&r.characterId===relation.characterId&&r.gazeTarget?.kind!=='independent'&&r.gaze);
+ return own.at(-1)?.relationId===relation.relationId;
+}
+export function propPhysicalAppearance(interaction={}) {
+ const form=interaction.visualFacts?.object?.form;
+ if(/\b(?:package|parcel|carton|cardboard box)\b/i.test(interaction.object||''))return 'three-dimensional cardboard box with visible top and side faces';
+ if(form==='solid_box'||/\bbox\b/i.test(interaction.object||''))return 'three-dimensional box with visible top and side faces';
+ if(form==='flat'||/\b(?:book|document|paper|letter|tablet|smartphone)\b/i.test(interaction.object||''))return 'flat object with a continuous outer silhouette';
+ return '';
+}
+
+/** Planned coverage is not a claim of pixel-level identity or garment success. */
+export function appearanceControlCoverage(references=[],characterIds=[]) {
+ return characterIds.map(characterId=>{
+  const own=references.filter(r=>r.characterId===characterId),face=own.some(r=>r.role==='identity'),outfit=own.find(r=>r.role==='outfit');
+  const garment=outfit&&(!outfit.stagedOnly||outfit.isolatedGarmentReference);
+  return {characterId,face:face?'face_reference_planned':'text_only',hair:'text_only',outfit:garment?'garment_reference_planned':'text_only',detail:garment?'脸部与衣物参考已规划；完整发型仍依赖文字，实际结果需看草稿':'脸部参考仅约束脸部；完整发型和服装目前依赖文字，服装参考未满足当前使用条件'};
+ });
+}

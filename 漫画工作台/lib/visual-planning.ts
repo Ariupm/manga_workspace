@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { Asset, ChapterVisualPlan, Character, Shot, ShotVisualSpec, VisualValidationResult } from "./types";
 import { rankInteractionPropCandidates } from "./interaction-prop";
 import { resolveActionDescription } from "./action-description";
-import { normalizeInteractionFacts, reconcileInteractionAction } from "./interaction-facts";
+import { normalizeInteractionFacts, reconcileInteractionAction, inferExplicitWorkTarget } from "./interaction-facts";
 import {actionStageState} from '../scripts/action-stage-policy.mjs';
 export { rankInteractionPropCandidates };
 
@@ -12,7 +12,7 @@ export const dependencyHash = (value: unknown) => createHash("sha256").update(JS
 
 const array = (value: unknown) => Array.isArray(value) ? value : [];
 const text = (value: unknown, fallback = "unknown") => typeof value === "string" && value.trim() ? value.trim() : fallback;
-const meaningful = (value: unknown) => typeof value === "string" && Boolean(value.trim()) && !/^(unknown|specific story location|coherent everyday environment|cozy home interior|calm dry weather|daytime|motivated soft (?:directional|key) light(?: with readable ambient fill)?|natural storytelling action|gentle, natural expression|looking toward the story focus|hands out of frame|clear storytelling composition)$/i.test(value.trim());
+const meaningful = (value: unknown) => typeof value === "string" && Boolean(value.trim()) && !/^(unknown|specific story location|coherent everyday environment|cozy home interior|calm dry weather|daytime|motivated soft (?:directional|key) light(?: with readable ambient fill)?|natural storytelling action|gentle, natural expression|looking toward the story focus|hands out of frame|hands naturally positioned for the described action and framing|eyes focused on the current action target, no eye contact with camera|clear storytelling composition)$/i.test(value.trim());
 const resolved = (value: unknown, fallback: string) => meaningful(value) ? String(value).trim() : fallback;
 const inferredWeather = (shot: Shot) => /雨|伞|rain/i.test(`${shot.scene} ${shot.description}`) ? "visible steady rain" : "calm dry weather";
 type EnvironmentKey = "location" | "timeOfDay" | "weather" | "lighting";
@@ -89,6 +89,7 @@ export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnviron
     const missingArrays = (["accessories", "condition"] as const).filter(key =>
       !Array.isArray(item?.appearanceState?.[key]) || (!options.manualAppearance && !item.appearanceState[key].length && item.appearanceState.missingArrays?.includes(key)));
     return { characterId, outfitId: look?.outfitId || text(item.outfitId, "") || (index === 0 ? shot.outfitId : ""), shoeId: look?.shoeId || text(item.shoeId, "") || (index === 0 ? shot.shoeId : ""),
+      ...(meaningful(item.bodyPose)?{bodyPose:item.bodyPose.trim()}:{}), ...(meaningful(item.bodySupport)?{bodySupport:item.bodySupport.trim()}:{}),
       position: meaningful(look?.positionEn) ? look!.positionEn : resolved(item.position, defaultPosition), region,
       action: resolveActionDescription(meaningful(look?.actionEn) ? look!.actionEn : "", meaningful(item.action) ? item.action : "", useSceneFallback && meaningful(shot.actionEn) ? shot.actionEn : "") || "performing the current story action", actionTarget: resolved(item.actionTarget,"the current story focus"),
       expression: meaningful(look?.expressionEn) ? look!.expressionEn : resolved(item.expression, resolved(useSceneFallback ? shot.expressionEn : "","readable attentive expression")), expressionReason: resolved(item.expressionReason,"responding to the visible event"),
@@ -142,7 +143,18 @@ export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnviron
     }));
   });
   const interactions = suppliedInteractions.length ? suppliedInteractions : inferredInteractions;
+  for(const relation of interactions){
+    const facts='visualFacts' in relation?relation.visualFacts:undefined;
+    if(!facts||facts.workTarget)continue;
+    const peers=interactions.filter(r=>r.actorCharacterId===relation.actorCharacterId&&'visualFacts' in r&&r.visualFacts).map(r=>('visualFacts' in r?r.visualFacts:undefined)!);
+    const work=inferExplicitWorkTarget(facts,relation.action,peers);
+    if(work){facts.workTarget=work;facts.provenance.workTarget={source:'legacy_default',evidence:'Unique explicit work target in action: '+relation.action};}
+  }
   if(options.requireInteractionFacts && interactions.some(item=>item.propId&&(!('visualFacts' in item)||!item.visualFacts)))throw new Error('新视觉规划必须提供完整visualFacts，不能退回文本数量推断');
+  if(options.requireInteractionFacts)for(const relation of interactions){
+    const f='visualFacts' in relation?relation.visualFacts:undefined;
+    if(f&&['tool','write'].includes(f.actionId)&&!f.workTarget&&interactions.some(r=>r!==relation&&r.actorCharacterId===relation.actorCharacterId))throw new Error('工具操作缺少明确工作目标，请在workTarget中绑定物体实例和作用表面');
+  }
   const defaults = { location: resolved(shot.sceneEn,"specific story location"), timeOfDay: englishTime(shot.timeOfDay), weather: inferredWeather(shot), lighting: resolved(shot.lightingEn,"motivated soft key light with readable ambient fill") };
   const fallbackValues: NonNullable<ShotVisualSpec["scene"]["fallbackValues"]> = {};
   const environment = { ...defaults };
@@ -221,7 +233,7 @@ export function inheritShotContinuity(spec:ShotVisualSpec,previous:ShotVisualSpe
     if(!character.outfitId&&before)character.outfitId=before.outfitId;
     if(!character.shoeId&&before)character.shoeId=before.shoeId;
     if(before){for(const key of ["hair","bag","glasses","outerwearState"] as const)if(!meaningful(character.appearanceState[key]) || character.appearanceState.fallbackValues?.[key] === character.appearanceState[key]) {
-      character.appearanceState[key]=before.appearanceState[key];
+      character.appearanceState[key]=key==='hair'?before.appearanceState[key].replace(/,\s*(?:slightly )?(?:lifted|flowing|swaying)[^,]*(?:walking|running)[^,]*/gi,''):before.appearanceState[key];
       character.appearanceState.fallbackValues ||= {};
       if (before.appearanceState.fallbackValues?.[key] === before.appearanceState[key]) character.appearanceState.fallbackValues[key]=before.appearanceState[key];
       else delete character.appearanceState.fallbackValues[key];
@@ -285,6 +297,10 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
     }
     const groups=new Map<string,typeof value.interactions>();
     for(const relation of validStructured){const key=relation.visualFacts!.object.instanceId;groups.set(key,[...(groups.get(key)||[]),relation]);}
+    for(const relation of validStructured){const work=relation.visualFacts?.workTarget;if(work){
+      const targets=groups.get(work.instanceId)||[];
+      if(!targets.length||!targets.some(t=>t.actorCharacterId===relation.actorCharacterId))failures.push({code:'interaction_failed',severity:'P0',message:'工作目标必须是当前人物已声明的物体实例'});
+    }}
     for(const [id,relations] of groups){
       if(relations.some(r=>r.visualFacts!.object.count!==relations[0].visualFacts!.object.count||r.visualFacts!.object.label!==relations[0].visualFacts!.object.label))failures.push({code:'interaction_failed',severity:'P0',message:`共享实例 ${id} 的对象或数量冲突`});
       const supports=relations.map(r=>r.visualFacts!.support).filter(s=>s.state!=='unspecified');
@@ -304,4 +320,4 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
 }
 
 export const chapterSystemPrompt = `You are a visual continuity director for serialized anime comics. Output JSON only. Use only supplied character and asset IDs. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Create stable English IDs for story scenes and prop instances, keeping them across panels; these are not character or asset IDs. Describe visible facts, persistent states, locations, weather, lighting, props and continuity. When a harmless visual detail is missing, infer one plausible production-ready choice from the story, character profile, adjacent shots and genre. Never write "unknown", never invent a character or asset ID, and never add a new plot event.`;
-export const shotSystemPrompt = `You are a storyboard visual director for Stable Diffusion. Output JSON only. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Convert narrative meaning into directly visible facts and precise subject-action-target relationships. Always output an interactions array. It may be empty only for a genuinely static shot with no person-person or person-prop action. Every explicit prop operation, hand contact, handoff, or multi-subject action must have one complete interactions entry with type, actorCharacterId, targetCharacterId or propId, action, phase, contactPoints, gazeTarget, ownershipBefore, and ownershipAfter; emit multiple entries when the shot contains multiple relations. For every character describe position, normalized xStart/xEnd region, concrete action, actionTarget, facial expression, expressionReason, gazeTarget, visible hands, occlusion, outfitId, shoeId, and appearanceState containing hair, bag, accessories, glasses, outerwearState and visible condition. Describe a physically specific location, time, weather, architectural or furniture anchors, motivated lighting, camera size, angle, axis, focus and composition. Preserve explicit manual camera, character, outfit and shoe selections. Infer plausible non-plot-changing visual details from character assets, adjacent shots and scene context instead of writing "unknown". Never invent a character or asset ID or invisible psychology.`;
+export const shotSystemPrompt = `You are a storyboard visual director for Stable Diffusion. Output JSON only. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Convert narrative meaning into directly visible facts and precise subject-action-target relationships. Always output an interactions array. It may be empty only for a genuinely static shot with no person-person or person-prop action. Every explicit prop operation, hand contact, handoff, or multi-subject action must have one complete interactions entry with type, actorCharacterId, targetCharacterId or propId, action, phase, contactPoints, gazeTarget, ownershipBefore, and ownershipAfter; emit multiple entries when the shot contains multiple relations. For every character include bodyPose (sitting/standing/crouching/etc) and bodySupport (chair/sofa/bed/floor or empty). Do not inherit motion-dependent hair or pose from earlier panels. For every character describe position, normalized xStart/xEnd region, concrete action, actionTarget, facial expression, expressionReason, gazeTarget, visible hands, occlusion, outfitId, shoeId, and appearanceState containing hair, bag, accessories, glasses, outerwearState and visible condition. Describe a physically specific location, time, weather, architectural or furniture anchors, motivated lighting, camera size, angle, axis, focus and composition. Preserve explicit manual camera, character, outfit and shoe selections. Infer plausible non-plot-changing visual details from character assets, adjacent shots and scene context instead of writing "unknown". Never invent a character or asset ID or invisible psychology.`;

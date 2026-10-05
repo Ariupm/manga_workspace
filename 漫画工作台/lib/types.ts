@@ -126,13 +126,14 @@ export type ChapterVisualPlan = {
 
 export type InteractionVisualFacts = {
   version: "interaction-facts-1";
-  object: { label: string; instanceId: string; count: number };
+  object: { label: string; instanceId: string; count: number; form?: 'solid_box'|'flat'|'tool'; width?: number; height?: number };
+  workTarget?: { instanceId: string; surface: string; operation: string; u: number; v: number };
   actionId: "pick" | "place" | "open" | "close" | "operate_environment" | "write" | "tool" | "push" | "pull" | "hold" | "inspect" | "drink" | "carry" | "touch" | "read";
   phase: "anticipation" | "contact" | "follow_through";
   contact: { hand: "left" | "right" | "both"; part: string; state: "approach" | "contact" | "released" };
   support: { label: string; state: "on_support" | "held" | "unspecified" };
   gaze: { kind: "object" | "character" | "independent"; targetId: string; surface: string; description: string };
-  provenance: Partial<Record<"object" | "phase" | "contact" | "support" | "gaze", { source: "manual" | "narrative" | "model" | "legacy_default"; evidence: string }>>;
+  provenance: Partial<Record<"object" | "phase" | "contact" | "support" | "gaze" | "workTarget", { source: "manual" | "narrative" | "model" | "legacy_default"; evidence: string }>>;
 };
 
 export type ShotVisualSpec = {
@@ -155,6 +156,8 @@ export type ShotVisualSpec = {
     region: { xStart: number; xEnd: number };
     action: string;
     actionTarget: string;
+    bodyPose?: string;
+    bodySupport?: string;
     expression: string;
     expressionReason: string;
     gazeTarget: string;

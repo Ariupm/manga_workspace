@@ -24,7 +24,7 @@ test('structured upstream facts own quantity, hands, stage and gaze through base
     const relation=deriveInteractionContracts(shot,id)[0];
     assert.equal(relation.object,label);assert.equal(relation.expectedCount,count);assert.equal(relation.objectInstanceId,`group:${label}`);assert.equal(relation.activeHand,'left');assert.equal(relation.contactAnchors.length,1);assert.equal(relation.contactAnchors[0].hand,'left');assert.equal(relation.actionPlan?.phase,'follow_through');assert.equal(relation.actionPlan?.geometry.objectCount,count);assert.equal(relation.gazeTarget.targetId,`group:${label}`);
     const regional=buildRegionalPrompt(shot,data.assets,data.characters,{posePlannerVersion:'3.0'}),plan=buildEffectivePromptPlan(regional,regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3);
-    assert.deepEqual(plan.errors,[]);assert.match(plan.characterPrompts[0],new RegExp(label));assert.doesNotMatch(plan.characterPrompts[0],/one book|right hand|book pages|opaque-story-id/);
+    assert.deepEqual(plan.errors,[]);assert.match(plan.characterPrompts[0],/holding after picking up/);assert.match(plan.characterPrompts[0],new RegExp(label));assert.doesNotMatch(plan.characterPrompts[0],/one book|right hand|book pages|opaque-story-id/);
     const freeHand=buildRegionalPrompt({...shot,characterLooks:{[id]:{handsEn:'right hand waving'}} as typeof base.characterLooks},data.assets,data.characters);
     assert.match(freeHand.characterRegions[0].prompt,/right hand waving/);
     const final=finalizePromptPlan(plan,{commonPrompt:plan.commonPrompt,characterPrompts:plan.characterPrompts,prompt:[plan.commonPrompt,...plan.characterPrompts].join(' BREAK '),negativePrompt:plan.negativePrompt});
@@ -319,15 +319,15 @@ test('portable tool category, specific operation and supported work object survi
   const relations=deriveInteractionContracts(shot,id);
   assert.equal(relations[0].actionPlan?.geometry.mechanism,'work');
   const regional=buildRegionalPrompt(shot,data.assets,data.characters);
-  assert.match(regional.characterRegions[0].prompt,new RegExp(action));
+  assert.match(regional.characterRegions[0].prompt,new RegExp(tool==='scissors'?'scissors cutting the sealing tape on the cardboard delivery package':action));
   assert.match(regional.characterRegions[0].prompt,/cardboard delivery package resting on the desk/);
-  assert.match(regional.characterRegions[0].prompt,/left hand touching the flap/);
+  assert.match(regional.characterRegions[0].prompt,tool==='scissors'?/left hand stabilizing the top panel/:/left hand touching the flap/);
   assert.doesNotMatch(regional.characterRegions[0].prompt,/operating/);
   const effective=buildEffectivePromptPlan(regional,regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3);
   assert.deepEqual(effective.errors,[]);
-  assert.match(effective.characterPrompts[0],new RegExp(action));
+  assert.match(effective.characterPrompts[0],new RegExp(tool==='scissors'?'scissors cutting the sealing tape on the cardboard delivery package':action));
   assert.doesNotMatch(effective.characterPrompts[0],/using cardboard|operating/);
-  assert.equal(effective.facts.relations.find(r=>r.object==='cardboard delivery package')?.actionPlan?.actionId,'open');
+  assert.equal(effective.facts.relations.find(r=>r.object==='cardboard delivery package')?.actionPlan?.actionId,tool==='scissors'?'touch':'open');
   assert.equal(effective.facts.relations.find(r=>r.object===tool)?.actionPlan?.actionId,'tool');
   assert.match(effective.characterPrompts[0],/cardboard delivery package resting on the desk/);
   assert.throws(()=>reconcileInteractionAction(toolFacts,action,'manual'),/tool/);

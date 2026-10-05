@@ -1,3 +1,5 @@
+import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
+import {relationGazeDescription,isLastRelationGaze,propPhysicalAppearance} from './sd-worker-logic.mjs';
 import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action-mechanism.mjs";
 import { assertPromptPlanRecipe, prepareGenerationPromptRequest } from "./prompt-compiler.mjs";
 import {contactPassAllowed,actionContactTerms} from "./action-stage-policy.mjs";
@@ -91,8 +93,7 @@ function propAppearanceContract(interaction = {}) {
   const shape = String(interaction.shape || "");
   const plane = String(interaction.surfacePlan?.plane || "contextual");
   const positive = [
-    shape === "portrait_rect" ? `${interaction.expectedCount>1?"each item is a":"one"} thin rigid portrait rectangle with a continuous outer silhouette` : "",
-    shape === "landscape_rect" ? `${interaction.expectedCount>1?"each item is a":"one"} thin rigid landscape rectangle with a continuous outer silhouette` : "",
+    propPhysicalAppearance(interaction),
     plane === "screen" ? "one uninterrupted glass display surface contained inside the object frame" : "",
   ];
   const negative = [];
@@ -109,54 +110,6 @@ function propAppearanceContract(interaction = {}) {
   return { positive: positive.filter(Boolean), negative };
 }
 
-function propInteractionGeometry(interaction, posePeople = [], characterIndex = 0, width = 512, height = 512, posePlans = []) {
-  const actionGeometry=interaction.actionRelationAudit?.geometry;
-  const center = actionGeometry?.objectCenter || interaction.objectCenter || { x: .5, y: .58 };
-  const pose = posePeople[characterIndex] || [];
-  const plannedRelation = posePlans[characterIndex]?.relationTargets?.find((relation) => relation.relationId === interaction.relationId) || null;
-  const anchors = Array.isArray(interaction.contactAnchors) && interaction.contactAnchors.length
-    ? interaction.contactAnchors
-    : interaction.handMode === "two"
-      ? [{ hand: "left", x: center.x + .055, y: center.y, role: "support" }, { hand: "right", x: center.x - .055, y: center.y, role: "active" }]
-      : [{ hand: "right", x: center.x, y: center.y, role: "active" }];
-  const poseContacts = anchors.map((anchor) => {
-    if(interaction.actionRelationAudit)return {...anchor,source:"authored_action_contact"};
-    if (plannedRelation) {
-      const assignment = plannedRelation.wristAssignments?.find((item) => item.hand === anchor.hand)
-        || plannedRelation.contactAnchors?.find((item) => item.hand === anchor.hand);
-      if (assignment && Number.isFinite(assignment.x) && Number.isFinite(assignment.y))
-        return { ...anchor, x: assignment.x, y: assignment.y, source: "relation_wrist_assignment" };
-    }
-    const index = anchor.hand === "left" ? 7 : 4;
-    return pose[index] && Number.isFinite(pose[index].x) ? { ...anchor, x: pose[index].x, y: pose[index].y, source: "pose_wrist" } : { ...anchor, source: "contract_anchor" };
-  });
-  const minX = Math.min(center.x, ...poseContacts.map((point) => point.x));
-  const maxX = Math.max(center.x, ...poseContacts.map((point) => point.x));
-  const minY = Math.min(center.y, ...poseContacts.map((point) => point.y));
-  const maxY = Math.max(center.y, ...poseContacts.map((point) => point.y));
-  const regionWidth = Math.max(.12, (interaction.region?.xEnd ?? 1) - (interaction.region?.xStart ?? 0));
-  const hasPoseContact = contactPassAllowed(interaction) && poseContacts.some((point) => point.source === "pose_wrist" || point.source === "relation_wrist_assignment" || point.source === "authored_action_contact");
-  const wristSpan = Math.max(0, maxX - minX);
-  const bodySize = propBodySizePlan({ shape: interaction.shape, orientation: interaction.orientation, contactSpan: wristSpan, hasPoseContact, regionWidth });
-  const declaredBounds=actionOutlineBounds(actionGeometry);
-  if(declaredBounds){bodySize.width=2*Math.max(center.x-declaredBounds.x,declaredBounds.x+declaredBounds.width-center.x);bodySize.height=2*Math.max(center.y-declaredBounds.y,declaredBounds.y+declaredBounds.height-center.y);bodySize.envelope={width:bodySize.width,height:bodySize.height};}
-  const widthRatio = bodySize.envelope.width;
-  const heightRatio = bodySize.envelope.height;
-  return {
-    center,actionGeometry,
-    contacts: poseContacts,
-    bounds: {
-      x: Math.min(minX, center.x - widthRatio * .5),
-      y: Math.min(minY, center.y - heightRatio * .5),
-      width: Math.max(maxX, center.x + widthRatio * .5) - Math.min(minX, center.x - widthRatio * .5),
-      height: Math.max(maxY, center.y + heightRatio * .5) - Math.min(minY, center.y - heightRatio * .5),
-    },
-    bodySize: { width: bodySize.width, height: bodySize.height, envelope: bodySize.envelope },
-    depthPlane: interaction.surfacePlan?.plane === "screen" ? "character_facing_surface" : "action_plane",
-    occlusionOrder: "hands_in_front_at_declared_contact_anchors_object_continuous_behind_contacts",
-    source: hasPoseContact ? "pose_wrist_or_relation_target_plan_plus_contract_surface" : "contract_anchors_plus_region_fallback",
-  };
-}
 
 try {
   const row = one(
@@ -905,7 +858,11 @@ try {
     // Hands are deliberately excluded here.  They have their own contact and
     // HandRefiner passes; letting the object pass repaint them creates cuffs,
     // mechanical fingers and a feedback loop around malformed base hands.
-    const objectMaskPlan = propObjectMask({ width, height, objectBounds: { x: centerX-objectHalfWidth, y: centerY-objectHalfHeight, width: objectWidth, height: objectHeight }, contacts: geometry.contacts, people: recipe.poseControl?.people || [], uncertaintyPadding: deferredProp ? 0 : 1 });
+    const connected=propInteractions.filter(other=>other!==propInteraction&&(propInteraction.visualFacts?.workTarget?.instanceId===other.objectInstanceId||other.visualFacts?.workTarget?.instanceId===propInteraction.objectInstanceId));
+    const protectedObjects=connected.map(other=>{const g=propInteractionGeometry(other,recipe.poseControl?.people||[],characterIndexForGeometry>=0?characterIndexForGeometry:0,width,height,executionScenePlan?.people||[]);return {x:(g.center.x-g.bodySize.width/2)*width,y:(g.center.y-g.bodySize.height/2)*height,width:g.bodySize.width*width,height:g.bodySize.height*height};});
+    const peerCoreMarkup=protectedObjects.map(b=>`<rect x="${b.x+b.width*.1}" y="${b.y+b.height*.1}" width="${b.width*.8}" height="${b.height*.8}" fill="black"/>`).join('');
+    const workContact=geometry.actionGeometry?.workPoint||connected.map(r=>(r.actionRelationAudit?.geometry||r.actionPlan?.geometry)?.workPoint).find(Boolean);
+    const objectMaskPlan = propObjectMask({ width, height, protectedObjects, workContact, objectBounds: { x: centerX-objectHalfWidth, y: centerY-objectHalfHeight, width: objectWidth, height: objectHeight }, contacts: geometry.contacts, people: recipe.poseControl?.people || [], uncertaintyPadding: deferredProp ? 0 : 1 });
     const maskSvg=Buffer.from(objectMaskPlan.svg);
     const mask=(await sharp(maskSvg).png().toBuffer()).toString("base64");
     const shape=propInteraction.shape||"landscape_rect",stroke=Math.max(5,Math.round(Math.min(width,height)*.012));
@@ -990,7 +947,7 @@ try {
     };
     recipe.passTraces = recipe.passTraces || [];
     const propPassTrace = { stage: "generic_prop", relationId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", output: null, shape: propInteraction.shape || null, surfacePlan: propInteraction.surfacePlan || null, maskBounds: geometry.bounds, objectPixelBounds: { x: centerX-objectHalfWidth, y: centerY-objectHalfHeight, width: objectWidth, height: objectHeight }, localCropBounds: { left: propCropLeft, top: propCropTop, width: propCropSize, height: propCropSize }, modelResolution: { width: propModelResolution, height: propModelResolution }, maskIncludesHands: false, guideIncludesActorSkeleton: false, poseControlExcludedFromObjectPass: true, guideOutput: refinementGuideOutput, maskOutput: refinementMaskOutput, contactAnchors: geometry.contacts, depthPlane: geometry.depthPlane, occlusionOrder: geometry.occlusionOrder, gazeMerged: mergeGazeIntoProp, controlUnits: propControlUnits.map((unit) => ({ module: unit.module, model: unit.model, weight: unit.weight, controlMode: unit.control_mode, relationId: unit.relationId || null, objectInstanceId: unit.objectInstanceId || null })), exclusionRegions: propInteraction.surfacePlan?.exclusionRegions || [] };
-    propPassTrace.plannedHandProtection = { method: "contact_and_wrist_disks", points: objectMaskPlan.protectedContacts, pixelSegmentationVerified: false };
+    propPassTrace.plannedHandProtection = { method: "contact_and_wrist_disks", protectedObjects: objectMaskPlan.protectedObjects, points: objectMaskPlan.protectedContacts, pixelSegmentationVerified: false };
     recipe.passTraces.push(propPassTrace);
     try {
       const result=await sendGeneration({stage:"prop",characterId:propInteraction.characterId,relationId,details:appearanceContract.positive.join(", ")},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),payload);
@@ -1028,7 +985,7 @@ try {
         const bridge = { x: anchor.x + (elbow.x - anchor.x) * .24, y: anchor.y + (elbow.y - anchor.y) * .24 };
         const coreInsetX = Math.max(4, objectHalfWidth * .28);
         const coreInsetY = Math.max(4, objectHalfHeight * .18);
-        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${contactStroke}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${contactStroke * .72}"/></g><rect x="${centerX - objectHalfWidth + coreInsetX}" y="${centerY - objectHalfHeight + coreInsetY}" width="${Math.max(1, objectHalfWidth * 2 - coreInsetX * 2)}" height="${Math.max(1, objectHalfHeight * 2 - coreInsetY * 2)}" rx="${Math.max(4, Math.min(objectHalfWidth, objectHalfHeight) * .12)}" fill="black"/></svg>`);
+        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${contactStroke}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${contactStroke * .72}"/></g><rect x="${centerX - objectHalfWidth + coreInsetX}" y="${centerY - objectHalfHeight + coreInsetY}" width="${Math.max(1, objectHalfWidth * 2 - coreInsetX * 2)}" height="${Math.max(1, objectHalfHeight * 2 - coreInsetY * 2)}" rx="${Math.max(4, Math.min(objectHalfWidth, objectHalfHeight) * .12)}" fill="black"/>${peerCoreMarkup}</svg>`);
         return { anchor, mask: (await sharp(svg).png().toBuffer()).toString("base64") };
       }));
       const contactTrace = { stage: "contact_completion", relationId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", mode: "sequential_per_hand_local_inpaint", contactAnchors: geometry.contacts, outputs: [], output: null };
@@ -1075,7 +1032,7 @@ try {
         const elbow = posePerson[elbowIndex] || anchor;
         const bridge = { x: anchor.x + (elbow.x - anchor.x) * .2, y: anchor.y + (elbow.y - anchor.y) * .2 };
         const coreInsetX = Math.max(3, objectHalfWidth * .24), coreInsetY = Math.max(3, objectHalfHeight * .14);
-        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${Math.max(12, handRadius * .68)}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${handRadius}"/></g><rect x="${centerX-objectHalfWidth+coreInsetX}" y="${centerY-objectHalfHeight+coreInsetY}" width="${Math.max(1,objectWidth-coreInsetX*2)}" height="${Math.max(1,objectHeight-coreInsetY*2)}" rx="${Math.max(3,objectHalfWidth*.12)}" fill="black"/></svg>`);
+        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${Math.max(12, handRadius * .68)}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${handRadius}"/></g><rect x="${centerX-objectHalfWidth+coreInsetX}" y="${centerY-objectHalfHeight+coreInsetY}" width="${Math.max(1,objectWidth-coreInsetX*2)}" height="${Math.max(1,objectHeight-coreInsetY*2)}" rx="${Math.max(3,objectHalfWidth*.12)}" fill="black"/>${peerCoreMarkup}</svg>`);
         return { anchor, mask: (await sharp(svg).png().toBuffer()).toString("base64") };
       }));
       const handTrace = { stage: "hand_refinement", relationId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "detecting", detector: recipe.handRefinement.module, model: recipe.handRefinement.model, weight: recipe.handRefinement.weight, mode: "sequential_per_hand_protected_prop_core", contactAnchors: geometry.contacts, maskRadiusPx: handRadius, masksOverlapPreventedByContactSpan: geometry.contacts.length < 2 || handRadius * 2 <= contactSpanPx, depthOutput: null, outputs: [], output: null, detectionVariance: null };
@@ -1199,7 +1156,7 @@ try {
       : propInteraction.gazeMode && propInteraction.gazeMode !== "independent"
         ? propInteraction.objectCenter
         : null;
-    if(response.images?.[0]&&propInteraction.gaze&&structuredGazeTarget&&!mergeGazeIntoProp) {
+    if(response.images?.[0]&&propInteraction.gaze&&structuredGazeTarget&&!mergeGazeIntoProp&&isLastRelationGaze(propInteraction,propInteractions)) {
       const cameraText=`${recipe.generationSpec?.visualSpec?.camera?.shotSize||""} ${recipe.prompt||""}`;
       const close=/close-up|extreme close|特写|近景/i.test(cameraText),medium=/medium shot|waist-up|中景/i.test(cameraText);
       const regions=recipe.generationSpec?.characterRegions||[];
@@ -1264,7 +1221,7 @@ try {
       ].filter(Boolean);
       gazeTrace.controlUnits = gazeControlSummary;
       const gazePayload={
-        prompt: gazeRefinementPrompt({ direction: canonicalGazeDirection, targetKind: gazeTrace.gazeTargetKind, object: propInteraction.object, gazeText: propInteraction.gaze, expression: expressionCue(expression), sceneContext: faceSceneContext(recipe, propInteraction.characterId) }),
+        prompt: gazeRefinementPrompt({ direction: canonicalGazeDirection, targetKind: gazeTrace.gazeTargetKind, object: propInteraction.object, targetDescription: relationGazeDescription(propInteraction,propInteractions), gazeText: propInteraction.gaze, expression: expressionCue(expression), sceneContext: faceSceneContext(recipe, propInteraction.characterId) }),
         negative_prompt:[recipe.negativePrompt,expressionNegativeCue(expression),"looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera, crossed eyes, mismatched pupils, malformed eyes"].filter(Boolean).join(", "),
         init_images:[response.images[0]],mask:gazeMask,width,height,
         steps:phase==="draft"?10:profilePlan.cpu?8:14,cfg_scale:6.4,denoising_strength:gazePlan.denoisingStrength,
@@ -1276,7 +1233,7 @@ try {
       const gazePassTrace = { stage: "gaze", executor: "relation_gaze", relationId, characterId: propInteraction.characterId || null, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", semanticStatus: "not_reviewed", output: null, targetCenter: structuredGazeTarget, gazeTargetKind: gazeTrace.gazeTargetKind, gazeTargetSource: gazeTrace.gazeTargetSource, direction: canonicalGazeDirection, headDirection: gazeTrace.headDirection, headTargetMatchesStructured, faceMaskBounds: gazeGeometry.faceMaskBounds, contextBounds: gazeGeometry.contextBounds, modelCropBounds:gazeTrace.modelCropBounds,targetBox: gazeGeometry.targetBox, modelSeesTarget:gazeTrace.modelSeesTarget,controlUnits: gazeControlSummary, poseControlApplied: Boolean(gazePoseUnit), identityControlApplied: Boolean(gazeIdentityUnit) };
       recipe.passTraces.push(gazePassTrace);
       try {
-        const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
+        const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,targetDescription:relationGazeDescription(propInteraction,propInteractions),gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
         if(gazeResult.status<200||gazeResult.status>=300)throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0,180)}`);
         const gazeResponse=JSON.parse(gazeResult.body);if(!gazeResponse.images?.[0])throw new Error("没有返回图片");
         response={...response,images:[await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)]};

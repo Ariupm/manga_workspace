@@ -1,4 +1,4 @@
-import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState } from './action-stage-policy.mjs';
+import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState, actionStageVerb } from './action-stage-policy.mjs';
 
 export const PROMPT_COMPILER_VERSION = 'comic-facts-1';
 export const ART_STYLE = 'anime illustration, clean line art, soft cel shading';
@@ -64,6 +64,19 @@ export function relationVisualText(relation, stage = 'prop') {
   const state = relationActionState(relation);
   if (!relation?.required) return '';
   const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
+  if(relation.visualFacts){
+    const f=relation.visualFacts,object=relation.object;
+    const working=['tool','write'].includes(state?.actionId)&&f.workTarget&&relation.workTargetLabel;
+    const actionObject=relation.expectedCount>1?propVisualLabel(relation).replace(/^\S+\s+/,''):object;
+    const label=object==='scissors'&&relation.expectedCount===1?'one pair of scissors':propVisualLabel(relation);
+    const contact=state?.contactState==='approach'?`${hands} approaching the ${object} with a visible gap`:state?.contactState==='released'?`${hands} separated from the ${object}`:working?`${hands} gripping the ${object} ${f.contact.part}`:`${hands} ${relation.actionPlan?.geometry?.mechanism==='support'?'stabilizing':'touching'} the ${f.contact.part} of the ${object}`;
+    const operation=working&&state?.phase==='contact'?`${object} ${f.workTarget.operation} the ${f.workTarget.surface} on the ${relation.workTargetLabel}`:
+      state?.phase==='contact'&&relation.actionPlan?.geometry?.mechanism!=='support'?relation.actionPlan?.evidence||`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'})[f.actionId]||actionStageVerb(state?.actionId,state?.phase)} the ${actionObject}`:
+      state&&relation.actionPlan?.geometry?.mechanism!=='support'?`${actionStageVerb(state.actionId,state.phase)} the ${actionObject}`:'';
+    const support=stage!=='hand'&&f.support.state==='on_support'?`${object} resting on the ${f.support.label}`:'';
+    return uniquePrompt([stage==='hand'?'':label,operation,contact,support].filter(Boolean).join(', '));
+  }
+
   const label = propVisualLabel(relation), object = (relation.expectedCount||1)>1 ? label.replace(/^\S+\s+/,'') : relation.object;
   const contact = state?.contactState === 'approach' ? `${hands} approaching the ${object} with a visible gap`
     : state?.contactState === 'released' ? `${object} on its support, hands separated from the ${object}`

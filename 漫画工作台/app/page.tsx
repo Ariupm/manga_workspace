@@ -4760,7 +4760,7 @@ function VisualSpecEditor({shot,projectId,episodeId,disabled,busy,onRefine,onCon
   const patchInteraction=(index:number,group:string,key:string,value:string)=>setDraft(current=>current?{...current,interactions:(current.interactions||[]).map((relation,i)=>{
     if(i!==index||!relation.visualFacts)return relation;
     const facts=relation.visualFacts;
-    const next=group==='root'?{...facts,[key]:value}:{...facts,[group]:{...(facts[group as keyof typeof facts] as object),[key]:key==='count'?Number(value):value}};
+    const next=group==='root'?{...facts,[key]:value}:{...facts,[group]:{...(facts[group as keyof typeof facts] as object),[key]:['count','u','v','width','height'].includes(key)?Number(value):value}};
     return {...relation,visualFacts:next};
   })}:current);
   const save=async()=>{if(!draft)return;setSaving(true);setMessage("");try{const response=await fetch("/api/visual-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"update-shot-spec",projectId,episodeId,shotId:shot.id,spec:draft})});const result=await response.json();if(!response.ok)throw new Error(result.error||"保存失败");setDraft(result.spec);setMessage(result.translationMeta?"中文和 unknown 已自动转换为英文，规格已保存并确认":"人工规格已保存并确认");await onSaved();}catch(error){setMessage(error instanceof Error?error.message:"保存失败");}finally{setSaving(false);}};
@@ -4773,7 +4773,7 @@ function VisualSpecEditor({shot,projectId,episodeId,disabled,busy,onRefine,onCon
     {draft&&<div className="visual-spec-form">
       <section className="visual-spec-section facts-section"><div className="visual-spec-section-title"><span>01</span><div><b>画面事实</b><small>每行一条，描述这一格必须清楚传达的信息</small></div></div><textarea value={draft.visibleFacts.join("\n")} onChange={(e)=>setDraft({...draft,visibleFacts:e.target.value.split(/\n/).map(x=>x.trim()).filter(Boolean)})}/></section>
       <section className="visual-spec-section"><div className="visual-spec-section-title"><span>02</span><div><b>场景与光线</b><small>定义环境、时间和画面气氛</small></div></div><div className="visual-spec-fields">{field("地点",draft.scene.location,(value)=>setDraft({...draft,scene:{...draft.scene,location:value}}))}{field("天气",draft.scene.weather,(value)=>setDraft({...draft,scene:{...draft.scene,weather:value}}))}{field("时间",draft.scene.timeOfDay,(value)=>setDraft({...draft,scene:{...draft.scene,timeOfDay:value}}))}{field("光线",draft.scene.lighting,(value)=>setDraft({...draft,scene:{...draft.scene,lighting:value}}))}</div></section>
-      {draft.characters.map((character,index)=><fieldset className="visual-character-card" key={character.characterId}><legend><UserRound size={15}/><span>{character.characterId}</span></legend><div className="visual-character-group"><b>表演与调度</b><div className="visual-spec-fields">{field("画面位置",character.position,(value)=>patchCharacter(index,"position",value))}{field("动作",character.action,(value)=>patchCharacter(index,"action",value))}{field("动作对象",character.actionTarget,(value)=>patchCharacter(index,"actionTarget",value))}{field("表情",character.expression,(value)=>patchCharacter(index,"expression",value))}{field("视线",character.gazeTarget,(value)=>patchCharacter(index,"gazeTarget",value))}{field("手部状态",character.hands,(value)=>patchCharacter(index,"hands",value))}</div></div><div className="visual-character-group appearance"><b>连续性状态</b><div className="visual-spec-fields">{field("当前发型",character.appearanceState.hair,(value)=>patchAppearance(index,"hair",value))}{field("包",character.appearanceState.bag,(value)=>patchAppearance(index,"bag",value))}{field("首饰 / 配件",character.appearanceState.accessories.join(", "),(value)=>patchAppearance(index,"accessories",value.split(",").map(x=>x.trim()).filter(Boolean)))}{field("眼镜",character.appearanceState.glasses,(value)=>patchAppearance(index,"glasses",value))}{field("外套状态",character.appearanceState.outerwearState,(value)=>patchAppearance(index,"outerwearState",value))}{field("湿润 / 污损 / 伤痕",character.appearanceState.condition.join(", "),(value)=>patchAppearance(index,"condition",value.split(",").map(x=>x.trim()).filter(Boolean)))}</div></div></fieldset>)}
+      {draft.characters.map((character,index)=><fieldset className="visual-character-card" key={character.characterId}><legend><UserRound size={15}/><span>{character.characterId}</span></legend><div className="visual-character-group"><b>表演与调度</b><div className="visual-spec-fields">{field("画面位置",character.position,(value)=>patchCharacter(index,"position",value))}{field("身体姿态",character.bodyPose||"",v=>patchCharacter(index,"bodyPose",v))}{field("身体支持物",character.bodySupport||"",v=>patchCharacter(index,"bodySupport",v))}{field("动作",character.action,(value)=>patchCharacter(index,"action",value))}{field("动作对象",character.actionTarget,(value)=>patchCharacter(index,"actionTarget",value))}{field("表情",character.expression,(value)=>patchCharacter(index,"expression",value))}{field("视线",character.gazeTarget,(value)=>patchCharacter(index,"gazeTarget",value))}{field("手部状态",character.hands,(value)=>patchCharacter(index,"hands",value))}</div></div><div className="visual-character-group appearance"><b>连续性状态</b><div className="visual-spec-fields">{field("当前发型",character.appearanceState.hair,(value)=>patchAppearance(index,"hair",value))}{field("包",character.appearanceState.bag,(value)=>patchAppearance(index,"bag",value))}{field("首饰 / 配件",character.appearanceState.accessories.join(", "),(value)=>patchAppearance(index,"accessories",value.split(",").map(x=>x.trim()).filter(Boolean)))}{field("眼镜",character.appearanceState.glasses,(value)=>patchAppearance(index,"glasses",value))}{field("外套状态",character.appearanceState.outerwearState,(value)=>patchAppearance(index,"outerwearState",value))}{field("湿润 / 污损 / 伤痕",character.appearanceState.condition.join(", "),(value)=>patchAppearance(index,"condition",value.split(",").map(x=>x.trim()).filter(Boolean)))}</div></div></fieldset>)}
       {!Array.isArray(draft.interactions)&&<p className="config-message">此规格使用旧版交互格式，仍可查看和编辑。重新分析后会补全结构化交互事实。</p>}
       {(draft.interactions||[]).map((relation,index)=><fieldset className="visual-character-card" key={`${relation.actorCharacterId}:${index}`}><legend>交互 · {relation.actorCharacterId} · {relation.visualFacts?.object.label||relation.propId}</legend>{relation.visualFacts?<div className="visual-spec-fields">
         {field("具体物体",relation.visualFacts.object.label,v=>patchInteraction(index,'object','label',v))}
@@ -4788,6 +4788,11 @@ function VisualSpecEditor({shot,projectId,episodeId,disabled,busy,onRefine,onCon
         <label className="visual-spec-field"><span>视线目标类型</span><select value={relation.visualFacts.gaze.kind} onChange={e=>patchInteraction(index,'gaze','kind',e.target.value)}>{['object','character','independent'].map(v=><option key={v} value={v}>{choiceLabels[v]||v}</option>)}</select></label>
         {field("视线目标 ID",relation.visualFacts.gaze.targetId,v=>patchInteraction(index,'gaze','targetId',v))}
         {field("视线目标表面",relation.visualFacts.gaze.surface,v=>patchInteraction(index,'gaze','surface',v))}
+        {relation.visualFacts.workTarget&&<>
+          {field("工具作用对象 ID",relation.visualFacts.workTarget.instanceId,v=>patchInteraction(index,'workTarget','instanceId',v))}
+          {field("作用表面",relation.visualFacts.workTarget.surface,v=>patchInteraction(index,'workTarget','surface',v))}
+          {field("具体操作",relation.visualFacts.workTarget.operation,v=>patchInteraction(index,'workTarget','operation',v))}
+        </>}
         {field("视线方向说明",relation.visualFacts.gaze.description,v=>patchInteraction(index,'gaze','description',v))}
         <small>事实来源：{Object.entries(relation.visualFacts.provenance).map(([key,value])=>`${key}: ${value?.source}`).join(' · ')}。保存时校验数量、阶段与目标的一致性。</small>
       </div>:<small>旧规格仍使用文本推断。点击“重新分析”可生成明确的交互事实。</small>}</fieldset>)}
@@ -4820,6 +4825,7 @@ type SdRecipe = {
   denoisingStrength?: number;
   prompt?: string;
   negativePrompt?: string;
+  appearanceCoverage?: Array<{characterId:string;face:string;hair:string;outfit:string;detail:string}>;
   promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string}>;
   references?: Array<{
     role: string;
@@ -4941,6 +4947,7 @@ function JobDetailsButton({ payload }: { payload: string }) {
                           <details><summary>编译记录</summary>
                             {recipe.generationSpec.promptPlan.audit.map((entry,index)=>(<p key={index}><small>{entry.factId} · {entry.source} · {entry.reason}<br/>{entry.applied || "已合并或分流"}</small></p>))}
                           </details>
+                          {recipe.appearanceCoverage?.map(c=><p key={c.characterId}><b>{c.characterId} · 外观约束范围</b><br/><small>{c.detail}</small></p>)}
                           {!!recipe.promptRequestTraces?.length && <details><summary>实际请求提示词</summary>
                             {recipe.promptRequestTraces.map((trace,index)=>(<p key={index}><b>{trace.stage} · {trace.requestStatus}</b><br/><small>{trace.prompt}<br/>负向：{trace.negativePrompt}</small></p>))}
                           </details>}

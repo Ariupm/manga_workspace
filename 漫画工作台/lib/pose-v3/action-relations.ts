@@ -2,14 +2,14 @@ import {resolveActionMechanism,mechanismGeometryFailures} from "../../scripts/ac
 import {actionStageState} from "../../scripts/action-stage-policy.mjs";
 import type {PosePoint,PosePhase} from '../pose-v2';
 import type {PosePersonSemanticV3,PoseRelationPlanV3} from './schema';
-export type ActionGeometryInput=Omit<import('../../scripts/action-mechanism.mjs').MechanismGeometry,'mechanism'> & {mechanism?:'hinge'|'slide'|'press'|'rotate'|'work'|'mouth'|'transfer'|'force';mouthContact?:PosePoint};
+export type ActionGeometryInput=Omit<import('../../scripts/action-mechanism.mjs').MechanismGeometry,'mechanism'> & {mechanism?:'hinge'|'slide'|'press'|'rotate'|'work'|'mouth'|'transfer'|'force'|'support';mouthContact?:PosePoint};
 export type ActionRelationAudit={version:'action-relations-1';phase:PosePhase;status:'planned'|'pending';contactState:'approach'|'contact'|'released';mechanism:string;errors:string[];stateBefore:string|null;stateAfter:string|null;handTargets:Array<{hand:'left'|'right';x:number;y:number}>;geometry?:ActionGeometryInput};
 const dynamic=new Set(['open','close','operate_environment','write','tool','drink','eat','pick','place','push','pull']);
 export function prepareActionRelationsV3(people:PosePoint[][],plans:PosePersonSemanticV3[],relations:PoseRelationPlanV3[]){
  for(const [i,person] of plans.entries()){
   person.actionRelationAudit=undefined;
   if(!person.relationTargets.length)continue;
-  const canonicalId=person.relationTargets.find(r=>r.actionPlan)?.actionPlan?.actionId;
+  const canonicalId=person.relationTargets.find(r=>r.actionPlan&&dynamic.has(r.actionPlan.actionId))?.actionPlan?.actionId;
   if(!dynamic.has(person.templateId)&&!canonicalId)continue;
   if(!canonicalId&&!['pick','place','drink','eat'].includes(person.templateId)&&person.relationTargets.every(r=>!['operate'].includes(r.purpose)))continue;
   const id=dynamic.has(person.templateId)?person.templateId:canonicalId!;let g=person.actionGeometryInput;

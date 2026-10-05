@@ -89,6 +89,14 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     propInteractions: repairPasses.propInteractions?.map(contract),
     propInstancePlan: repairPasses.propInstancePlan?.map(p => ({ ...p, surfacePlan: surface(p.surfacePlan), exclusionRegions: p.exclusionRegions?.map(region) })),
   };
+  for(const relation of passes.propInteractions||[]){
+    const binding=relation.visualFacts?.workTarget,g=relation.actionPlan?.geometry;
+    if(!binding||!['tool','write'].includes(relation.actionPlan?.actionId))continue;
+    const target=passes.propInteractions.find(r=>r.objectInstanceId===binding.instanceId&&r.characterId===relation.characterId),tg=target?.actionPlan?.geometry;
+    if(!tg?.extent||!g?.workPoint){conflict('Bound work target geometry missing: '+relation.relationId);continue;}
+    const expected={x:target.objectCenter.x+(binding.u-.5)*tg.extent.width,y:target.objectCenter.y+(binding.v-.5)*tg.extent.height};
+    if(Math.hypot(expected.x-g.workPoint.x,expected.y-g.workPoint.y)>1e-6)conflict('Tool work point detached from target surface: '+relation.relationId);
+  }
   for (const relation of passes.propInteractions || (passes.propInteraction ? [passes.propInteraction] : [])) {
     if (!relation.required) continue;
     for (const p of [relation.objectCenter, ...(relation.contactAnchors || [])]) {
@@ -96,7 +104,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
         conflict(`V3 required prop/contact outside canvas: ${relation.relationId || relation.characterId}`);
       }
     }
-    const outlinePoints=relation.actionRelationAudit?.geometry?.outline?.flatMap(p=>p.points)||[];
+    const outlinePoints=(relation.actionRelationAudit?.geometry||relation.actionPlan?.geometry)?.outline?.flatMap(p=>p.points)||[];
     if(outlinePoints.some(p=>p.x<.02||p.x>.98||p.y<.02||p.y>.98))conflict(`V3 required action outline outside canvas: ${relation.relationId || relation.characterId}`);
     if (relation.shape && relation.shape !== "umbrella" && !outlinePoints.length) {
       const contacts = relation.contactAnchors || [];

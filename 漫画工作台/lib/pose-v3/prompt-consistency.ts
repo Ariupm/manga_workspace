@@ -6,6 +6,10 @@ import type {PosePersonSemanticV3} from './schema';
 export function synchronizeBasicPosePromptV3(prompt:string,person:PosePersonSemanticV3,options:{structuredRelations?:boolean}={}):string{
  const audit=person.basicGeometry,override=person.basicPoseOverride;
  let text=prompt;
+ if(audit&&!override){
+   const posture={stand:'standing',sit:'sitting',crouch:'crouching',kneel_single:'kneeling on one knee',kneel_double:'kneeling on both knees',recline:'reclining',lie_supine:'lying supine',lie_side:'lying on one side',lie_prone:'lying face down'}[audit.parameters.templateId];
+   if(posture&&!/\b(?:standing|sitting|seated|crouching|kneeling|reclining|lying)\b/i.test(text))text=[text,posture,person.supportRelation.supportKind!=='unknown'&&audit.parameters.templateId!=='stand'?'on the '+person.supportRelation.supportKind:''].filter(Boolean).join(', ');
+ }
  if(audit&&override){
    if(override.templateId&&basicTemplateFromText(person.sourceText)!==audit.parameters.templateId){
      text=positivePoseText(text).replace(/\b(?:standing|sitting|seated|crouching|squatting|kneeling(?: on (?:one|both) knees?)?|reclining|lying(?: supine| face up| on (?:one|the) side)?)\b(?: on (?:a |the )?(?:chair|sofa|couch|bed|floor|ground))?/gi,'');

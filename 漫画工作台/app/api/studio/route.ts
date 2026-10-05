@@ -1,3 +1,4 @@
+import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
 import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
 import { NextRequest, NextResponse } from "next/server";
@@ -1005,6 +1006,7 @@ export async function POST(request: Request) {
         },
       },
       poseControl,
+      appearanceCoverage: appearanceControlCoverage(references,shot.characterIds),
       identityRefinement: {
         enabled: true,
         scope: "face_only_high_resolution",

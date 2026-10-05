@@ -181,3 +181,8 @@ medium close-up, chest-up framing, frame from chest to head, home interior, exac
 规范化层负责有证据的工具分类冲突校正，保留原类别/依据；人工矛盾拒绝。提示词层保留具体工作动词/对象和非拿放动作的支持状态；Pose层按关系动作隔离，只为匹配关系求解主动作，不把包裹误作剪刀。外部物体视线不得被自身工作点覆盖。
 
 实际1259复用候选保存v2/tool，待确认；模拟确认后有效提示词含切开包裹、右手柄/左手翻盖、桌面支持与包裹开口视线，不再出现using cardboard。229项目/68执行测试及类型检查通过，未生成图片。具体像素接触与任意模型语义仍属运行风险。
+
+
+## 第十轮：工作对象与实际控制同源
+
+已按用户授权修复 job543 暴露的支持物、联合几何、自动姿态、实体形态及末端视线问题。最终结构保持 ShotVisualSpec→InteractionContract→Pose/PromptPlan→recipe→worker；不建立第二套 prompt 数据。结构化关系负责一次完整动作表达，局部pass消费同一目标。完整实现、实际输出和验收边界见 JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md 实施记录。

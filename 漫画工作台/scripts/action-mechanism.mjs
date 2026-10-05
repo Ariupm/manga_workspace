@@ -12,6 +12,13 @@ export function resolveActionMechanism(input,phase='contact'){
  const amount=g.actionId==='close'?1-t:t;
  const w=g.extent?.width||.12,h=g.extent?.height||.12;
  let center={...c},grip={...c},outline=[];
+ if(g.mechanism==='support'){
+  const top=c.y-h/2,bottom=c.y+h/2,left=c.x-w/2,right=c.x+w/2;
+  g.objectCenter={...c};g.outline=[path(rect(c,w,h))];
+  if(g.supportY!=null)g.outline.push(path([{x:left-w*.15,y:g.supportY},{x:right+w*.15,y:g.supportY}],'work_surface',false));
+  if(g.objectForm==='solid_box')g.outline.push(path([{x:left,y:top+h*.28},{x:right,y:top+h*.28},{x:right-w*.15,y:top}],'working_edge',false));
+  return g;
+ }
  if(g.mechanism==='hinge'){
   const pivot=g.pivot||{x:c.x-w/2,y:c.y};
   const span=(g.hingeSide==='right'?-1:1)*w*Math.cos(amount*(g.angle||1));
@@ -50,7 +57,7 @@ export function resolveActionMechanism(input,phase='contact'){
    outline=[path([add(back,normal,thickness),add(end,normal,thickness),end,add(back,normal,-thickness)])];
    center={x:(back.x+end.x)/2,y:(back.y+end.y)/2};
   }
-  if(g.controlShape!=='keyboard')outline.push(path([{x:work.x-.065,y:work.y+.005},{x:work.x+.065,y:work.y+.005}],'work_surface',false));
+  if(g.controlShape!=='keyboard'&&!g.workTargetId)outline.push(path([{x:work.x-.065,y:work.y+.005},{x:work.x+.065,y:work.y+.005}],'work_surface',false));
  }else if(g.mechanism==='force'){
   outline=[path(rect(c,w,h))];grip=add(c,axis,-w*.35);grip.y-=h*.35;
   if(g.supportY!=null)outline.push(path([{x:c.x-w*.7,y:g.supportY},{x:c.x+w*.7,y:g.supportY}],'work_surface',false));
@@ -111,7 +118,7 @@ export function mechanismGeometryFailures(g){
  if(g.extent&&(!Number.isFinite(g.extent.width)||!Number.isFinite(g.extent.height)||g.extent.width<=0||g.extent.height<=0))errors.push('物体机构尺寸无效');
  if(g.angle!=null&&(!Number.isFinite(g.angle)||Math.abs(g.angle)>Math.PI))errors.push('机构转角超出支持范围');
  if(g.mechanism==='work'&&g.phase!=='anticipation'&&g.workPoint&&g.toolEnd&&Math.hypot(g.workPoint.x-g.toolEnd.x,g.workPoint.y-g.toolEnd.y)>.025)errors.push('工具作用端未接触工作面');
- const compatible={hinge:['panel'],slide:['panel'],press:['button'],rotate:['knob'],work:['pen','pencil','brush','scissors','knife','keyboard','hammer','wrench','screwdriver','pliers'],force:['box','panel'],transfer:['box']};
+ const compatible={hinge:['panel'],slide:['panel'],press:['button'],rotate:['knob'],work:['pen','pencil','brush','scissors','knife','keyboard','hammer','wrench','screwdriver','pliers'],force:['box','panel'],transfer:['box'],support:['box']};
  if(!compatible[g.mechanism]?.includes(g.controlShape))errors.push('动作机构与执行轮廓类型不一致');
  if(!errors.length){
   const expected=resolveActionMechanism(g,g.phase);

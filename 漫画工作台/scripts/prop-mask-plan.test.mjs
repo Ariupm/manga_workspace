@@ -25,3 +25,11 @@ test("hidden and invalid wrist points cannot move the object mask", () => {
   const person = Array(18).fill(null); person[4] = { x: -1, y: -1 }; person[7] = { x: NaN, y: .5 };
   assert.equal(propObjectMask({ ...args, people: [person] }).svg, propObjectMask(args).svg);
 });
+
+
+test('connected object masks protect the partner body except the shared working point',async()=>{
+ const plan=propObjectMask({width:200,height:200,objectBounds:{x:20,y:20,width:140,height:140},protectedObjects:[{x:80,y:80,width:60,height:60}],workContact:{x:.5,y:.5}});
+ const {data,info}=await sharp(Buffer.from(plan.svg)).removeAlpha().raw().toBuffer({resolveWithObject:true});
+ const px=(x,y)=>data[(y*200+x)*info.channels];
+ assert.equal(px(120,120),0);assert.equal(px(100,100),255);assert.equal(px(40,40),255);assert.equal(px(0,0),0);
+});

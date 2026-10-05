@@ -97,3 +97,8 @@
 - 2026-10-05：不能只检查Regional初始prompt；Pose曾将同一人物purpose=operate的包裹套成剪刀工具动作。明确actionPlan按每关系隔离，跨对象视线保留外部目标坐标。已有新待确认规格时生成返回明确409，不能静默消费旧路径。
 
 - 2026-10-05 job543：/bed/会命中described，且支持物识别不读确认scene.anchors；确认chair不能证明实际控制为chair。跨对象gaze坐标正确也不代表末端文字正确，剪刀pass仍补same scissors。landscape_rect不能统一扩写为thin rigid，纸箱已有确定错误请求。
+
+
+## 2026-10-05：job543根因修复已实施
+
+用户后续已明确授权修复，替代此前“仅出方案”的范围记录。支持物词边界/角色bodySupport、结构化workTarget与共同布局、辅助稳定/物体体积、自动坐姿提示、末端视线统一及关联物体遮罩保护已实施；详情见JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md实施记录。234项目测试、69执行层测试通过；程序逻辑验收，未生成图片。shot1259已确认v2未被改写，新任务按新编译器消费；旧job543保持原快照。问题推进fixed_pending_review，交独立诊断复核。

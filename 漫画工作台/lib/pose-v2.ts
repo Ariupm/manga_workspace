@@ -439,7 +439,7 @@ const textForCharacter = (shot: Shot, characterId: string) => {
   const look = shot.characterLooks?.[characterId];
   return clean([
     ...relations.flatMap((item) => [item.type, item.action, item.phase, item.propId, item.gazeTarget, ...item.contactPoints]),
-    planned?.action, planned?.actionTarget, planned?.gazeTarget, planned?.hands,
+    planned?.bodyPose, planned?.bodySupport, planned?.action, planned?.actionTarget, planned?.gazeTarget, planned?.hands,
     look?.actionEn, look?.gazeEn, look?.handsEn, shot.actionEn, shot.description,
     ...(shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts || [] : []),
   ].filter(value => Boolean(value) && !isNarrativeActionInstruction(value)).join("; "));
@@ -451,7 +451,7 @@ const primaryTextForCharacter = (shot: Shot, characterId: string) => {
   const look = shot.characterLooks?.[characterId];
   return clean([
     ...relations.flatMap((item) => [item.type, item.action, item.phase, item.propId, item.gazeTarget, ...item.contactPoints]),
-    planned?.action, planned?.actionTarget, planned?.hands,
+    planned?.bodyPose, planned?.bodySupport, planned?.action, planned?.actionTarget, planned?.hands,
     look?.actionEn, look?.handsEn, shot.actionEn,
   ].filter(value => Boolean(value) && !isNarrativeActionInstruction(value)).join("; "));
 };
@@ -462,8 +462,14 @@ const regionForCharacter = (shot: Shot, characterId: string, index: number, coun
 };
 
 const supportForCharacter = (shot: Shot, characterId: string, basePose: PosePersonPlanV2["basePose"], region: { xStart: number; xEnd: number }): SupportRelationGeometry => {
-  const source = textForCharacter(shot, characterId);
-  const supportKind: SupportRelationGeometry["supportKind"] = /sofa|couch|沙发/i.test(source) ? "sofa" : /chair|椅子/i.test(source) ? "chair" : /bed|床/i.test(source) ? "bed" : basePose === "standing" || basePose === "crouch_kneel" ? "floor" : "unknown";
+  const planned=shot.visualSpecConfirmed?shot.visualSpec?.characters.find(c=>c.characterId===characterId):undefined;
+  const actorText=textForCharacter(shot, characterId);
+  // Scene furniture is a fallback only for a seated actor, never an instruction
+  // for every person in the scene. Explicit actor support always wins.
+  const explicitSupport=planned?.bodySupport;
+  const sceneSeats=(shot.visualSpecConfirmed?shot.visualSpec?.scene?.anchors||[]:[]).filter(a=>/\b(?:chair|sofa|couch|bed)\b|椅子|沙发|床/i.test(a));
+  const source=explicitSupport||(/\b(?:chair|sofa|couch|bed)\b|椅子|沙发|床/i.test(actorText)?actorText:basePose==='seated'&&sceneSeats.length===1?sceneSeats[0]:actorText);
+  const supportKind: SupportRelationGeometry["supportKind"] = /\b(?:sofa|couch)\b|沙发/i.test(source) ? "sofa" : /\bchair\b|椅子/i.test(source) ? "chair" : /\bbed\b|床/i.test(source) ? "bed" : basePose === "standing" || basePose === "crouch_kneel" ? "floor" : "unknown";
   const supportSurfaceId = supportKind === "unknown" ? "support:manual-review" : `support:${supportKind}:primary`;
   const y = supportKind === "floor" ? .9 : supportKind === "bed" ? .74 : supportKind === "chair" ? .64 : supportKind === "sofa" ? .7 : .68;
   const actorWidth = Math.max(.2, region.xEnd - region.xStart);
@@ -474,7 +480,7 @@ const supportForCharacter = (shot: Shot, characterId: string, basePose: PosePers
 
 const retargetSupportForOverride = (person: PosePersonPlanV2, support: SupportRelationGeometry, nextBasePose: PosePersonPlanV2["basePose"]): SupportRelationGeometry => {
   const source = person.sourceText;
-  const sourceKind: SupportRelationGeometry["supportKind"] = /sofa|couch|沙发/i.test(source) ? "sofa" : /chair|椅子/i.test(source) ? "chair" : /bed|床/i.test(source) ? "bed" : nextBasePose === "standing" || nextBasePose === "crouch_kneel" ? "floor" : "unknown";
+  const sourceKind: SupportRelationGeometry["supportKind"] = /\b(?:sofa|couch)\b|沙发/i.test(source) ? "sofa" : /\bchair\b|椅子/i.test(source) ? "chair" : /\bbed\b|床/i.test(source) ? "bed" : nextBasePose === "standing" || nextBasePose === "crouch_kneel" ? "floor" : "unknown";
   const supportKind = nextBasePose === "standing" || nextBasePose === "crouch_kneel" ? "floor" : sourceKind;
   const y = supportKind === "floor" ? .9 : supportKind === "bed" ? .74 : supportKind === "chair" ? .64 : supportKind === "sofa" ? .7 : .68;
   const region = support.region;

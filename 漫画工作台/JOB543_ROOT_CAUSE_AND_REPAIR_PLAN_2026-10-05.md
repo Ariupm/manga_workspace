@@ -53,6 +53,54 @@
 使用内存库、纯函数和已存job543快照回放，不创建SD任务。对照上游事实→规范化→有效Pose→PromptPlan→所有阶段payload/control/mask→审批/失败/候选状态。验收检查具体关系、坐姿、支持物、纸箱体积、工作目标、视线指向和控制覆盖，不能再以无中文/无编译错误/HTTP成功替代语义一致。
 旧任务不改写；当前镜头修正规格作为新版本保留来源，沿原确认流程用于新任务。输出修前/修后真实编译差异及未解决项。程序逻辑验收与模型实际视觉执行率分别记录。
 
-## 当前状态
+## 诊断阶段状态（修复前）
 
 本轮仅完成根因诊断与方案，未实施以上修复。ISSUE-PROMPT-011回到partially_fixed；支持物、工具目标几何及视线末端冲突分别登记独立问题。脸/发/衣物与checkpoint导致像素偏差的贡献尚不能唯一量化，不宣称全部像素根因已确认。
+
+
+## 实施记录（用户授权“修复”后）
+
+五项代码问题已推进 fixed_pending_review，等待独立诊断复核。没有启动 SD、生成图片或改写 job543；当前 shot1259 的已确认 v2 保留，新任务直接使用新编译链，无须为了代码生效再次调用 DeepSeek。
+
+| 层级 | 已落实职责 |
+|---|---|
+| 上游规格 | bodyPose/bodySupport；workTarget 包含实例、表面、操作、局部UV；形态/尺寸及分字段来源；校验及人工编辑保留 |
+| 关系布局 | 同一工作对象的工具与辅助稳定手共同布局；视线与工作目标分开；缺失、同手及人工动作冲突显式失败 |
+| Pose / 控制 | 词边界消除 described→bed；自动坐姿进入文本；支持物体轮廓与工具工作点单次投影 |
+| 提示词 | 结构化交互一次表达具体操作/双手职责/支持面；取物阶段、数量保留；纸箱描述体积，视线仅指实际目标 |
+| Worker | 同源几何用于轮廓、mask、接触及视线；每角色一次末端gaze；关联物体主体受后续道具/手部遮罩保护 |
+| 页面 / 审计 | 身体姿态与工作绑定可编辑；任务显示完整发型、脸部和服装控制的实际规划覆盖范围 |
+| 状态与交付 | 既有规格确认、草稿整体确认、自动硬门和候选事务保留，失败不伪报成功 |
+
+### 当前真实镜头纯编译结果
+
+- 支持物：chair，不再是 bed；自动坐姿明确写入人物块。
+- Pose safety：valid=true，errors=[]，warnings=[]；腰上取景检查通过。
+- 纸箱投影尺寸：0.26945 × 0.16841（归一化画布尺寸）；默认尺寸是带 assumptions 的代表性布局。
+- 剪刀工作点 = 剪刀末端 = 纸箱胶带目标点：(0.49286, 0.63745)。
+- 末端视线文字和坐标均指纸箱胶带；明确人工视线表面不被共同布局覆盖。
+
+人物块实际输出：
+
+```text
+centered in the frame, one person, adult woman, gentle oval face,
+(waist-length layered hair with airy side-swept bangs soft pink hair:1.45),
+(warm pink-brown eyes:1.25), (wearing cream-yellow top:1.5),
+sitting, on the chair, one cardboard delivery package,
+left hand stabilizing the top panel of the cardboard delivery package,
+cardboard delivery package resting on the desk, one pair of scissors,
+scissors cutting the sealing tape on the cardboard delivery package,
+right hand gripping the scissors handle, focused,
+(eyes focused on the cardboard delivery package sealing tape:1.3),
+face and action remain unobstructed
+```
+
+### 验证与边界
+
+234/234 项目测试、69/69 执行层测试通过。覆盖剪刀/纸箱、刀/纸、刷/画布、螺丝刀/螺丝、双角色归属、支持物误匹配、人工视线、错误目标及翻译不变量、取物阶段、遮罩保护。记忆同步另在 clean / dirty / missing_git 三类临时目录实测通过，均只写 pending。
+
+完整链冲突复核见五项 ISSUE 的逐项记录：剧情/人工选择→规格/P0→交互与有效Pose→PromptPlan/recipe/payload→Regional/ControlNet→基础及全部局部pass→自动硬门/草稿整体确认→候选。检查过程中修复了辅助物体轮廓未被worker消费、后续局部mask可能覆盖关联道具、manual视线来源被覆盖和取物后阶段描述遗漏，均属于本轮根因范围。
+
+程序逻辑验收通过，未进行图片生成或视觉效果验收。当前服装参考未满足安全使用条件时仍跳过；face-only控制不等于整头发型控制。完整长发/服装效果、模型随机性与实际视觉执行率保留为产品运行风险，不把文本修复当作像素效果保证。工作目标模糊时不进行无依据绑定；明确旧文字只允许唯一匹配并标 legacy_default。没有擅自恢复用户关闭的姿态语义硬阻断。
+
+生产构建最终通过；期间并发开发服务占用同一.next导致一次ENOENT，已停下核实进程并将旧缓存保留在workspace内后干净重建。没有删除业务数据。

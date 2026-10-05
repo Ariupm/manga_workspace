@@ -21,7 +21,7 @@ function redact(value) {
 
 function changedFiles() {
   const status = run("git", ["status", "--short"]);
-  if (!status || status.startsWith("无法执行")) return status || "工作区无 Git 变更或无法读取 Git 状态";
+  if (!status || status.startsWith("无法执行")) return [status || "工作区无 Git 变更或无法读取 Git 状态"];
   const files = status
     .split(/\r?\n/)
     .map((line) => line.trim())

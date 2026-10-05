@@ -1,3 +1,4 @@
+import {bindWorkInteractions} from './coupled-interactions';
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
 import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
 import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
@@ -116,6 +117,7 @@ export type InteractionContract = {
   objectInstanceId: string;
   expectedCount: number;
   supportLabel?: string;
+  workTargetLabel?: string;
   ownership: { actorCharacterIds: string[]; ownerBefore: string | null; ownerAfter: string | null };
   surfacePlan: { plane: "screen"|"back"|"side"|"three_quarter"|"contextual"; visibleFace: string; normal: { x: number; y: number }; screenContentLayout: string | null; exclusionRegions: Array<{ xStart: number; xEnd: number; yStart: number; yEnd: number }> };
   contactAnchors: Array<{ hand: "left"|"right"; x: number; y: number; role: "active"|"support" }>;
@@ -657,14 +659,14 @@ export function deriveInteractionContracts(shot: Shot, characterId?: string): In
     const ownershipActors = [...new Set(objectInstanceRelations.flatMap((item) => [item.actorCharacterId, item.targetCharacterId].filter(Boolean)))];
     return { ...contract, relationId: `${relation.actorCharacterId}:${sharedObject}:${index + 1}`, targetCharacterId: relation.targetCharacterId || undefined, relationType: relation.type || undefined, objectCenter, gazeTarget, contactAnchors, activeHand, objectInstanceId, ownership: { actorCharacterIds: ownershipActors, ownerBefore: relation.ownershipBefore || null, ownerAfter: relation.ownershipAfter || null }, executor: /umbrella/i.test(sharedObject) && relation.type === "object_transfer" ? "umbrella_handoff" as const : "generic_prop" as const };
   });
-  return contracts.map(contract=>{
+  return bindWorkInteractions(contracts.map(contract=>{
     const facts=contract.visualFacts;
     if(!facts||facts.gaze.kind!=='object'||facts.gaze.targetId===contract.objectInstanceId)return contract;
     const targetRelation=allPlanned.find(r=>r.visualFacts?.object.instanceId===facts.gaze.targetId);
     if(!targetRelation)throw new Error('结构化视线目标物体未在当前镜头中声明');
     const target=deriveInteractionContract({...shot,visualSpec:{...shot.visualSpec!,interactions:[targetRelation],interaction:null}},targetRelation.actorCharacterId);
     return {...contract,gaze:`eyes focused on the ${target.object}${facts.gaze.surface?` ${facts.gaze.surface}`:''}`,gazeTarget:{kind:'object' as const,targetId:facts.gaze.targetId,point:{...target.objectCenter},source:'structured.external_object'}};
-  });
+  }));
 }
 
 const orderInteractionContractsForExecution = (shot: Shot, contracts: InteractionContract[]) => {
@@ -1681,9 +1683,9 @@ export function buildRegionalPrompt(
         ? `(wearing ${visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)}:1.5)`
         : "",
       /wide shot|full shot/.test(resolvedCamera) ? resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) : "",
-      state?.bag,state?.accessories.join(", "),state?.glasses,state?.outerwearState,
+      state?.bag,state?.accessories.join(", "),state?.glasses,outfit?state?.outerwearState?.replace(/^(no outerwear); just .+$/i,'$1'):state?.outerwearState,
       ].filter(Boolean).join(", "),source:outfit?`selected_asset:${outfit.id}`:"character_profile"},
-      {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>interaction.visualFacts?`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'} as Record<string,string>)[interaction.visualFacts.actionId]||actionStageVerb(interaction.visualFacts.actionId,interaction.visualFacts.phase)} the ${interaction.object}`:canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:interactions.some(r=>r.visualFacts)?'structured_interaction_action':sourceFor("actionEn")},
+      {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>interaction.visualFacts?'':canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:interactions.some(r=>r.visualFacts)?'structured_interaction_action':sourceFor("actionEn")},
       {id:`${id}.hands`,group:"hands",text:interactions.some(r=>r.visualFacts)?promptTerms(look.handsEn).filter(term=>{
         if(/hold|grip|touch|contact|reach|operat|described action/i.test(term))return false;
         const hand=/left hand/i.test(term)?'left':/right hand/i.test(term)?'right':null;
@@ -1691,7 +1693,7 @@ export function buildRegionalPrompt(
       }).join(', '):englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:interactions.some(r=>r.visualFacts)?'structured_contact+independent_free_hand':sourceFor("handsEn")},
       ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i),source:"interaction_contract"})),
       {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
-      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ') || look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
+      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
       {id:`${id}.occlusion`,group:"occlusion",text:englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),source:"confirmed_visual_spec"},
     ];
