@@ -146,7 +146,19 @@ export function compilePromptFields(fields = [], negative = '') {
       .replace(/\b(?:not_applicable|unknown)\b/g, '')
       .replace(/\s*,\s*,/g, ',').replace(/\(\s*:\d+(?:\.\d+)?\)/g, '');
     text = text.replace(/,\s*(?=:\d)/g, '').replace(/\(\s*,/g, '(');
+    // Visibility is a positive spatial fact; retain the overlap clause rather
+    // than moving its whole sentence to the negative prompt.
+    text=text.replace(/\b(?:but\s+)?not (?:occluded|obscured|hidden|blocked)\b/gi,'and clearly visible')
+      .replace(/^and clearly visible$/i,'clearly visible')
+      .replace(/\bno (?:significant |major |noticeable )?occlusion\b/gi,'clear visibility');
     for (const term of promptTerms(text)) {
+      // A standalone absence phrase has an unambiguous negative scope. Keep
+      // action negation/comparisons out of this route: they need real reasoning.
+      const absence=term.match(/^no\s+([a-z][a-z -]{0,100}?)(?:\s+(?:is |are )?visible)?$/i);
+      if(absence&&!/\b(?:no|not|without|longer|more|less|than|only|one|other|except|unless|but|because|should|must|can|will|does|do|is|are|was|were|holding|opening|closing|touching|moving|reaching|cutting)\b/i.test(absence[1])){
+        negatives.push(absence[1]);
+        audit.push({factId:field.id,source:field.source,requested:term,applied:absence[1],reason:'scoped_negative'});continue;
+      }
       if (!/[a-z]/i.test(term)) continue;
       if (/^(?:not visible indoors|calm weather|hands naturally positioned for the described action and framing|acting hands visible and following the described action|contextual orientation determined by the current action|visible surface follows camera and action geometry|object position consistent with its support and transfer stage|action in progress|ambient illumination consistent with the declared scene lighting|motivated directional key light|soft environment bounce light|natural gaze follows the surrounding story action)$/i.test(term)) {
         audit.push({factId:field.id,source:field.source,requested:term,applied:'',reason:'non_visual_placeholder'});continue;

@@ -400,3 +400,5 @@
 用户后续已明确授权修复，替代此前“仅出方案”的范围记录。支持物词边界/角色bodySupport、结构化workTarget与共同布局、辅助稳定/物体体积、自动坐姿提示、末端视线统一及关联物体遮罩保护已实施；详情见JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md实施记录。234项目测试、69执行层测试通过；程序逻辑验收，未生成图片。shot1259已确认v2未被改写，新任务按新编译器消费；旧job543保持原快照。问题推进fixed_pending_review，交独立诊断复核。
 
 工具工作目标独立于注视目标；只扩展既有visualFacts→InteractionContract→Pose/PromptPlan→recipe事实链，不另建提示词旁路。明确manual字段保留；旧关系仅做带来源的唯一语义匹配，模糊目标不伪造。发型/服装控制覆盖为规划审计，不代表像素成功。advisory姿态政策及一次草稿整体确认不变。
+
+- 2026-10-05 PROMPT-011否定分流续修：独立no名词排除进入原范围negative，not occluded/no significant occlusion改为正向可见性并保留重叠关系。普通环境描述不能误称动作冲突；复杂动作否定和比较仍不可盲目删除。235项程序回归通过，未生图。

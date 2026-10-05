@@ -334,3 +334,16 @@ test('portable tool category, specific operation and supported work object survi
   assert.equal(reconcileInteractionAction({...toolFacts,object:{...toolFacts.object,label:'door control'}},'pressing the control').actionId,'operate_environment');
  }
 });
+
+
+test('AI absence and visibility descriptions compile without false action conflicts',()=>{
+ const common=[{id:'location',text:'indoor library, no direct weather effects visible',source:'model'},{id:'lighting',text:'soft daylight, no harsh shadows',source:'model'}];
+ const fields=[{id:'a.occlusion',group:'occlusion',text:'right arm partially overlaps the shelf but not occluded, no significant occlusion',source:'model'}];
+ const plan=createPromptPlan({common,characters:[{characterId:'a',fields},{characterId:'b',fields:[{id:'b.action',group:'action',text:'standing beside the shelf',source:'model'}]}]});
+ assert.deepEqual(plan.errors,[]);assert.match(plan.commonPrompt,/indoor library/);assert.match(plan.characterPrompts[0],/right arm partially overlaps the shelf and clearly visible/);
+ assert.doesNotMatch(plan.characterPrompts[0],/\bno\b|\bnot\b/);assert.match(plan.negativePrompt,/harsh shadows|direct weather effects/);
+ for(const stage of ['identity','outfit','prop','hand','gaze']){const result=compileStagePrompt(plan,{stage,characterId:'a'});assert.deepEqual(result.errors,[]);assert.doesNotMatch(result.prompt,/\bno\b|\bnot\b/);}
+ const scoped=createPromptPlan({common:[],characters:[{characterId:'a',fields:[{id:'a.clothing',group:'clothing',text:'no silver necklace',source:'model'}]},{characterId:'b',fields:[]}]});
+ assert.doesNotMatch(scoped.negativePrompt,/necklace/);assert.match(scoped.characterNegatives[0].prompt,/silver necklace/);assert.doesNotMatch(scoped.characterNegatives[1].prompt,/necklace/);
+ for(const text of ['not opening the door','no longer holding a book','no more than two people'])assert.ok(compilePromptFields([{id:'action',text,source:'manual'}]).errors.length);
+});
