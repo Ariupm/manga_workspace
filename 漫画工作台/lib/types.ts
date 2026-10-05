@@ -113,6 +113,7 @@ export type ChapterVisualPlan = {
     lighting: string;
   }>;
   timeline: Array<{
+    shotId?: number;
     order: number;
     sceneId: string;
     summary: string;
@@ -127,6 +128,7 @@ export type ShotVisualSpec = {
   schemaVersion: "1.0";
   visibleFacts: string[];
   scene: {
+    fallbackValues?: Partial<Record<"location" | "timeOfDay" | "weather" | "lighting", string>>;
     sceneId: string;
     location: string;
     timeOfDay: string;
@@ -148,6 +150,8 @@ export type ShotVisualSpec = {
     hands: string;
     occlusion: string;
     appearanceState: {
+      missingArrays?: Array<"accessories" | "condition">;
+      fallbackValues?: Partial<Record<"hair" | "bag" | "glasses" | "outerwearState", string>>;
       hair: string;
       bag: string;
       accessories: string[];

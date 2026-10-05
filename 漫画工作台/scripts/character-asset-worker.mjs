@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { characterAssetSdPayload, generateCharacterAssetSd } from "./character-asset-sd.mjs";
+import { canReclaimAssetLock } from "./character-asset-lock.mjs";
 
 const root = process.cwd();
 const jobId = Number(process.argv[2]);
@@ -64,23 +66,55 @@ async function acquireGlobalLock() {
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > 30 * 60 * 1000) {
+        let owner = null;
+        try { owner = JSON.parse(fs.readFileSync(lockPath, "utf8")); } catch {}
+        if (canReclaimAssetLock(owner, Date.now() - fs.statSync(lockPath).mtimeMs)) {
           fs.rmSync(lockPath, { force: true });
           continue;
         }
       } catch {}
-      update("queued", "其他人物资产正在生成，正在排队");
+      db.prepare("UPDATE character_asset_jobs SET stage=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'").run("其他人物资产正在生成，正在排队", jobId);
       await delay(3000);
     }
   }
 }
 
+async function execute() {
 try {
-  if (!fs.existsSync(codexJs)) throw new Error("未找到 Codex CLI，角色资产任务已保留，可稍后重试或手工上传");
   await acquireGlobalLock();
-  update("running", "正在调用 Codex imagegen");
-  const master = row.master_reference_id ? one("SELECT path FROM character_references WHERE id=? AND confirmed=1", row.master_reference_id) : null;
-  if (row.asset_type !== "face" && !master) throw new Error("已确认的身份母版不存在，请重新生成标准正脸");
+  const claimed = db.prepare("UPDATE character_asset_jobs SET status='running',stage=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='queued'").run("正在认领人物资产任务", jobId);
+  if (!claimed.changes) return;
+  if (!["sd", "codex-imagegen"].includes(row.provider)) throw new Error("不支持的人物资产提供方");
+  if (row.provider === "codex-imagegen" && !fs.existsSync(codexJs)) throw new Error("未找到 Codex CLI，角色资产任务已保留，可稍后重试或手工上传");
+  update("running", row.provider === "sd" ? "正在连接本地 SD" : "正在调用 Codex imagegen");
+  const master = row.asset_type !== "face" ? one("SELECT id,path FROM character_references WHERE character_id=? AND type='face' AND confirmed=1 ORDER BY id DESC LIMIT 1", row.character_id) : null;
+  if (row.asset_type !== "face" && (!master || master.id !== row.master_reference_id)) throw new Error("本人已确认的身份母版不存在或已改变，请重新创建该资产任务");
+  if (row.provider === "sd") {
+    const base = (process.env.SD_WEBUI_URL || "http://127.0.0.1:7860").replace(/\/$/, "");
+    const get = async suffix => {
+      const result = await fetch(base + suffix, { signal: AbortSignal.timeout(10000) });
+      if (!result.ok) throw new Error(`SD 能力查询失败：${result.status}`);
+      return result.json();
+    };
+    const progress = await get("/sdapi/v1/progress?skip_current_image=true");
+    if (progress.state?.job) throw new Error("SD 正在生成其他图片，请完成后重试人物资产");
+    // One candidate per request keeps local CPU use bounded; users can rerun.
+    const [models, modules, options] = await Promise.all([
+      master ? get("/controlnet/model_list") : Promise.resolve({}),
+      master ? get("/controlnet/module_list?alias_names=true") : Promise.resolve({}),
+      get("/sdapi/v1/options"),
+    ]);
+    const payload = characterAssetSdPayload(row, { masterImage: master ? fs.readFileSync(path.resolve(root, master.path)).toString("base64") : null, models: models.model_list, modules: modules.module_list });
+    const audit = { provider: "sd", jobId, masterReferenceId: row.master_reference_id, checkpoint: options.sd_model_checkpoint, request: { ...payload, alwayson_scripts: payload.alwayson_scripts ? { ControlNet: { args: payload.alwayson_scripts.ControlNet.args.map(({image,...unit})=>({...unit,referencePath:master.path})) } } : undefined }, status: "requested" };
+    const auditPath = path.join(jobDir, `asset-job-${jobId}-sd.json`);
+    fs.writeFileSync(auditPath, JSON.stringify(audit, null, 2));
+    update("running", "SD 正在生成人物资产候选，完成后待用户选择");
+    const result = await generateCharacterAssetSd(base, payload);
+    const destination = path.join(outputDir, `${row.asset_type}-job-${jobId}-1.png`);
+    fs.writeFileSync(destination, result.image, { flag: "wx" });
+    db.prepare("INSERT INTO character_asset_candidates(job_id,character_id,asset_type,path) VALUES(?,?,?,?)").run(jobId, row.character_id, row.asset_type, path.relative(root, destination).replaceAll("\\", "/"));
+    fs.writeFileSync(auditPath, JSON.stringify({...audit,status:"candidate_created",info:result.info,semanticStatus:"awaiting_user_selection"},null,2));
+  } else {
   const count = row.asset_type === "face" ? 3 : 2;
   for (let index = 1; index <= count; index++) {
     update("running", `正在生成候选 ${index}/${count}`);
@@ -112,12 +146,20 @@ try {
     if (!validPng(destination)) throw new Error("角色候选图校验失败");
     db.prepare("INSERT INTO character_asset_candidates(job_id,character_id,asset_type,path) VALUES(?,?,?,?)").run(jobId, row.character_id, row.asset_type, path.relative(root, destination).replaceAll("\\", "/"));
   }
+  }
   update("completed", "候选已生成，等待确认");
 } catch (error) {
   update("failed", "生成失败", error instanceof Error ? error.message : String(error));
+  const auditPath = path.join(jobDir, `asset-job-${jobId}-sd.json`);
+  if (row.provider === "sd" && fs.existsSync(auditPath)) {
+    const audit = JSON.parse(fs.readFileSync(auditPath, "utf8"));
+    fs.writeFileSync(auditPath, JSON.stringify({...audit,status:"failed",error:error instanceof Error ? error.message : String(error)},null,2));
+  }
 } finally {
   try {
     const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
     if (lock.pid === process.pid) fs.rmSync(lockPath, { force: true });
   } catch {}
 }
+}
+await execute();

@@ -1,3 +1,9 @@
+import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
+import {actionIntent,explicitHandMode} from "./pose-action-semantics";
+import {extraTemplateFromText} from "./pose-v3/action-catalog";
+import { englishTime } from "./story-time";
+import { isGenericLocation, resolveStoryLocation } from "./story-location";
+import { storyGazeFallback } from "./story-gaze";
 import type {
   Asset,
   Character,
@@ -15,6 +21,7 @@ import {
 } from "./pose-v2";
 import { buildPoseControlV3 } from "./pose-v3";
 import { rankInteractionPropCandidates } from "./interaction-prop";
+import { isNarrativeActionInstruction, resolveActionDescription } from "./action-description";
 
 const placeholders = [
   "natural storytelling action",
@@ -37,31 +44,44 @@ const isPlaceholder = (value: string) =>
   /^gentle, natural expression(?:, smile)?$/i.test(clean(value));
 const has = (value: string, pattern: RegExp) =>
   pattern.test(value.toLowerCase());
-const inferGazeFromAction = (action: string) => {
+export const inferGazeFromAction = (action: string) => {
   const source=clean(action).toLowerCase();
   if(/phone|smartphone|screen|texting|message/.test(source))return "head tilted slightly down, eyes focused on the smartphone screen, pupils directed downward, no eye contact with camera";
   if(/book|page|reading|document|letter/.test(source))return "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera";
-  if(/offer|hand(?:ing)?|receive|accept|reach/.test(source))return "eyes focused on the shared prop and the other person's hands, no eye contact with camera";
+  if(/\b(?:offer(?:ing|ed|s)?|receiv(?:e|ing|ed|es)|accept(?:ing|ed|s)?|hand(?:ing|ed|s)?\s+(?:over|to))\b/.test(source))return "eyes focused on the handover target, no eye contact with camera";
+  if(/\b(?:reach(?:ing|ed|es)?|pick(?:ing|ed|s)?|grasp(?:ing|ed|s)?|grab(?:bing|bed|s)?)\b/.test(source))return "eyes focused on the object being reached for, no eye contact with camera";
   if(/walk|run|move|leave|enter/.test(source))return "looking toward the direction of movement, no eye contact with camera";
   return "eyes focused on the current action target, no eye contact with camera";
 };
+export const inferHandsFromAction = (action: string) => {
+  const source = clean(action);
+  if (/hands out of frame/i.test(source)) return "hands out of frame";
+  if (/\b(?:reach(?:ing|ed|es)?|pick(?:ing|ed|s)?|grasp(?:ing|ed|s)?|grab(?:bing|bed|s)?|hold(?:ing|s)?|held|carry(?:ing)?|offer(?:ing|s)?|receiv(?:e|ing)|operat(?:e|ing)|push(?:ing)?|pull(?:ing)?)\b/i.test(source))
+    return "acting hands visible and following the described action";
+  return "hands naturally positioned for the described action and framing";
+};
 export const expressionPrompt = (value: string, fallback = "readable story-appropriate expression") => {
   const source = clean(value);
-  if (/happy|joy|excited|delighted|期待|开心|高兴|惊喜/i.test(source))
+  if (/^(?:happy|joy|joyful|excited|delighted|期待|开心|高兴|惊喜)$/i.test(source))
     return "genuine happy anticipation, warm open smile, raised cheeks, bright engaged eyes, clearly readable joyful expression";
-  if (/surpris|惊讶|震惊/i.test(source))
+  if (/^(?:surprise|surprised|惊讶|震惊)$/i.test(source))
     return "clearly readable surprised expression, raised brows, widened eyes, slightly parted lips";
-  if (/worried|concern|anxious|担心|焦虑/i.test(source))
+  if (/^(?:worried|concern|concerned|anxious|担心|焦虑)$/i.test(source))
     return "clearly readable worried expression, gently knitted brows, tense attentive eyes";
-  if (/sad|悲伤|难过/i.test(source))
+  if (/^(?:sad|悲伤|难过)$/i.test(source))
     return "clearly readable sad expression, softened eyes, downturned mouth, restrained emotion";
-  if (/angry|怒|生气/i.test(source))
+  if (/^(?:angry|怒|生气)$/i.test(source))
     return "clearly readable angry expression, knitted brows, focused intense eyes";
   return source ? `${source}, clearly readable facial expression` : fallback;
 };
-const explicitlyAllowsCameraGaze=(value:string)=>!/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(value)&&/(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(value);
+const explicitlyAllowsCameraGaze=(value:string)=> {
+  const forbidden = /(?:no|not|never|without|avoid)\s+(?:forced\s+)?(?:eye contact with (?:the )?(?:viewer|camera)|(?:looking|gazing)\s+(?:directly\s+)?(?:at|towards?)\s+(?:the )?(?:viewer|camera))/i.test(value);
+  return !forbidden && /(?:looking|gazing)\s+(?:directly\s+)?(?:at|towards?)\s+(?:the )?(?:viewer|camera)|eye contact with (?:the )?(?:camera|viewer)/i.test(value);
+};
 
 export type InteractionContract = {
+  actionPlan?:StoryActionContract;
+  actionRelationAudit?:import("./pose-v3/action-relations").ActionRelationAudit;
   relationId: string;
   required: boolean;
   characterId: string;
@@ -75,7 +95,7 @@ export type InteractionContract = {
   gazeTarget: PoseGazeTarget;
   shape: "portrait_rect"|"landscape_rect"|"cylinder"|"umbrella"|"bag"|"dish"|"elongated";
   handMode: "one"|"two";
-  purpose: "inspect"|"read"|"watch"|"capture"|"scan"|"call"|"drink"|"carry"|"operate"|"offer"|"place";
+  purpose: "inspect"|"read"|"watch"|"capture"|"scan"|"call"|"drink"|"carry"|"operate"|"offer"|"place"|"pick";
   orientation: "portrait"|"landscape"|"upright"|"contextual"|"not_applicable";
   viewerSurface: "back"|"screen"|"side"|"contextual";
   gazeMode: "object"|"work_point"|"target"|"independent";
@@ -147,7 +167,7 @@ export function derivePoseActionPlan(shot: Shot, characterId = shot.characterIds
     look?.gazeEn || "",
     look?.handsEn || "",
     shot.actionEn,
-  ].filter(Boolean);
+  ].filter(value => Boolean(value) && !isNarrativeActionInstruction(value));
   const contextParts = [
     shot.description,
     ...(shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts || [] : []),
@@ -203,6 +223,8 @@ export function deriveShotRiskProfile(shot: Shot): ShotRiskProfile {
 }
 
 const interactionObjects: Array<{pattern:RegExp; object:string; affordance:string;y:number;shape:InteractionContract["shape"];handMode:InteractionContract["handMode"]}> = [
+  {pattern:/door|window|drawer|button|switch|knob|keyboard|门|窗|抽屉|按钮|旋钮|键盘/i,object:"environment fixture",affordance:"hand contacts the declared operating point of the fixed fixture",y:.46,shape:"elongated",handMode:"one"},
+  {pattern:/spoon|勺/i,object:"spoon",affordance:"working end approaches the mouth",y:.24,shape:"elongated",handMode:"one"},
   {pattern:/smartphone|cell ?phone|mobile phone|phone screen|texting|phone|手机|移动电话|设备|device/i,object:"smartphone",affordance:"held securely with readable hand-object contact",y:.58,shape:"portrait_rect",handMode:"two"},
   {pattern:/book|novel|magazine|document|letter|page|reading/i,object:"book or document",affordance:"supported by visible hands at a readable angle",y:.6,shape:"landscape_rect",handMode:"two"},
   {pattern:/cup|mug|glass|bottle|drink|coffee|tea/i,object:"drink container",affordance:"securely held by at least one visible hand",y:.5,shape:"cylinder",handMode:"one"},
@@ -294,6 +316,9 @@ const moveGazeTargetWithObject = (gazeTarget: PoseGazeTarget, previousCenter: Po
 };
 
 export function deriveInteractionContract(shot: Shot, characterId?: string): InteractionContract {
+  characterId = characterId || shot.characterIds[0];
+  // Global scene facts do not establish ownership in a multi-character shot.
+  const useSceneFallback = shot.characterIds.length <= 1;
   const planned=shot.visualSpecConfirmed?shot.visualSpec?.characters.find((item)=>!characterId||item.characterId===characterId):undefined;
   const plannedInteraction = shot.visualSpecConfirmed
     ? (shot.visualSpec?.interactions || []).find((item) => item.actorCharacterId === (characterId || shot.characterIds[0]) && item.propId)
@@ -302,17 +327,15 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const look=characterId?shot.characterLooks?.[characterId]:undefined;
   const relationActionText = plannedInteraction && "action" in plannedInteraction
     ? plannedInteraction.action
-    : look?.actionEn || planned?.action || shot.actionEn;
+    : resolveActionDescription(look?.actionEn, planned?.action, useSceneFallback ? shot.actionEn : "");
   const source=unique([
     plannedInteraction?.propId || "",
     relationActionText,
     look?.actionEn||"", look?.gazeEn||"", look?.handsEn||"", planned?.action||"", planned?.actionTarget||"",
-    planned?.gazeTarget||"", planned?.hands||"", shot.actionEn, shot.description,
-    ...(shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts||[]:[]),
-  ]).join("; ");
-  const structuredProp = plannedInteraction?.propId
-    || shot.visualSpec?.interaction?.propId
-    || "";
+    planned?.gazeTarget||"", planned?.hands||"", ...(useSceneFallback ? [shot.actionEn, shot.description] : []),
+    ...(useSceneFallback && shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts||[]:[]),
+  ].filter(value => !isNarrativeActionInstruction(value))).join("; ");
+  const structuredProp = plannedInteraction?.propId || "";
   const relationContactText = plannedInteraction ? [
     "contactPoints" in plannedInteraction ? plannedInteraction.contactPoints.join(" ") : "",
     "contactPoint" in plannedInteraction ? plannedInteraction.contactPoint : "",
@@ -322,8 +345,8 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     action: relationActionText,
     contact: relationContactText,
     gaze: look?.gazeEn || planned?.gazeTarget || "",
-    facts: shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts.join(" ") || "" : "",
-    context: `${shot.description} ${shot.compositionEn}`,
+    facts: useSceneFallback && shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts.join(" ") || "" : "",
+    context: useSceneFallback ? `${shot.description} ${shot.compositionEn}` : "",
     targetIsCharacter: Boolean(plannedInteraction?.targetCharacterId),
   })[0]?.propId || "";
   const resolvedProp = structuredProp || rankedProp;
@@ -339,7 +362,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     if (resolvedProp) {
       const objectCenter = { x: positionCenter, y: .58 };
       const geometry = interactionGeometry({characterId:characterId||"",propId:resolvedProp,object:resolvedProp,orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
-      return {relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]};
+      return attachStoryActionContract({relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]},relationActionText,plannedInteraction?.phase||"",Boolean(plannedInteraction));
     }
     const objectCenter = { x: positionCenter, y: .58 };
     const geometry = interactionGeometry({characterId:characterId||"",propId:"",object:"story-object",orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
@@ -348,16 +371,24 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   // Preserve the concrete tool noun for downstream object passes (scissors,
   // screwdriver, etc.); broad semantic groups keep their established display
   // label unless a confirmed relation supplied an explicit propId.
-  const storyObject = structuredProp || (match.object === "handheld tool" && rankedProp && rankedProp !== "handheld_tool" ? rankedProp : match.object);
+  const storyObject = structuredProp || (["handheld tool","environment fixture","spoon"].includes(match.object) && rankedProp && rankedProp !== "handheld_tool" ? rankedProp : match.object);
   let purpose:InteractionContract["purpose"]="inspect",orientation:InteractionContract["orientation"]="contextual",viewerSurface:InteractionContract["viewerSurface"]="contextual",gazeMode:InteractionContract["gazeMode"]="object";
   let handMode=match.handMode,shape=match.shape,y=match.y,affordance=match.affordance;
+  const localActionClause=relationActionText.split(/\b(?:while|and)\b|[,;]/i).find(c=>match.pattern.test(c))||relationActionText;
+  const intent=actionIntent(localActionClause);
   const phone=/smartphone/.test(match.object);
   const phoneReadEvidence=/\b(?:read(?:ing)?|message|notification|texting)\b|(?:eyes?|gaze|pupils?)\s+(?:focused|directed|looking)?[^;,.]*\b(?:phone|smartphone)?\s*screen\b|\b(?:phone|smartphone)\s+screen\b/i.test(source);
   const twoHandFrontEvidence=/\b(?:both|two)\s+(?:visible\s+)?hands?\b[^;,.]*\b(?:hold(?:ing|s)?|operate|use|support)/i.test(source)&&/\b(?:in front of (?:the )?(?:chest|torso)|at (?:the )?(?:chest|torso)|screen)\b/i.test(source);
   const explicitPhoneCall=/\b(?:phone|telephone)?\s*call(?:ing)?\b|\b(?:making|taking|answering|on)\s+(?:a\s+)?(?:phone\s+)?call\b|\b(?:phone|smartphone|device)\b[^;,.]*\b(?:beside|against|to|at)\s+(?:her|his|their|the)?\s*ear\b|\b(?:listening|talking|speaking)\b[^;,.]*\b(?:phone|smartphone)\b/i.test(source);
   const screenEvidence=/phone screen (?:shows|displays)|notification (?:card|banner) visible|capture both face and phone screen|screen readable to (?:the )?viewer/i.test(source);
   const objectTransferEvidence = plannedInteraction?.type === "object_transfer" || /\b(?:hand over|handing over|give|giving|pass|passing|offer|offering)\b|递给|递出|交给|交接|传递/i.test(relationActionText);
-  if(phone&&(phoneReadEvidence||twoHandFrontEvidence)){purpose=phoneReadEvidence?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";handMode="two";shape="portrait_rect";affordance=screenEvidence?"held vertically with both hands at a three-quarter angle, the character can read the screen while a parcel notification card and icon remain visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso with both hands, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
+  const carriedWithoutUse = !phoneReadEvidence && !explicitPhoneCall && !objectTransferEvidence
+    && !/\b(?:read|reading|watch|watching|scan|scanning|photograph|texting|operate|operating|write|writing|drink|drinking)\b/i.test(relationActionText)
+    && /\b(?:carry|carrying)\b|\b(?:at|by)\s+(?:her|his|their|the)\s+side\b|抱|提着/i.test(`${relationActionText}; ${relationContactText}`);
+  if(intent==="place"||intent==="pick"||intent==="reach"){purpose=intent==="place"?"place":"pick";gazeMode="object";handMode="one";affordance="hand approaches the object at its declared support, without assuming reading";}
+  else if(["open","close","operate_environment","push","pull"].includes(intent||"")){purpose="operate";gazeMode="work_point";handMode=explicitHandMode(source)||"one";affordance="hand at the declared operating point; mechanism constraints require an action relation plan";}
+  else if(carriedWithoutUse){purpose="carry";gazeMode="independent";orientation=phone?"portrait":"contextual";viewerSurface="contextual";affordance="carried in the declared hand position, with the free hand continuing its separate story action; not raised for reading or operating";}
+  else if(phone&&(phoneReadEvidence||twoHandFrontEvidence)){purpose=phoneReadEvidence?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";handMode="two";shape="portrait_rect";affordance=screenEvidence?"held vertically with both hands at a three-quarter angle, the character can read the screen while a parcel notification card and icon remain visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso with both hands, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(phone&&explicitPhoneCall){purpose="call";orientation="portrait";viewerSurface="side";gazeMode="independent";handMode="one";y=.34;affordance="held beside one ear by one hand, with the device side edge readable and the other hand free";}
   else if(phone&&/watch(?:ing)? (?:a )?video|video playback|movie|landscape mode/i.test(source)){purpose="watch";orientation="landscape";viewerSurface="back";gazeMode="object";handMode="two";shape="landscape_rect";affordance="held horizontally in landscape orientation with both hands, screen facing the character and back casing facing the viewer";}
   else if(phone&&/photo|photograph|camera|record(?:ing)?|film(?:ing)?|selfie/i.test(source)){purpose="capture";orientation="contextual";viewerSurface="screen";gazeMode="object";handMode=/both hands|two hands/i.test(source)?"two":"one";y=.46;affordance="raised toward the intended subject, camera side facing the subject and screen side facing the character";}
@@ -365,14 +396,23 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   else if(phone){purpose=/read|message|notification|texting/i.test(source)?"read":"inspect";orientation="portrait";viewerSurface=screenEvidence?"screen":"back";gazeMode="object";shape="portrait_rect";affordance=screenEvidence?"held vertically at a three-quarter angle so the character can read the notification while the parcel icon remains visible to the viewer, no legible text":"held vertically in portrait orientation in front of the torso, screen facing the character and back casing facing the viewer, device body hiding most fingers while thumbs and outer finger silhouettes remain readable";}
   else if(/drink|sip|喝/i.test(relationActionText)&&/drink container/.test(match.object)){purpose="drink";orientation="upright";viewerSurface="side";gazeMode="independent";handMode="one";y=.4;affordance="held upright by one hand with its rim approaching the mouth";}
   else if(objectTransferEvidence){purpose="offer";orientation="contextual";viewerSurface="contextual";gazeMode="target";}
-  else if(/handheld tool/.test(match.object)){purpose="operate";orientation="contextual";viewerSurface="side";gazeMode="work_point";affordance="gripped at the handle by one visible hand, working end contacting the intended work point and clearly separated from the fingers";}
+  else if(/handheld tool|environment fixture/.test(match.object)){purpose="operate";orientation="contextual";viewerSurface="side";gazeMode="work_point";affordance="gripped at the handle by one visible hand, working end contacting the intended work point and clearly separated from the fingers";}
   else if(/carry|carrying|hold against|抱|提着/i.test(relationActionText)){purpose="carry";orientation="contextual";viewerSurface="contextual";gazeMode="independent";}
-  else if(/place|put|set down|放/i.test(relationActionText)){purpose="place";orientation="contextual";viewerSurface="contextual";gazeMode="object";}
+  else if(/plac(?:e|ing)|put|set down|放/i.test(relationActionText)){purpose="place";orientation="contextual";viewerSurface="contextual";gazeMode="object";}
   else if(/book|document/.test(match.object)){purpose="read";orientation="landscape";viewerSurface="contextual";gazeMode="object";}
-  if (/left hand|right hand|左手|右手/i.test(relationContactText) && !/both|two|双手/i.test(relationContactText)) handMode = "one";
-  const savedGaze=englishVisual(look?.gazeEn||planned?.gazeTarget);
+  const meaningfulContactText=relationContactText.replace(/both visible hands follow the described action|both visible hands following the described action/gi,"");
+  const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(relationActionText);
+  if(declaredMode)handMode=declaredMode;
+  const savedGaze=englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId));
+  // A carried object does not own the actor's gaze. Keep explicit direction
+  // consistent in natural language and the structured target used by Pose/passes.
+  const gazeDirectionText = savedGaze.replace(/\b(?:no eye contact with (?:the )?(?:camera|viewer)|not looking (?:at|towards?) (?:the )?(?:camera|viewer))\b/gi, "");
+  const explicitExternalGaze = /\b(?:path|road|street|window|horizon|ahead|forward|companion|viewer|camera|away)\b/i.test(gazeDirectionText)
+    && !/\b(?:screen|phone|smartphone|book|document|work point|contact point)\b/i.test(savedGaze);
+  if (explicitExternalGaze) gazeMode = "independent";
+  else if (savedGaze && match.pattern.test(savedGaze) && !/\b(?:away from|not looking at)\b/i.test(savedGaze)) gazeMode = "object";
   const inferredGaze=gazeMode==="independent"?"natural gaze follows the surrounding story action, no forced eye contact with camera":gazeMode==="work_point"?"head and eyes focused on the precise point where the tool contacts its target, no eye contact with camera":gazeMode==="target"?"head and eyes focused on the interaction target, no eye contact with camera":inferGazeFromAction(source);
-  const gaze=!savedGaze||/current (?:story focus|action target)|looking forward/i.test(savedGaze)||((gazeMode==="object"||gazeMode==="work_point")&&!/head|pupil|downward|contact point/i.test(savedGaze))?inferredGaze:savedGaze;
+  const gaze=!savedGaze||/^(?:looking toward (?:the )?)?current (?:story focus|action target)$/i.test(savedGaze)?inferredGaze:savedGaze;
   const orientationText=`${orientation} orientation determined by the current action`;
   const surfaceText=viewerSurface==="contextual"?"visible surface follows camera and action geometry":`${viewerSurface} surface is the side readable to the viewer`;
   const relationId=`prop:${characterId||""}:${storyObject}:${purpose}`;
@@ -386,7 +426,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     ? { xStart: targetCharacterIndex / Math.max(1, shot.characterIds.length), xEnd: (targetCharacterIndex + 1) / Math.max(1, shot.characterIds.length) }
     : undefined);
   const gazeTarget = gazeTargetForInteraction({kind:gazeMode,objectCenter,objectInstanceId:geometry.objectInstanceId,targetCharacterId,targetRegion,surfaceNormal:geometry.surfacePlan.normal});
-  return {
+  const contract:InteractionContract = {
     relationId,required:true,characterId:characterId||"",targetCharacterId,relationType:plannedInteraction?.type || undefined,object:storyObject,affordance,region,
     objectCenter,gaze,gazeTarget,shape,handMode,purpose,orientation,viewerSurface,gazeMode,
     ...geometry,
@@ -394,11 +434,33 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
       `(required story prop clearly visible: ${storyObject}:1.38)`,
       `(interaction purpose ${purpose}; ${affordance}:1.32)`,orientationText,surfaceText,
       `(exactly one ${storyObject} story instance; preserve the declared object surface and exclusion regions:1.24)`,
-      `(hands physically contact and operate the ${storyObject}; wrists and the object-hand contact are clearly readable:1.3)`,
+      `(${handMode === "one" ? "the declared hand physically contacts" : "both hands physically contact"} the ${storyObject}; wrists and the object-hand contact are clearly readable:1.3)`,
       gazeMode!=="independent"?`(${gaze}:1.35)`:gaze,
     ],
     negative:[`missing ${storyObject}`,`hidden ${storyObject}`,`duplicate ${storyObject}`,`extra ${storyObject} outside the story instance`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
   };
+  return attachStoryActionContract(contract,localActionClause,plannedInteraction?.phase||"",Boolean(plannedInteraction));
+}
+
+function attachStoryActionContract(contract:InteractionContract,action:string,phaseText:string,confirmed:boolean):InteractionContract {
+  const actionPlan=inferStoryActionContract(contract,action,phaseText,confirmed);
+  if(!actionPlan)return contract;
+  contract={...contract,purpose:actionPlan.actionId==='pick'?'pick':actionPlan.actionId==='place'?'place':contract.purpose};
+  const explicitMode=explicitHandMode(action);
+  if(explicitMode==='one'){
+    const hand=/left hand|左手/i.test(action)?'left':/right hand|右手/i.test(action)?'right':contract.activeHand==='left'?'left':'right';
+    contract={...contract,handMode:'one',activeHand:hand,contactAnchors:contract.contactAnchors.filter(a=>a.hand===hand)};
+  }
+  if(actionPlan.actionId==='pick'&&!confirmed&&!explicitHandMode(action)){
+    const hand=contract.activeHand==='left'?'left':'right';
+    contract={...contract,handMode:'one',activeHand:hand,contactAnchors:contract.contactAnchors.filter(a=>a.hand===hand)};
+  }
+
+  const target=actionPlan.geometry.objectCenter||contract.objectCenter,grip=actionPlan.geometry.gripPoint;
+  return {...contract,actionPlan,objectCenter:target,gazeTarget:contract.gazeTarget.kind==='independent'?contract.gazeTarget:{...contract.gazeTarget,point:actionPlan.geometry.workPoint||target},
+    contactAnchors:grip?contract.contactAnchors.map(a=>({...a,x:grip.x+(contract.handMode==='two'?(a.hand==='left'?.025:-.025):0),y:grip.y})):contract.contactAnchors,
+    positive:[...contract.positive.filter(t=>!/hand.*(?:contact|wrist)|interaction purpose/i.test(t)),...storyActionTerms(actionPlan)],
+    negative:actionPlan.phase==='anticipation'||(actionPlan.actionId==='place'&&actionPlan.phase==='follow_through')?contract.negative.filter(t=>!/empty hands|hands unrelated|folded hands/.test(t)):contract.negative};
 }
 const unique = (values: string[]) => [
   ...new Set(values.map(clean).filter(Boolean)),
@@ -500,6 +562,27 @@ export function validateFinalPrompt(prompt: string, interaction?: InteractionCon
   return { valid: errors.length === 0, errors };
 }
 
+/** Check each actor independently: another actor's hidden hands are not a conflict. */
+export function validateShotHandVisibility(shot: Shot): string[] {
+  return shot.characterIds.flatMap((id, index) => {
+    const planned = shot.visualSpecConfirmed
+      ? shot.visualSpec?.characters.find((item) => item.characterId === id)
+      : undefined;
+    const hands = shot.characterLooks?.[id]?.handsEn || planned?.hands || "";
+    if (!/\b(?:both\s+)?hands\s+(?:are\s+)?out of frame\b/i.test(hands)) return [];
+    const required = deriveInteractionContracts(shot, id).some((item) => item.required && item.handMode);
+    return required ? [`第 ${index + 1} 个人物的手部要求为画外，但其必需道具交互要求可见手部；请调整手部要求或交互规格`] : [];
+  });
+}
+
+export function validateShotActionSpecificity(shot: Shot): string[] {
+  return shot.characterIds.flatMap((id, index) => {
+    const planned = shot.visualSpecConfirmed ? shot.visualSpec?.characters.find(item => item.characterId === id) : undefined;
+    const action = resolveActionDescription(shot.characterLooks?.[id]?.actionEn, planned?.action, shot.actionEn);
+    return isNarrativeActionInstruction(action) ? [`第 ${index + 1} 个人物仍使用分镜编排指令，缺少具体动作；请完善人物动作或生成并确认视觉规格`] : [];
+  });
+}
+
 export function deriveInteractionContracts(shot: Shot, characterId?: string): InteractionContract[] {
   const id = characterId || shot.characterIds[0] || "";
   const allPlanned = shot.visualSpecConfirmed ? (shot.visualSpec?.interactions || []).filter((item) => item.propId) : [];
@@ -516,10 +599,16 @@ export function deriveInteractionContracts(shot: Shot, characterId?: string): In
     const objectInstanceId = instanceKey(relation, globalIndex);
     const objectInstanceRelations = allPlanned.filter((item, itemIndex) => instanceKey(item, itemIndex) === objectInstanceId);
     const contactText = relation.contactPoints.join(" ");
-    const contactShift = /left hand|左手/i.test(contactText) ? -.055 : /right hand|右手/i.test(contactText) ? .055 : index * .08;
-    const objectCenter = { ...contract.objectCenter, x: clamp(contract.objectCenter.x + contactShift, .1, .9) };
+    // OpenPose's anatomical left is positive X in the canonical front-facing
+    // frame. A relation's array index is not a spatial instruction.
+    const hand = contract.handMode === "one" ? contract.contactAnchors[0]?.hand : null;
+    const atSide = contract.purpose === "carry" && /\b(?:at|by)\s+(?:her|his|their|the)\s+side\b|身侧|身体一侧/i.test(contactText);
+    const span = contract.region.xEnd - contract.region.xStart;
+    const contactShift = contract.actionPlan ? 0 : hand ? (hand === "left" ? 1 : -1) * span * (atSide ? .16 : .055) : 0;
+    const objectCenter = { ...contract.objectCenter, x: clamp(contract.objectCenter.x + contactShift, contract.region.xStart + span * .08, contract.region.xEnd - span * .08) };
+    const appliedShift = objectCenter.x - contract.objectCenter.x;
     const gazeTarget = moveGazeTargetWithObject(contract.gazeTarget, contract.objectCenter, objectCenter, objectInstanceId);
-    const contactAnchors = contract.contactAnchors.map((anchor) => ({ ...anchor, x: clamp(anchor.x + contactShift, .08, .92) }));
+    const contactAnchors = contract.contactAnchors.map((anchor) => ({ ...anchor, x: anchor.x + appliedShift }));
     const activeHand = contactAnchors.find((anchor) => anchor.role === "active")?.hand || (contract.handMode === "two" ? "both" : "right");
     const ownershipActors = [...new Set(objectInstanceRelations.flatMap((item) => [item.actorCharacterId, item.targetCharacterId].filter(Boolean)))];
     return { ...contract, relationId: `${relation.actorCharacterId}:${sharedObject}:${index + 1}`, targetCharacterId: relation.targetCharacterId || undefined, relationType: relation.type || undefined, objectCenter, gazeTarget, contactAnchors, activeHand, objectInstanceId, ownership: { actorCharacterIds: ownershipActors, ownerBefore: relation.ownershipBefore || null, ownerAfter: relation.ownershipAfter || null }, executor: /umbrella/i.test(sharedObject) && relation.type === "object_transfer" ? "umbrella_handoff" as const : "generic_prop" as const };
@@ -609,8 +698,8 @@ export function buildCanonicalGenerationPrompt(
     ? `${camera}, strict crop at the waist, no legs or full bodies`
     : camera;
   const countInvariant = characterCount === 1
-    ? "exactly one foreground adult woman, 1girl, solo"
-    : `exactly ${characterCount} clearly distinct foreground adult women`;
+    ? "exactly one foreground person, solo"
+    : `exactly ${characterCount} clearly distinct foreground people`;
   const prompt = [contract.value, framingInvariant, countInvariant, editorial ? `editorial visual details, ${editorial}` : ""].filter(Boolean).join(", ");
   const value = prompt.toLowerCase();
   const errors: string[] = [];
@@ -712,17 +801,8 @@ export const compactPrompt = (value: string, maxTerms = 75) => {
 };
 
 const timeVisual = (value: string) => {
-  const source = clean(value).toLowerCase();
-  if (!source) return "unknown time of day, lighting must be confirmed";
-  if (/夜|night|evening/.test(source))
-    return "nighttime, deep blue ambient sky, illuminated windows and practical lights, balanced cool ambient light and warm artificial light";
-  if (/黄昏|傍晚|sunset|dusk/.test(source))
-    return "late dusk, fading warm sunset, cool blue shadows, first practical lights turning on";
-  if (/清晨|黎明|dawn|morning/.test(source))
-    return "early morning, low soft sunlight, long gentle shadows, fresh cool ambient light";
-  if (/午后|afternoon/.test(source))
-    return "afternoon daylight, readable directional shadows, warm natural bounce light";
-  return "daytime, clear natural daylight, readable shadows and balanced ambient light";
+  if (!clean(value)) return "unknown time of day, lighting must be confirmed";
+  return englishTime(value) + ", preserve the declared scene lighting and light-source state";
 };
 
 export function suggestEnvironment(shot: Shot): EnvironmentConfig {
@@ -809,16 +889,25 @@ export function suggestEnvironment(shot: Shot): EnvironmentConfig {
         "steady visible rain with dense fine streaks, umbrella droplets and wet reflective surfaces",
       atmosphere: "humid cinematic rainy-day atmosphere with visible rainfall",
     });
+  // The explicit shot location must survive the rule fallback. Story text may
+  // mention another place (e.g. leaving the office for a pickup station).
+  const resolvedLocation = resolveStoryLocation(shot.scene, shot.sceneEn);
+  if (resolvedLocation) Object.assign(base, resolvedLocation);
+  else if (clean(shot.scene) && /[\u3400-\u9fff]/.test(shot.scene))
+    Object.assign(base, { locationType: "", location: "", foreground: "", midground: "", background: "" });
   for (const [key, value] of Object.entries(shot.environment || {}))
-    if (clean(String(value || "")))
+    if (clean(String(value || "")) && !(key === "location" && isGenericLocation(String(value))))
       (base as unknown as Record<string, string>)[key] = String(value);
   if (shot.visualSpecConfirmed && shot.visualSpec) {
     const spec = shot.visualSpec.scene;
+    Object.assign(base, {
+      locationType: "", location: "", foreground: "", midground: "",
+      background: (spec.anchors || []).join(", "), weather: "", timeVisual: "", keyLight: "",
+      ambientLight: "ambient illumination consistent with the declared scene lighting",
+      colorTemperature: "", atmosphere: "",
+      depth: "clear foreground, midground and background separation",
+    });
     if (clean(spec.location) && spec.location !== "unknown") base.location = spec.location;
-    if (spec.anchors?.length) {
-      base.midground = spec.anchors.slice(0, 2).join(", ");
-      base.background = spec.anchors.slice(2).join(", ") || base.background;
-    }
     if (clean(spec.weather) && spec.weather !== "unknown") base.weather = spec.weather;
     if (clean(spec.timeOfDay) && spec.timeOfDay !== "unknown") base.timeVisual = timeVisual(spec.timeOfDay);
     if (clean(spec.lighting) && spec.lighting !== "unknown") base.keyLight = spec.lighting;
@@ -885,14 +974,18 @@ function defaultLook(
     )
       ? shot.shoeId
       : "";
+  const plannedAssetId = (id: string | undefined, type: "outfit" | "shoes") =>
+    id && assets.some(asset => asset.id === id && asset.characterId === character.id && asset.type === type) ? id : "";
   return {
     outfitId:
       savedOutfitId ||
+      plannedAssetId(planned?.outfitId, "outfit") ||
       legacyOutfitId ||
       baseOutfit?.id ||
       "",
     shoeId:
       savedShoeId ||
+      plannedAssetId(planned?.shoeId, "shoes") ||
       legacyShoeId ||
       baseShoes?.id ||
       "",
@@ -906,16 +999,12 @@ function defaultLook(
         : index === 0
           ? "on the left side"
           : "on the right side"),
-    actionEn: saved.actionEn || planned?.action || shot.actionEn,
+    actionEn: resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn),
     expressionEn: saved.expressionEn || planned?.expression || shot.expressionEn,
-    gazeEn: saved.gazeEn || planned?.gazeTarget || inferGazeFromAction(saved.actionEn || planned?.action || shot.actionEn),
+    gazeEn: saved.gazeEn || planned?.gazeTarget || storyGazeFallback(shot, character.id) || inferGazeFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
     handsEn:
       saved.handsEn || planned?.hands ||
-      (/hands out of frame/i.test(shot.actionEn)
-        ? "hands out of frame"
-        : /hand|holding|arms?/i.test(shot.actionEn)
-          ? "hands follow the described action"
-          : "hands out of frame"),
+      inferHandsFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
   };
 }
 
@@ -980,7 +1069,7 @@ export function analyzeGenerationPrompt(
     (character) => !shot.characterIds.includes(character.id),
   );
   const hasMultiPersonStory =
-    /两个人|两人|二人|她们|他们|双方|一起并肩|陌生女孩|two (?:women|girls|characters|people)|both women|another woman/i.test(
+    /两个人|两人|二人|她们|他们|双方|一起并肩|陌生女孩|two (?:women|men|girls|boys|characters|people)|both (?:women|men)|another (?:woman|man)/i.test(
       storyText,
     );
   if (missingMentioned.length) {
@@ -992,18 +1081,20 @@ export function analyzeGenerationPrompt(
     blockingErrors.push("剧情明确是多人场景，但分格只绑定了 1 个人物");
   }
   errors.push(...blockingErrors);
+  errors.push(...validateShotHandVisibility(shot));
+  errors.push(...validateShotActionSpecificity(shot));
   const env = suggestEnvironment(shot);
   const anchors = [env.foreground, env.midground, env.background].filter(
     (value) => clean(value),
   );
   const environmentChecks = [
-    clean(env.location) ? "地点" : "缺少地点",
+    !isGenericLocation(env.location) ? "地点" : "缺少地点",
     anchors.length >= 2 ? "环境锚点" : "环境锚点不足",
     clean(env.depth) ? "空间层次" : "缺少空间层次",
     clean(env.timeVisual) ? "时间" : "缺少时间",
     clean(env.keyLight) && clean(env.ambientLight) ? "光线" : "光线不足",
   ];
-  if (!clean(env.location)) errors.push("请填写具体地点");
+  if (isGenericLocation(env.location)) errors.push("地点尚未编译为具体英文场景，请细化视觉规格或填写英文地点，不能使用通用环境占位词");
   if (anchors.length < 2) errors.push("中远景至少需要两个环境锚点");
   if (!clean(env.depth)) errors.push("请填写前中后景或空间纵深");
   const looks = shot.characterIds.map((id, index) => {
@@ -1035,7 +1126,7 @@ export function analyzeGenerationPrompt(
     count === 1 &&
     has(
       `${shot.actionEn} ${shot.compositionEn}`,
-      /\b2girls\b|two women|two characters/,
+      /\b2(?:girls|boys)\b|two (?:women|men|people|characters)/,
     )
   )
     errors.push("单人分格包含多人描述");
@@ -1043,7 +1134,7 @@ export function analyzeGenerationPrompt(
     warnings.push("多人 SD1.5 直接生成仍有串脸风险，请重点检查草稿");
   if (
     count > 1 &&
-    has(shot.compositionEn, /one woman|single woman|solo|1girl/)
+    has(shot.compositionEn, /one (?:woman|man|person)|single (?:woman|man|person)|solo|1(?:girl|boy)/)
   )
     errors.push("多人分格仍包含单人构图描述");
   const first = looks[0];
@@ -1055,8 +1146,8 @@ export function analyzeGenerationPrompt(
     characterCount: count,
     countRule:
       count === 1
-        ? "1girl, solo, single person, one adult woman"
-        : `${count}girls, exactly ${count} distinct adult women`,
+        ? "solo, single person, exactly one person"
+        : `exactly ${count} distinct people`,
     action: clean(first?.actionEn || shot.actionEn),
     expression: clean(first?.expressionEn || shot.expressionEn),
     gaze: clean(first?.gazeEn || "") ? "已明确" : "未明确",
@@ -1088,9 +1179,9 @@ export function suggestPromptFixes(
       ...current,
       actionEn: isPlaceholder(current.actionEn)
         ? isReceiver
-          ? "turning toward the woman on the right and reaching to accept the offered umbrella"
+          ? "turning toward the person on the right and reaching to accept the offered umbrella"
           : isGiver
-            ? "leaning slightly toward the woman on the left and offering her an open umbrella"
+            ? "leaning slightly toward the person on the left and offering the other person an open umbrella"
         : has(shot.cameraEn, /close-?up/)
           ? "upper body turned slightly three-quarter toward camera, shoulders relaxed"
           : "standing upright in three-quarter view with shoulders relaxed"
@@ -1104,9 +1195,9 @@ export function suggestPromptFixes(
         : current.expressionEn,
       gazeEn: isPlaceholder(current.gazeEn)
         ? isReceiver
-          ? "looking at the woman offering the umbrella"
+          ? "looking at the person offering the umbrella"
           : isGiver
-            ? "looking at the woman receiving the umbrella"
+            ? "looking at the person receiving the umbrella"
             : inferGazeFromAction(current.actionEn)
         : current.gazeEn,
       handsEn: isPlaceholder(current.handsEn)
@@ -1114,7 +1205,7 @@ export function suggestPromptFixes(
           ? "one hand reaching toward the umbrella handle"
           : isGiver
             ? "one hand visibly extending the umbrella handle"
-            : "hands out of frame"
+            : inferHandsFromAction(current.actionEn)
         : current.handsEn,
     };
   });
@@ -1132,11 +1223,11 @@ export function suggestPromptFixes(
       : shot.sceneEn,
     compositionEn:
       shot.characterIds.length > 1 &&
-      has(shot.compositionEn, /one woman|single woman|solo|1girl/)
-        ? `${shot.characterIds.length} distinct women separated in the frame with readable space between them`
+      has(shot.compositionEn, /one (?:woman|man|person)|single (?:woman|man|person)|solo|1(?:girl|boy)/)
+        ? `${shot.characterIds.length} distinct people separated in the frame with readable space between them`
         : isPlaceholder(shot.compositionEn || "")
       ? shot.characterIds.length > 1
-        ? `${shot.characterIds.length} distinct women separated in the frame with readable space between them`
+        ? `${shot.characterIds.length} distinct people separated in the frame with readable space between them`
         : "balanced storytelling composition with readable spatial depth"
       : shot.compositionEn,
     cameraEn: cameraFromChinese[clean(shot.camera)] || clean(shot.cameraEn) || "medium shot",
@@ -1145,7 +1236,8 @@ export function suggestPromptFixes(
 
 const stripTraits = (appearance: string) =>
   unique(
-    appearance.split(",").filter((part) => !/(hair|eyes?)/i.test(part)),
+    appearance.split(",").map((part) => !/(hair|eyes?)/i.test(part) ? part
+      : part.match(/\b(?:(?:adult|young|elderly|middle-aged|teenage)\s+)?(?:man|woman|boy|girl|person|child)\b/i)?.[0] || ""),
   ).join(", ");
 
 export const resolveCharacterAssetDescription = (
@@ -1350,6 +1442,9 @@ function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContrac
 }
 
 const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
+  actionPlan:interaction.actionPlan,
+  shape: interaction.shape,
+  orientation: interaction.orientation,
   relationId: interaction.relationId,
   characterId: interaction.characterId,
   required: interaction.required,
@@ -1375,7 +1470,7 @@ const interactionForShotFraming = (interaction: InteractionContract, shot: Shot)
   // Keep one framing-derived plane as the fact source for the object, gaze and
   // both contacts so the later prop/hand/gaze passes cannot drift apart.
   const portableTwoHandUse = interaction.required && interaction.handMode === "two" && !/write|draw|point|cut/i.test(interaction.purpose);
-  if (!upperBody || !portableTwoHandUse || shot.characterIds.length !== 1) return interaction;
+  if (interaction.actionPlan || !upperBody || !portableTwoHandUse || shot.characterIds.length !== 1) return interaction;
   const contactY = /medium close-up|chest-up|head-and-shoulders/i.test(cameraText)
     ? .51
     : /waist-up/i.test(cameraText)
@@ -1431,7 +1526,7 @@ export function buildGenerationPrompt(
     env.ambientLight,
     env.colorTemperature,
     env.atmosphere,
-    shot.sceneEn,
+    shot.visualSpecConfirmed && shot.visualSpec ? "" : shot.sceneEn,
   ]);
   const chosenWeight =
     env.emphasis === "high" ? 1.22 : env.emphasis === "low" ? 1.05 : 1.12;
@@ -1475,7 +1570,7 @@ export function buildGenerationPrompt(
       look.eyeColorEn ? `(${look.eyeColorEn}:1.15)` : "",
       resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
         ? `(wearing exactly this selected outfit with the same garment type, cut, colors and layers: ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.45)`
-        : "coherent adult outfit",
+        : "outfit matching the character",
       resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) ||
         "matching practical footwear",
       interactionsForCharacter.map((item) => canonicalActionForInteraction(look.actionEn, item)).join(", "),
@@ -1504,16 +1599,16 @@ export function buildGenerationPrompt(
       ? shot.visualSpec.interactions.map((item) => `${item.type}, ${item.actorCharacterId} ${item.action} toward ${item.targetCharacterId || item.propId}, ${item.contactPoints.join(" and ")}, ${item.phase}`).join(", ") : "",
     sceneDetailBlock,
     quality.characterCount > 1 &&
-    has(shot.compositionEn, /one woman|single woman|solo|1girl/)
-      ? `${quality.characterCount} distinct women separated in the frame with readable space between them`
+    has(shot.compositionEn, /one (?:woman|man|person)|single (?:woman|man|person)|solo|1(?:girl|boy)/)
+      ? `${quality.characterCount} distinct people separated in the frame with readable space between them`
       : shot.compositionEn,
-    "natural adult anatomy, coherent pose, no text, no speech bubbles, no captions",
+    "natural anatomy consistent with the character, coherent pose, no text, no speech bubbles, no captions",
   ]).join(", "), close ? 58 : wide ? 82 : 72);
   const countNegative =
     quality.characterCount === 1
       ? "2girls, multiple girls, extra person, duplicate, clone, twins, split screen, collage, diptych, character sheet, turnaround sheet"
       : "extra person, duplicate character, cloned character, merged bodies, fused faces, swapped clothes";
-  const gazeNegative = shot.characterIds.some((id,index)=>{const character=characters.find((item)=>item.id===id);return character?!explicitlyAllowsCameraGaze(defaultLook(shot,character,index,assets).gazeEn):false;})
+  const gazeNegative = shot.characterIds.length > 0 && shot.characterIds.every((id,index)=>{const character=characters.find((item)=>item.id===id);return character?!explicitlyAllowsCameraGaze(defaultLook(shot,character,index,assets).gazeEn):false;})
     ? "looking at viewer, eye contact with camera, front-facing portrait gaze, pupils aimed at camera"
     : "";
   const environmentNegative = close
@@ -1526,7 +1621,7 @@ export function buildGenerationPrompt(
     : "";
   const negativePrompt = compactPrompt(unique([
     "(low quality, worst quality:1.4), (blurry:1.2), bad anatomy, bad hands, extra fingers, missing fingers",
-    "ugly, deformed, crossed eyes, asymmetrical eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors",
+    "ugly, deformed, crossed eyes, distorted face, unnatural expression, identity drift, inconsistent face, wrong hair color, wrong eye color, wrong garment category, wrong garment length, wrong clothing colors",
     earNegative,
     countNegative,
     gazeNegative,
@@ -1535,7 +1630,7 @@ export function buildGenerationPrompt(
     "blown highlights, overexposed face, clipped white clothing, unreadable facial expression",
     close ? "full body, full-length figure, visible legs, visible shoes, standing portrait" : "",
     wide ? "cropped feet, missing legs, floating limbs, unbalanced stance" : "",
-    "child, chibi, nsfw, 3d, realistic, monochrome, grayscale, text, letters, watermark, logo",
+    "chibi, nsfw, 3d, realistic, monochrome, grayscale, text, letters, watermark, logo",
     shot.negativePromptEn,
     ...characters
       .filter((character) => shot.characterIds.includes(character.id))
@@ -1582,32 +1677,31 @@ export function buildRegionalPrompt(
   const sharedInteraction = usePlannedInteraction
     ? plannedInteractions.map((item)=>`${item.type} involving ${item.propId || "a character target"}, actor ${item.actorCharacterId}, target ${item.targetCharacterId || item.propId}, action ${item.action}, contact at ${item.contactPoints.join(" and ")}, gaze toward ${item.gazeTarget}, action phase ${item.phase}`).join("; ")
     : hasUmbrellaHandover
-    ? "clear umbrella handover at the center of the frame, the woman on the right still holds the umbrella and visibly extends its handle toward the woman on the left, the woman on the left visibly reaches to accept it, their open hands approach the same handle without touching each other, both women look at each other, narrative instant before the receiver takes possession, the giver remains the sole holder of the umbrella"
+    ? "clear umbrella handover at the center of the frame, the person on the right still holds the umbrella and visibly extends its handle toward the person on the left, the person on the left visibly reaches to accept it, their open hands approach the same handle without touching each other, both people look at each other, narrative instant before the receiver takes possession, the giver remains the sole holder of the umbrella"
     : "both people visibly performing the same shared story event, clear cause-and-response body language";
-  const rainDetails = /雨|rain/i.test(`${shot.scene} ${shot.description} ${env.weather}`)
+  const rainDetails = shot.visualSpecConfirmed && shot.visualSpec ? env.weather : /雨|rain/i.test(`${shot.scene} ${shot.description} ${env.weather}`)
     ? "active rain visibly falling, wet reflective pavement, umbrella droplets, puddle ripples"
     : env.weather;
   const principalCount = quality.characterCount > 1
-    ? `exactly ${quality.characterCount} clearly rendered foreground principal adult women, sparse tiny blurred anonymous pedestrian silhouettes only in the far background`
+    ? `exactly ${quality.characterCount} clearly rendered foreground principal people, sparse tiny blurred anonymous pedestrian silhouettes only in the far background`
     : quality.countRule;
   const basePrompt = sanitizeEnglishPrompt(compactPrompt(unique([
-    "(masterpiece, best quality:1.2)",
     "anime illustration, clean line art, soft cel shading",
-    principalCount,
-    `${camera}, ${isMulti?"all faces clearly readable, complete interacting arms visible":"face and acting hands clearly readable"}${mediumOrClose ? ", strict upper-body crop, lower frame edge crosses the torso at the waist, thighs knees legs and feet remain outside the image" : ""}${hasObjectTransfer?", the handover centered between them":""}`,
-    env.locationType,
     env.location,
-    env.foreground,
     env.midground,
     env.background,
-    env.depth,
+    env.locationType,
+    !isMulti && env.depth === "clear foreground, midground and background separation" ? "" : env.depth,
+    principalCount,
+    `${camera}, ${isMulti?"all faces clearly readable, complete interacting arms visible":"face and acting hands clearly readable"}${mediumOrClose ? ", strict upper-body crop, lower frame edge crosses the torso at the waist, thighs knees legs and feet remain outside the image" : ""}${hasObjectTransfer?", the handover centered between them":""}`,
+    env.foreground,
     rainDetails,
     env.timeVisual,
     env.keyLight,
     env.ambientLight,
     isMulti?`(shared character interaction:1.3), ${sharedInteraction}`:"",
-    isMulti?"single continuous narrative scene, strong subject separation, all people sharing the same environment, no split screen":"single continuous narrative scene, the character performs the story action instead of posing",
-    hasUmbrellaHandover?"soft frontal fill light on both faces, both eyes fully visible, no deep umbrella shadow across the eyes, umbrella edges remain above and behind the heads":"readable motivated light on the face, hands, and story prop",
+    isMulti?"single continuous narrative scene, strong subject separation, all people sharing the same environment, no split screen":"narrative scene",
+    "camera angle and story occlusion, light motivated by the scene",
   ]).join(", "), 72));
   const characterRegions: RegionalCharacterRegion[] = shot.characterIds.map((id, index) => {
     const character = characters.find((item) => item.id === id);
@@ -1627,7 +1721,8 @@ export function buildRegionalPrompt(
       !shoes ? `${character.name}未选择已确认鞋履资产，使用人物档案文字兜底` : "",
     ].filter(Boolean);
     const prompt = sanitizeEnglishPrompt(compactPrompt(unique([
-      "one adult woman",
+      "one person",
+      englishVisual(character.profile?.agePresentationEn),
       englishVisual(look.positionEn, index === 0 ? "on the left" : "on the right"),
       englishVisual(stripTraits(character.appearanceEn)) ? `(${englishVisual(stripTraits(character.appearanceEn))}:1.2)` : "",
       englishVisual(character.profile?.faceShapeEn) ? `(${englishVisual(character.profile?.faceShapeEn)}:1.22)` : "",
@@ -1635,15 +1730,15 @@ export function buildRegionalPrompt(
       englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",
       englishVisual(character.profile?.distinguishingFeaturesEn) ? `(${englishVisual(character.profile?.distinguishingFeaturesEn)}:1.18)` : "",
       character.invariantsEn?.length ? `(${englishVisual(character.invariantsEn.join(", "), "canonical character invariants")}:1.28)` : "",
-      `(exact canonical hair color and hairstyle, ${englishVisual(clean(`${look.hairStyleEn} ${look.hairColorEn}`), "hair matching the identity reference")}:1.45)`,
+      `(${englishVisual(clean(`${look.hairStyleEn} ${look.hairColorEn}`), "hair matching the identity reference")}:1.45)`,
       englishVisual(look.eyeColorEn) ? `(${englishVisual(look.eyeColorEn)}:1.25)` : "",
       resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)
-        ? `(wearing exactly the selected outfit, preserve its garment category, cut, layers and colors, ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.5)`
-        : "coherent adult outfit",
+        ? `(wearing ${resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn)}:1.5)`
+        : "outfit matching the character",
       resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn),
       englishVisual(interactions.map((interaction)=>canonicalActionForInteraction(look.actionEn, interaction)).join(", "), "performing the current story action"),
       englishVisual(expressionPrompt(look.expressionEn), "readable story-appropriate expression"),
-      `(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}, head and pupils aligned toward the action target:1.3)`,
+      `(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,
       englishVisual(reconcileHandsWithFraming(look.handsEn, look.actionEn, camera), "hands following the described action"),
       ...interactions.flatMap((interaction)=>interaction.positive),
       shot.visualSpecConfirmed ? englishVisual(shot.visualSpec?.characters.find((item)=>item.characterId===id)?.appearanceState.hair) : "",
@@ -1673,14 +1768,19 @@ export function buildRegionalPrompt(
   });
   const negativeBlocks = {
     quality: "(low quality, worst quality:1.4), blurry face, featureless face, muddy details",
+    environment: /studio|plain background|seamless backdrop/i.test(env.location) ? "" : "empty background, studio portrait backdrop, featureless background",
     identity: "identity drift, wrong face shape, wrong hair or eye color, swapped identities, merged faces, swapped clothes, wrong garment category, wrong garment length, wrong clothing colors, pointed ears, elf ears, animal ears",
     anatomy: "deformed limbs, extra or missing limbs, fused hands, malformed wrists, extra or missing fingers",
     interaction: hasObjectTransfer ? "holding hands, linked arms, posing for camera, both people incorrectly owning the same prop, disconnected prop, unclear transfer" : "static portrait pose, unrelated actions",
-    weather: (hasUmbrellaHandover || /雨|rain/i.test(`${shot.scene} ${shot.description}`)) ? "dry pavement, no falling rain, sunny weather, umbrella edge crossing a face, deep shadow across eyes" : "",
-    composition: quality.characterCount > 1 ? "extra foreground principal person, third detailed foreground character, crowded foreground, duplicated woman, clone, twins, split screen, collage, character sheet" : `extra person, duplicate${mediumOrClose ? ", visible thighs, visible knees, visible legs, visible feet, full body" : ""}`,
-    text: "child, chibi, nsfw, 3d, photorealistic, monochrome, grayscale, text, letters, watermark, logo, speech bubbles, captions",
+    // A confirmed weather specification is authoritative; an umbrella or old scene
+    // description cannot introduce contrary weather exclusions.
+    weather: !shot.visualSpecConfirmed && /雨|rain/i.test(`${shot.scene} ${shot.description}`) ? "dry pavement, no falling rain, sunny weather" : "",
+    composition: quality.characterCount > 1 ? "extra foreground principal person, third detailed foreground character, crowded foreground, duplicated person, clone, twins, split screen, collage, character sheet" : `extra person, duplicate${mediumOrClose ? ", visible thighs, visible knees, visible legs, visible feet, full body" : ""}`,
+    text: "chibi, nsfw, 3d, photorealistic, monochrome, grayscale, text, letters, watermark, logo, speech bubbles, captions",
   };
-  if(characterRegions.some((region)=>!explicitlyAllowsCameraGaze(region.prompt)))negativeBlocks.composition += ", looking at viewer, eye contact with camera, front-facing portrait gaze";
+  // Shared negative conditioning affects every region, including actors explicitly
+  // looking at the camera. Their gaze must not be vetoed by another actor.
+  if(shot.characterIds.length > 0 && shot.characterIds.every((id,index)=>{const character=characters.find(item=>item.id===id);return character?!explicitlyAllowsCameraGaze(defaultLook(shot,character,index,assets).gazeEn):false;}))negativeBlocks.composition += ", looking at viewer, eye contact with camera, front-facing portrait gaze";
   const interactionContracts=shot.characterIds.map((id)=>interactionForShotFraming(deriveInteractionContract(shot,id),shot));
   const allInteractionContracts=orderInteractionContractsForExecution(shot,shot.characterIds.flatMap((id)=>deriveInteractionContracts(shot,id)).map((item)=>interactionForShotFraming(item,shot)));
   negativeBlocks.interaction=[negativeBlocks.interaction,...allInteractionContracts.flatMap((item)=>item.negative)].filter(Boolean).join(", ");
@@ -1690,14 +1790,15 @@ export function buildRegionalPrompt(
     .filter(Boolean)
     .join(", ");
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
-  const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60)) + ", deep shadow across eyes";
+  const negativePrompt = sanitizeEnglishPrompt(compactPrompt(Object.values(negativeBlocks).filter(Boolean).join(", "),60));
   const regionPrompts = characterRegions.map((region) => region.prompt);
   const characterInteractionContracts = shot.characterIds.flatMap((id) => deriveInteractionContracts(shot, id)).map((item)=>interactionForShotFraming(item,shot));
   const poseHeight = /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512;
-  const poseControl = risk.poseRequired
-    ? options.posePlannerVersion === "3.0"
+  const useV3=options.posePlannerVersion === "3.0"||characterInteractionContracts.some(r=>r.actionPlan);
+  const poseControl = risk.poseRequired || characterInteractionContracts.some(r=>r.actionPlan) || (useV3 && Boolean(extraTemplateFromText([shot.actionEn,shot.description,...(shot.visualSpec?.characters.map(p=>p.action)||[])].join(" "))))
+    ? useV3
       ? buildPoseControlV3(shot, characterInteractionContracts.map(poseInteractionInput), { compositionPolicy: "auto_story", width: 512, height: poseHeight })
-        || buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight)
+        || (characterInteractionContracts.some(r=>r.actionPlan)?null:buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight))
       : buildPoseControlV2(shot, characterInteractionContracts.map(poseInteractionInput), 512, poseHeight)
     : null;
   return {
@@ -1712,13 +1813,14 @@ export function buildRegionalPrompt(
     assetWarnings: characterRegions.flatMap((region) => region.assetWarnings),
     poseControl,
     repairPasses: {
+      actionContractVersion:characterInteractionContracts.some(r=>r.actionPlan)?"story-action-1" as const:undefined,
       identity:risk.identityRepairRequired,
       handoff:hasUmbrellaHandover,
       handoffPrompt:hasUmbrellaHandover?sharedInteraction:"",
       propInteraction: risk.propRepairRequired ? allInteractionContracts.find((item)=>item.required) || null : null,
       propInteractions: risk.propRepairRequired ? allInteractionContracts.filter((item)=>item.required) : [],
       propInstancePlan: allInteractionContracts.filter((item) => item.required).map((item) => ({ relationId: item.relationId, objectInstanceId: item.objectInstanceId, object: item.object, expectedCount: item.expectedCount, ownership: item.ownership, surfacePlan: item.surfacePlan, exclusionRegions: item.surfacePlan.exclusionRegions })),
-      passGraph: allInteractionContracts.filter((item) => item.required).map((item) => ({ relationId: item.relationId, objectInstanceId: item.objectInstanceId, executor: item.executor, geometrySource: item.executor === "umbrella_handoff" ? "scenePlan.interactionTarget+umbrellaGeometry" : "poseWrist+interactionContract", stages: item.executor === "umbrella_handoff" ? ["base_structure", "umbrella_handoff"] : ["base_structure", "generic_prop", ...(item.gazeMode !== "independent" ? ["gaze"] : [])] })),
+      passGraph: allInteractionContracts.filter((item) => item.required).map((item) => ({ relationId: item.relationId, objectInstanceId: item.objectInstanceId, executor: item.executor, geometrySource: item.actionPlan ? "story-action-1+single_projection" : item.executor === "umbrella_handoff" ? "scenePlan.interactionTarget+umbrellaGeometry" : "poseWrist+interactionContract", stages: item.executor === "umbrella_handoff" ? ["base_structure", "umbrella_handoff"] : ["base_structure", "generic_prop", ...(item.gazeMode !== "independent" ? ["gaze"] : [])] })),
       risk,
       gaze: risk.gazeRepairRequired,
       depth: risk.depthGuideRequired,

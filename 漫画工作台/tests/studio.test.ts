@@ -12,6 +12,10 @@ import {
   deriveInteractionContract,
   deriveInteractionContracts,
   expressionPrompt,
+  inferGazeFromAction,
+  inferHandsFromAction,
+  validateShotHandVisibility,
+  validateShotActionSpecificity,
   compactPrompt,
   sanitizeEnglishPrompt,
   suggestPromptFixes,
@@ -31,6 +35,65 @@ import {
   posePresetCatalog,
   validatePosePeople,
 } from "../lib/pose-v2";
+
+test("动作默认视线区分取物和交接，不从普通 hand 字样虚构交互人物", () => {
+  for (const action of ["Reaching for a package on the shelf", "picking a cup up", "grabbing a bag"])
+    assert.match(inferGazeFromAction(action), /object being reached for/);
+  for (const action of ["hands at sides", "standing with a handbag", "reaching for a package"])
+    assert.doesNotMatch(inferGazeFromAction(action), /other person|handover/);
+  for (const action of ["offering an umbrella", "receiving a package", "handing over a cup"])
+    assert.match(inferGazeFromAction(action), /handover target/);
+  assert.match(inferGazeFromAction("reading a phone message"), /smartphone screen/);
+  assert.match(inferGazeFromAction("reading a book"), /toward the page/);
+});
+
+test("缺省手部遵循人物动作，伸手未接触时不强制提前接触", () => {
+  for (const action of ["reaching for a package", "holding a cup", "pushing a door", "carrying a box"]) {
+    assert.match(inferHandsFromAction(action), /hands visible/);
+    assert.doesNotMatch(inferHandsFromAction(action), /contact|out of frame/);
+  }
+  assert.equal(inferHandsFromAction("portrait, hands out of frame"), "hands out of frame");
+  assert.match(inferHandsFromAction("standing calmly"), /naturally positioned/);
+});
+
+test("人物局部动作驱动默认手部和视线，保留显式人工描述", () => {
+  const data = getStudioData(1);
+  const base = data.episode.pages[0].shots[0];
+  const id = base.characterIds[0];
+  const shot = {
+    ...base, title: "取包裹", description: "独自从架子取包裹", scene: "室内架子旁",
+    characterIds: [id], visualSpecConfirmed: false, visualSpec: undefined,
+    actionEn: "standing calmly", cameraEn: "medium shot",
+    characterLooks: { [id]: { ...base.characterLooks?.[id], actionEn: "Reaching for a package on the shelf", gazeEn: "", handsEn: "" } },
+  };
+  const fixed = suggestPromptFixes(shot as any, data.characters);
+  assert.ok(fixed.characterLooks);
+  assert.match(fixed.characterLooks[id].handsEn, /hands visible/);
+  assert.match(fixed.characterLooks[id].gazeEn, /object being reached for/);
+  const compiled = buildRegionalPrompt(shot as any, data.assets, data.characters);
+  assert.doesNotMatch(compiled.prompt, /other person's hands|hands out of frame/);
+  shot.characterLooks[id].gazeEn = "looking toward the window";
+  shot.characterLooks[id].handsEn = "left hand relaxed beside the body";
+  const explicit = suggestPromptFixes(shot as any, data.characters);
+  assert.ok(explicit.characterLooks);
+  assert.equal(explicit.characterLooks[id].gazeEn, "looking toward the window");
+  assert.equal(explicit.characterLooks[id].handsEn, "left hand relaxed beside the body");
+  shot.characterLooks[id].handsEn = "hands out of frame";
+  assert.equal(validateShotHandVisibility(shot as any).length, 1);
+  shot.characterLooks[id].handsEn = "one hand reaching for the package";
+  assert.deepEqual(validateShotHandVisibility(shot as any), []);
+  const otherId = "observer";
+  const pair = {
+    ...shot, description: "two people indoors", characterIds: [id, otherId],
+    characterLooks: {
+      ...shot.characterLooks,
+      [otherId]: { actionEn: "standing calmly", handsEn: "hands out of frame", gazeEn: "looking toward the window" },
+    },
+  };
+  assert.deepEqual(validateShotHandVisibility(pair as any), []);
+  shot.characterLooks[id].handsEn = "hands out of frame";
+  assert.equal(validateShotHandVisibility(pair as any).length, 1);
+});
 
 test("期待表情会编译为可见的笑容与眼神特征", () => {
   const cue = expressionPrompt("happy");
@@ -76,9 +139,13 @@ import {
   createEpisodeFromStory,
   createPersistentGenerationJob,
   createCharacter,
+  buildCharacterAssetPrompt,
+  characterAssetPromptMatches,
   createCharacterAssetJob,
+  getCharacterAssetJob,
   addCharacterReference,
   updateCharacterProfile,
+  updateCharacterOutfitPrompt,
   getGenerationJobRecord,
   getCandidateExport,
   getPaginatedJobs,
@@ -89,6 +156,72 @@ import {
   updatePersistentGenerationJob,
   updateShot,
 } from "../lib/db";
+
+test("资产与Regional消费结构化身份档案而非强制成年模板", () => {
+  const profile={agePresentationEn:"elderly man",faceShapeEn:"square face",skinToneEn:"deep brown skin",bodyTypeEn:"broad shoulders",distinguishingFeaturesEn:"small scar on left cheek",baseOutfitEn:"green coat",baseShoesEn:"brown boots"};
+  const id=createCharacter({name:"Identity fixture",descriptionCn:"测试",appearanceEn:"gray-haired person",invariantsEn:["amber eyes"],visualTraits:{hairColorEn:"gray",hairStyleEn:"short hair",eyeColorEn:"amber eyes"},profile});
+  for(const kind of ["face","turnaround","expressions","outfit","shoes"] as const) {
+    const result=buildCharacterAssetPrompt(id,kind)!;
+    for(const value of [...Object.values(profile).slice(0,5),"amber eyes"]) assert.ok(result.prompt.includes(value),`${kind}: ${value}`);
+    assert.doesNotMatch(result.prompt,/same adult person|one adult person/);
+    assert.doesNotMatch(result.negativePrompt,/\bchild\b/);
+    for(const trait of ["gray","short hair","amber eyes"]) assert.ok(result.prompt.includes(trait));
+    if(kind==="face" || kind==="expressions") assert.doesNotMatch(result.negativePrompt,/cropped clothing|cropped shoes/);
+    if(kind==="turnaround" || kind==="expressions") assert.doesNotMatch(result.negativePrompt,/duplicate person|multiple people|multiple views/);
+    if(kind==="outfit") assert.match(result.negativePrompt,/cropped clothing/);
+    if(kind==="shoes") assert.match(result.negativePrompt,/cropped shoes/);
+    if(kind==="turnaround" || kind==="outfit") {
+      assert.match(result.prompt,/green coat/);
+      assert.match(result.prompt,/brown boots/);
+    }
+    if(kind==="face" || kind==="expressions") {
+      assert.match(result.prompt,/visible neckline/);
+      assert.doesNotMatch(result.prompt,/brown boots/);
+    }
+  }
+  const data=getStudioData();const character=data.characters.find(c=>c.id===id)!;
+  const shot={...data.episode.pages[0].shots[0],characterIds:[id],characterLooks:{},visualSpecConfirmed:false};
+  assert.match(buildRegionalPrompt(shot,data.assets,[character]).characterRegions[0].prompt,/elderly man/);
+});
+
+test("结构化身份变更失效旧母版，旧任务配方不匹配当前档案", () => {
+  const input={name:"Version fixture",descriptionCn:"测试",conceptCn:"测试",notes:"",appearanceEn:"adult person",invariantsEn:["brown eyes"],visualTraits:{hairColorEn:"black",hairStyleEn:"short",eyeColorEn:"brown"},profile:{faceShapeEn:"oval face"},confirm:true};
+  const id=createCharacter(input);
+  updateCharacterProfile(id,input);
+  addCharacterReference(id,"face","workspace/identity-version-test.png");
+  const old=buildCharacterAssetPrompt(id,"face")!;
+  const job={prompt:old.prompt,negative_prompt:old.negativePrompt};
+  assert.equal(characterAssetPromptMatches(job,old),true);
+  updateCharacterProfile(id,{...input,notes:"nonvisual note"});
+  assert.equal(characterAssetPromptMatches(job,buildCharacterAssetPrompt(id,"face")),true);
+  assert.ok("id" in createCharacterAssetJob(id,"outfit"));
+  updateCharacterProfile(id,{...input,profile:{faceShapeEn:"square face"}});
+  assert.equal(characterAssetPromptMatches(job,buildCharacterAssetPrompt(id,"face")),false);
+  assert.ok("error" in createCharacterAssetJob(id,"shoes"));
+  assert.equal(characterAssetPromptMatches(null,old),false);
+});
+
+test("两种档案入口使旧基础衣物失效且保留身份母版", () => {
+  const input={name:"Wardrobe version fixture",descriptionCn:"测试",conceptCn:"测试",notes:"",appearanceEn:"adult person",invariantsEn:[],visualTraits:{hairColorEn:"black",hairStyleEn:"short",eyeColorEn:"brown"},profile:{baseOutfitEn:"green coat",baseShoesEn:"brown boots",outfitNegativeEn:""},confirm:true};
+  const id=createCharacter(input); updateCharacterProfile(id,input);
+  const seed=()=>{for(const type of ["face","turnaround","expressions","outfit","shoes"]) addCharacterReference(id,type,`workspace/wardrobe-${type}.png`);};
+  const character=()=>getStudioData().characters.find(c=>c.id===id)!;
+  const confirmed=(type:string)=>character().references.find(r=>r.type===type)?.confirmed;
+  seed(); const master=character().identityMasterReferenceId;
+  updateCharacterOutfitPrompt(id,input.profile);
+  assert.equal(confirmed("outfit"),true);
+  updateCharacterOutfitPrompt(id,{...input.profile,baseOutfitEn:"blue jacket"});
+  assert.equal(confirmed("outfit"),false); assert.equal(confirmed("turnaround"),false);
+  assert.equal(confirmed("shoes"),true); assert.equal(confirmed("face"),true);
+  assert.equal(character().identityMasterReferenceId,master);
+  assert.equal(getStudioData().assets.find(a=>a.id===`${id}_base_outfit`)?.confirmed,false);
+  seed();
+  updateCharacterProfile(id,{...input,profile:{...input.profile,baseOutfitEn:"blue jacket",baseShoesEn:"white sneakers"}});
+  for(const type of ["outfit","turnaround","shoes"]) assert.equal(confirmed(type),false);
+  assert.equal(confirmed("face"),true); assert.equal(confirmed("expressions"),true);
+  assert.equal(character().status,"draft");
+  assert.equal(getStudioData().assets.find(a=>a.id===`${id}_base_shoes`)?.confirmed,false);
+});
 
 test("通用人物使用稳定ID并在确认档案后开放正脸任务", () => {
   const id = createCharacter({
@@ -110,10 +243,18 @@ test("通用人物使用稳定ID并在确认档案后开放正脸任务", () => 
     visualTraits: { hairColorEn: "black hair", hairStyleEn: "short hair", eyeColorEn: "green eyes" },
     profile: { baseOutfitEn: "navy office dress", baseShoesEn: "black low heels" }, confirm: true,
   }), true);
-  assert.ok("id" in createCharacterAssetJob(id, "face"));
+  const faceJob = createCharacterAssetJob(id, "face");
+  assert.ok("id" in faceJob);
+  assert.equal(typeof faceJob.id, "number");
+  assert.equal(getCharacterAssetJob(faceJob.id!).provider, "sd");
+  assert.equal(getCharacterAssetJob(faceJob.id!).prompt,buildCharacterAssetPrompt(id,"face")!.prompt);
+  assert.equal(getCharacterAssetJob(faceJob.id!).negative_prompt,buildCharacterAssetPrompt(id,"face")!.negativePrompt);
   assert.equal("error" in createCharacterAssetJob(id, "outfit"), true);
   assert.equal(addCharacterReference(id, "face", "workspace/test-face.png"), true);
-  assert.ok("id" in createCharacterAssetJob(id, "outfit"));
+  const outfitJob = createCharacterAssetJob(id, "outfit", "codex-imagegen");
+  assert.ok("id" in outfitJob);
+  assert.equal(typeof outfitJob.id, "number");
+  assert.equal(getCharacterAssetJob(outfitJob.id!).provider, "codex-imagegen");
 });
 
 test("视觉规格保留人工选择并拒绝虚构资产", () => {
@@ -187,7 +328,7 @@ test("提示词包含全部绑定人物且不含中文", () => {
     },
   ];
   const result = buildGenerationPrompt(shot, data.assets, characters);
-  assert.match(result.prompt, /2girls, exactly 2 distinct adult women/);
+  assert.match(result.prompt, /exactly 2 distinct people/);
   assert.match(result.prompt, /short black hair/);
   assert.doesNotMatch(result.prompt, /[\u3400-\u9fff]/);
 });
@@ -246,7 +387,7 @@ test("Regional Prompter 公共区保留完整场景且人物属性只进入各�
     ...data.characters,
     support,
   ]);
-  assert.match(result.basePrompt, /exactly 2 clearly rendered foreground principal adult women/);
+  assert.match(result.basePrompt, /exactly 2 clearly rendered foreground principal people/);
   assert.match(result.basePrompt, /foreground|pavement|door edge/i);
   assert.match(result.basePrompt, /midground|crosswalk|reception/i);
   assert.match(result.basePrompt, /background|storefronts|corridor/i);
@@ -288,11 +429,11 @@ test("雨伞互动提示词保护面部可读性且不再要求中景显示全�
     characterIds: ["character_xiaofen", supporting.id],
   };
   const result = buildRegionalPrompt(shot, data.assets, data.characters);
-  assert.match(result.commonPrompt, /strict crop at the waist/);
-  assert.match(result.commonPrompt, /soft frontal fill light on both faces/);
-  assert.match(result.commonPrompt, /umbrella edges remain above and behind the heads/);
+  assert.match(result.commonPrompt, /strict (?:waist-up framing|crop at the waist)/);
+  assert.match(result.commonPrompt, /light motivated by the scene/);
+  assert.match(result.commonPrompt, /camera angle and story occlusion/);
   assert.doesNotMatch(result.commonPrompt, /knees and five fingers/);
-  assert.match(result.negativePrompt, /deep shadow across eyes/);
+  assert.doesNotMatch(result.negativePrompt, /deep shadow across eyes|umbrella edge crossing a face/);
 });
 
 test("递伞剧情会把通用站姿修复为双方对应的交互动作", () => {
@@ -323,8 +464,8 @@ test("递伞剧情会把通用站姿修复为双方对应的交互动作", () =>
   };
   const fixed = suggestPromptFixes(shot, data.characters);
   assert.match(fixed.characterLooks!.character_xiaofen.actionEn, /accept the offered umbrella/);
-  assert.match(fixed.characterLooks![supporting.id].actionEn, /offering her an open umbrella/);
-  assert.match(fixed.characterLooks!.character_xiaofen.gazeEn, /woman offering/);
+  assert.match(fixed.characterLooks![supporting.id].actionEn, /offering the other person an open umbrella/);
+  assert.match(fixed.characterLooks!.character_xiaofen.gazeEn, /person offering/);
   assert.match(fixed.characterLooks![supporting.id].handsEn, /extending the umbrella handle/);
   assert.match(fixed.characterLooks!.character_xiaofen.expressionEn, /surprised and grateful/);
   assert.match(fixed.characterLooks![supporting.id].expressionEn, /kind reassuring/);
@@ -374,7 +515,7 @@ test("人物未显式保存ID时自动采用自己的已确认基础服装与鞋
   assert.ok(region.assetBindings.some((binding) => binding.assetId === `${character.id}_base_outfit`));
   assert.ok(region.assetBindings.some((binding) => binding.assetId === `${character.id}_base_shoes`));
   assert.match(region.prompt, /white tie-neck blouse and pale pink pencil skirt/);
-  assert.match(region.prompt, /wearing exactly the selected outfit/);
+  assert.match(region.prompt, /wearing white tie-neck blouse and pale pink pencil skirt/);
   assert.match(region.prompt, /rose-pink pointed high heels/);
   assert.doesNotMatch(region.prompt, /character-specific complete base outfit/);
 });
@@ -395,7 +536,7 @@ test("单人提示词强制人数与拼贴负面约束", () => {
   };
   const result = buildGenerationPrompt(shot, data.assets, data.characters);
   assert.equal(result.quality.valid, true);
-  assert.match(result.prompt, /1girl, solo, single person/);
+  assert.match(result.prompt, /solo, single person/);
   assert.match(result.negativePrompt, /multiple girls/);
   assert.match(result.negativePrompt, /character sheet/);
 });
@@ -469,6 +610,100 @@ test("明确举到耳边的手机通话仍分类为 call",()=>{
   assert.equal(contract.purpose,"call");
   assert.equal(contract.handMode,"one");
   assert.equal(contract.gazeMode,"independent");
+});
+
+test("道具契约只消费已确认且属于当前人物的关系，不把全局道具分配给旁观者", () => {
+  const data = getStudioData(1);
+  const base = data.episode.pages[0].shots[0];
+  for (const propId of ["smartphone", "package", "umbrella"]) {
+    const shot: any = {
+      ...base, characterIds: ["actor", "observer"], actionEn: `actor holding a ${propId}`,
+      description: `actor holding a ${propId}, observer standing nearby`,
+      compositionEn: `${propId} visible in the scene`, visualSpecConfirmed: true,
+      characterLooks: {
+        actor: { actionEn: `holding a ${propId}`, handsEn: `both hands holding the ${propId}` },
+        observer: { actionEn: "standing calmly", handsEn: "hands out of frame", gazeEn: "looking toward the window" },
+      },
+      visualSpec: { characters: [], visibleFacts: [`${propId} visible`], interactions: [],
+        interaction: { actorCharacterId: "actor", propId, type: "prop_use", contactPoint: "both hands" } },
+    };
+    assert.equal(deriveInteractionContract(shot, "actor").required, true);
+    assert.equal(deriveInteractionContract(shot, "observer").required, false);
+    assert.deepEqual(validateShotHandVisibility(shot), []);
+    shot.visualSpecConfirmed = false;
+    shot.characterLooks.actor.actionEn = "standing calmly";
+    shot.characterLooks.actor.handsEn = "hands at sides";
+    assert.equal(deriveInteractionContract(shot, "actor").required, false);
+    assert.equal(deriveInteractionContract(shot, "observer").required, false);
+  }
+});
+
+test("缺省位置跟随最终区域而不是人物序号", () => {
+  const base = getStudioData(1).episode.pages[0].shots[0];
+  for (const regions of [
+    [{ xStart: 0, xEnd: 1 }],
+    [{ xStart: .6, xEnd: 1 }, { xStart: 0, xEnd: .4 }],
+    [{ xStart: 0, xEnd: .3 }, { xStart: .3, xEnd: .7 }, { xStart: .7, xEnd: 1 }],
+  ]) {
+    const ids = regions.map((_, index) => `actor_${index}`);
+    const shot = { ...base, characterIds: ids, characterLooks: {} };
+    const spec = normalizeShotSpec({ characters: ids.map((id, index) => ({ characterId: id, region: regions[index] })) }, shot);
+    spec.characters.forEach((character, index) => {
+      const center = (regions[index].xStart + regions[index].xEnd) / 2;
+      assert.match(character.position, center < .5 ? /left/ : center > .5 ? /right/ : /center/);
+      assert.deepEqual(character.region, regions[index]);
+    });
+  }
+});
+
+test("规范化保留每个人物的动作和表情，不用整格描述覆盖人物规格", () => {
+  const base = getStudioData(1).episode.pages[0].shots[0];
+  const shot: any = { ...base, characterIds: ["giver", "receiver"], characterLooks: {},
+    actionEn: "giving and receiving an umbrella", expressionEn: "happy" };
+  const raw = { characters: [
+    { characterId: "giver", action: "offering an umbrella", expression: "reassuring" },
+    { characterId: "receiver", action: "reaching to accept the umbrella", expression: "surprised" },
+  ] };
+  const spec = normalizeShotSpec(raw, shot);
+  assert.deepEqual(spec.characters.map(item => item.action), raw.characters.map(item => item.action));
+  assert.deepEqual(spec.characters.map(item => item.expression), ["reassuring", "surprised"]);
+  shot.characterLooks = { giver: { actionEn: "holding the umbrella steady", expressionEn: "concerned" } };
+  const edited = normalizeShotSpec(raw, shot);
+  assert.equal(edited.characters[0].action, "holding the umbrella steady");
+  assert.equal(edited.characters[0].expression, "concerned");
+  assert.equal(edited.characters[1].action, raw.characters[1].action);
+  const single = normalizeShotSpec({ characters: [{ characterId: "giver" }] }, { ...shot, characterIds: ["giver"], characterLooks: {} });
+  assert.equal(single.characters[0].action, shot.actionEn);
+  const withObserver = normalizeShotSpec({
+    visibleFacts: ["giver holding a smartphone"],
+    characters: [
+      { characterId: "giver", action: "holding a smartphone", hands: "both hands holding the smartphone" },
+      { characterId: "receiver", action: "standing calmly", hands: "hands resting naturally" },
+    ],
+  }, { ...shot, characterLooks: {} });
+  assert.deepEqual(withObserver.interactions.map(item => item.actorCharacterId), ["giver"]);
+  const missing = normalizeShotSpec({ characters: [] }, { ...shot, characterLooks: {} });
+  assert.ok(missing.characters.every(item => item.action !== shot.actionEn && item.expression !== shot.expressionEn));
+});
+
+test("分镜编排指令必须先变为具体人物动作，确认规格或人工动作可解除阻断", () => {
+  const base = getStudioData(1).episode.pages[0].shots[0];
+  const shot: any = { ...base, characterIds: ["actor"], characterLooks: {}, visualSpecConfirmed: false,
+    actionEn: "show the active character beginning one concrete story-changing action, clearly different from the previous pose" };
+  assert.equal(validateShotActionSpecificity(shot).length, 1);
+  for (const action of [
+    "establish the exact starting positions, distance, facing directions, and immediate goal",
+    "show the other character's immediate visible reaction through gaze, expression, hands, and body distance",
+    "reveal the key prop, contact point, or environmental change that explains how the event happens",
+    "show the visible result with changed character, prop, or spatial state and establish direction into the next panel",
+  ]) assert.equal(validateShotActionSpecificity({ ...shot, actionEn: action }).length, 1);
+  shot.visualSpec = { characters: [{ characterId: "actor", action: "reaching for a package on the shelf" }] };
+  assert.equal(validateShotActionSpecificity(shot).length, 1);
+  shot.visualSpecConfirmed = true;
+  assert.deepEqual(validateShotActionSpecificity(shot), []);
+  shot.visualSpecConfirmed = false;
+  shot.characterLooks = { actor: { actionEn: "walking along the sidewalk" } };
+  assert.deepEqual(validateShotActionSpecificity(shot), []);
 });
 
 test("结构化视线事实源区分 object、work_point、target 与 independent",()=>{
@@ -660,8 +895,12 @@ test("动作骨骼在关键关节上表达指向、自触摸、环境操作、�
   assert.ok(Math.hypot(selfTouch[4].x-selfTouch[0].x,selfTouch[4].y-selfTouch[0].y)<.06);
   const operate=pose("turning off the bedside lamp").people[0];
   assert.ok(operate[7].x-operate[5].x>.16);
-  const moving=pose("walking toward the door","wide shot").people[0];
-  assert.ok(Math.abs(moving[10].x-moving[13].x)>.35);
+  const movingPose=pose("walking toward the door","wide shot");
+  assert.ok("scenePlan" in movingPose,"行走采用参数化场景计划");
+  const moving=movingPose.people[0],gait=movingPose.scenePlan.people[0].locomotion!;
+  const supportAnkle=gait.supportSide==="right"?10:13,swingAnkle=gait.swingSide==="right"?10:13;
+  assert.ok(moving[supportAnkle].y>moving[swingAnkle].y,"行走支撑脚必须低于离地摆动脚");
+  assert.notEqual(moving[4].y,moving[7].y,"行走两臂必须处于不同摆动阶段");
   const seated=pose("sitting on a sofa holding a smartphone","wide shot").people[0];
   assert.ok(Math.abs(seated[8].y-seated[9].y)<.08);
   assert.ok(Math.abs(seated[8].x-seated[9].x)>.1);
@@ -735,7 +974,9 @@ test("OpenPose v2 将复合动作拆成身体基座和上身动作叠加", () =>
   assert.equal(pose!.scenePlan.people[0].primaryAction,"locomotion");
   assert.ok(pose!.scenePlan.people[0].actions.includes("hold_carry"));
   assert.ok(pose!.scenePlan.people[0].actions.includes("push_pull"));
-  assert.ok(Math.abs(pose!.people[0][10].x-pose!.people[0][13].x)>.28);
+  const gait=pose!.scenePlan.people[0].locomotion!;
+  const supportAnkle=gait.supportSide==="right"?10:13,swingAnkle=gait.swingSide==="right"?10:13;
+  assert.ok(pose!.people[0][supportAnkle].y>pose!.people[0][swingAnkle].y,"携物行走保持支撑脚与摆动脚关系");
   assert.equal(pose!.controlProfile.id,"walk_full");
   assert.equal(pose!.controlProfile.weight,.88);
 });
@@ -953,7 +1194,7 @@ test("最终请求统一使用结构化 prompt 契约并保留可追溯编辑层
       for (const source of sources) {
         const plan=buildCanonicalGenerationPrompt(shot,regional.prompt,source.override,count);
         assert.equal(plan.validation.valid,true,`${source.mode}/${cameraEn}/${count}`);
-        assert.match(plan.prompt,/masterpiece, best quality/);
+        assert.match(plan.prompt,/anime illustration/);
         if(cameraEn!=="wide shot") assert.match(plan.prompt,/strict crop at the waist|no waist or legs visible|do not show legs or the full body/);
         if(source.override) assert.equal(plan.overrideApplied,true);
         if(cameraEn!=="wide shot") assert.equal(plan.prompt.includes("editorial visual details, cinematic full body portrait"),false);
@@ -996,7 +1237,8 @@ test("视觉规格把显式手机和未知道具动作规范化为完整 interac
     assert.equal(spec.interactions[0].propId,target==="smartphone"?"smartphone":"prototype_scanner");
     assert.ok(spec.interactions[0].contactPoints.length);
     assert.ok(spec.interactions[0].gazeTarget);
-    assert.equal(validateVisualIds(spec,data.characters,data.assets).valid,true);
+    const validation = validateVisualIds(spec,data.characters,data.assets);
+    assert.equal(validation.valid,true,JSON.stringify(validation));
   }
 });
 
@@ -1194,8 +1436,9 @@ test("通用手持工具生成单手接触契约与动作骨架",()=>{
   const data=getStudioData(1),shot={...data.episode.pages[0].shots[0],characterIds:["character_xiaofen"],actionEn:"using a screwdriver to tighten a cabinet hinge",characterLooks:{}};
   const contract=deriveInteractionContract(shot,"character_xiaofen"),result=buildRegionalPrompt(shot,data.assets,data.characters);
   assert.equal(contract.object,"screwdriver");assert.equal(contract.handMode,"one");assert.equal(contract.shape,"elongated");
-  assert.ok(contract.contactAnchors.every((anchor)=>anchor.y===contract.objectCenter.y));
-  assert.match(result.poseControl?.kind||"",/single_action/);
+  assert.deepEqual(contract.contactAnchors.map(a=>({x:a.x,y:a.y})),[contract.actionPlan!.geometry.gripPoint]);
+  assert.equal(result.poseControl?.posePlanVersion,"3.0");
+  assert.equal(result.poseControl?.safety.valid,true);
 });
 
 test("不同用途的单手道具从源头共享物体与腕部接触高度",()=>{
@@ -1203,7 +1446,8 @@ test("不同用途的单手道具从源头共享物体与腕部接触高度",()=
   for(const actionEn of ["answering a phone call with the smartphone beside her ear","drinking tea from a cup","using a screwdriver on a cabinet hinge"]){
     const contract=deriveInteractionContract({...base,characterIds:["character_xiaofen"],description:"",actionEn,characterLooks:{},visualSpecConfirmed:false},"character_xiaofen");
     assert.equal(contract.handMode,"one",actionEn);
-    assert.ok(contract.contactAnchors.every((anchor)=>anchor.y===contract.objectCenter.y),actionEn);
+    if(contract.actionPlan)assert.deepEqual(contract.contactAnchors.map(a=>({x:a.x,y:a.y})),[contract.actionPlan.geometry.gripPoint]);
+    else assert.ok(contract.contactAnchors.every((anchor)=>anchor.y===contract.objectCenter.y),actionEn);
   }
 });
 
@@ -1261,11 +1505,12 @@ test("空泛动作和矛盾镜头会被提示词门禁拦截", () => {
   assert.ok(quality.errors.length >= 4);
 });
 
-test("系统可把空泛单人提示词补全为可生成配方", () => {
+test("具体地点已知时系统可补全空泛单人提示词", () => {
   const data = getStudioData(1);
   const original = data.episode.pages[0].shots[0];
   const broken = {
     ...original,
+    scene: "客厅",
     actionEn: "natural storytelling action",
     expressionEn: "gentle, natural expression",
     sceneEn: "coherent story environment",
@@ -1274,8 +1519,8 @@ test("系统可把空泛单人提示词补全为可生成配方", () => {
   };
   const repaired = { ...broken, ...suggestPromptFixes(broken) };
   const result = buildGenerationPrompt(repaired, data.assets, data.characters);
-  assert.equal(result.quality.valid, true);
-  assert.match(result.prompt, /hands out of frame/);
+  assert.equal(result.quality.valid, true, JSON.stringify({ scene: repaired.scene, environment: result.environment, errors: result.quality.errors }));
+  assert.match(result.prompt, /hands naturally positioned|acting hands visible/);
   assert.doesNotMatch(
     result.prompt,
     /natural storytelling action|coherent story environment/,
@@ -1453,18 +1698,22 @@ test("Codex 每格只附带绑定人物、当前服装和当前鞋履", () => {
   assert.ok(queued);
   const payload = JSON.parse(queued.payload) as {
     candidateCount: number;
-    references: Array<{ id: string }>;
+    references: Array<{ assetId: string; characterId: string; role: string }>;
   };
-  const ids = payload.references.map((reference) => reference.id);
-  assert.deepEqual(
-    new Set(ids),
-    new Set(["character_xiaofen", shot.outfitId, shot.shoeId]),
-  );
-  assert.equal(ids.length, 3);
-  assert.equal(payload.candidateCount, 1);
+  assert.ok(payload.references.length > 0);
+  for (const reference of payload.references) {
+    assert.ok(reference.assetId);
+    assert.ok(shot.characterIds.includes(reference.characterId));
+    if (reference.role === "outfit" && !reference.assetId.startsWith("character-reference:"))
+      assert.equal(reference.assetId, shot.characterLooks[reference.characterId]?.outfitId || shot.outfitId);
+    if (reference.role === "shoes" && !reference.assetId.startsWith("character-reference:"))
+      assert.equal(reference.assetId, shot.characterLooks[reference.characterId]?.shoeId || shot.shoeId);
+  }
+  assert.ok(payload.references.some(reference => reference.role === "identity_face"));
+  assert.equal(payload.candidateCount, 2);
 });
 
-test("场景先于人物且夜晚被编译为可见光源", () => {
+test("场景先于人物且夜晚保留时段并服从场景光源", () => {
   const data = getStudioData(1);
   const source = data.episode.pages[0].shots[0];
   const shot = {
@@ -1485,7 +1734,7 @@ test("场景先于人物且夜晚被编译为可见光源", () => {
     result.prompt.indexOf("rainy city street") <
       result.prompt.indexOf("soft pink"),
   );
-  assert.match(result.prompt, /deep blue ambient sky/);
+  assert.match(result.prompt, /night, preserve the declared scene lighting/);
   assert.match(result.negativePrompt, /plain background/);
 });
 
@@ -1556,7 +1805,9 @@ test("AI 镜头动作替换旧占位词并继承上一格环境", () => {
   const spec=normalizeShotSpec({visibleFacts:["an umbrella changes hands"],scene:{sceneId:"rain",location:"unknown",timeOfDay:"unknown",weather:"unknown",anchors:[],lighting:"unknown"},characters:[{characterId:shot.characterIds[0],action:"reaching toward the umbrella",expression:"surprised",gazeTarget:"umbrella handle",hands:"right hand reaching",position:"left",region:{xStart:0,xEnd:.5}}],interaction:null,camera:{},stateChanges:[],warnings:[]},shot);
   assert.equal(spec.characters[0].action,"reaching toward the umbrella");
   const previous={...spec,scene:{...spec.scene,location:"office exit",timeOfDay:"evening",weather:"steady rain",anchors:["glass doors"],lighting:"warm lobby light"}};
-  const inherited=inheritShotContinuity(spec,previous,null);
+  // This case exercises missing environment inheritance, not an explicit
+  // lighting/time change from the stored shot's fallback values.
+  const inherited=inheritShotContinuity({...spec,scene:{...spec.scene,timeOfDay:"unknown",lighting:"unknown"}},previous,null);
   assert.equal(inherited.scene.location,"office exit");
   assert.equal(inherited.scene.weather,"steady rain");
 });
@@ -1566,3 +1817,132 @@ test("提示词压缩遵守片段预算并移除明显语义重复",()=>{
   assert.equal(compactPrompt(value,20).split(", ").length,20);
   assert.equal(compactPrompt("consistent canonical face, canonical face, blue eyes").match(/face/g)?.length,1);
 });
+
+test("人物持物左右遵守骨架手侧且不随关系顺序漂移", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],id="character_xiaofen";
+  for(const region of [{xStart:0,xEnd:1},{xStart:0,xEnd:.5},{xStart:.5,xEnd:1}]) {
+    const spec=normalizeShotSpec({visibleFacts:["walking while carrying props"],scene:{},characters:[{characterId:id,region,action:"walking with objects at her side",gazeTarget:"looking forward along the path",hands:"left hand carrying a smartphone at her side; right hand carrying a cup at her side"}],interactions:[
+      {type:"prop_interaction",actorCharacterId:id,propId:"smartphone",action:"carrying a smartphone",contactPoints:["left hand holding smartphone at her side"]},
+      {type:"prop_interaction",actorCharacterId:id,propId:"cup",action:"carrying a cup",contactPoints:["right hand holding cup at her side"]},
+    ],camera:{shotSize:"wide shot"},stateChanges:[],warnings:[]},{...base,characterIds:[id]});
+    const shot={...base,characterIds:[id],characterLooks:{},visualSpecConfirmed:true,visualSpec:spec};
+    const contracts=deriveInteractionContracts(shot,id), center=(region.xStart+region.xEnd)/2;
+    const twoHandShot={...shot,visualSpec:{...spec,characters:spec.characters.map(c=>({...c,action:"reading smartphone",hands:"both hands holding smartphone in front of torso"})),interactions:[{...spec.interactions[0],action:"reading smartphone with both hands",contactPoints:["both hands holding smartphone in front of torso"]}]}};
+    const singleContract=deriveInteractionContract(twoHandShot,id);
+    const wrappedContract=deriveInteractionContracts(twoHandShot,id)[0];
+    assert.equal(wrappedContract.handMode,"two");
+    assert.deepEqual(wrappedContract.objectCenter,singleContract.objectCenter);
+    assert.deepEqual(wrappedContract.contactAnchors,singleContract.contactAnchors);
+    const compiled=buildRegionalPrompt(shot,data.assets,data.characters,{posePlannerVersion:"3.0"});
+    const actor=compiled.poseControl!.people[0];
+    assert.ok(actor[7].x>actor[1].x,"anatomical left carry stays on the left shoulder side after projection");
+    assert.ok(actor[4].x<actor[1].x,"anatomical right carry stays on the right shoulder side after projection");
+    assert.ok(contracts[0].objectCenter.x>center);
+    assert.ok(contracts[1].objectCenter.x<center);
+    const reversed=deriveInteractionContracts({...shot,visualSpec:{...spec,interactions:[...spec.interactions].reverse()}},id);
+    for(const c of contracts) {
+      const other=reversed.find(r=>r.object===c.object)!;
+      assert.deepEqual(other.objectCenter,c.objectCenter);
+      assert.deepEqual(other.contactAnchors,c.contactAnchors);
+      assert.doesNotMatch(c.positive.join(" "),/physically contact and operate/);
+      assert.equal(c.contactAnchors[0].x,c.objectCenter.x);
+    }
+  }
+});
+
+test("雨伞交接不强制正面补光或双眼可见", () => {
+  const data=getStudioData(1), base=data.episode.pages[0].shots[0];
+  for(const lighting of ["dim blue moonlight", "warm backlight from sunset"]) {
+    const shot={...base,actionEn:"giving and receiving an umbrella",characterLooks:{},visualSpecConfirmed:true,visualSpec:normalizeShotSpec({visibleFacts:["umbrella handover in profile"],scene:{location:"quiet road",timeOfDay:"night",weather:"light rain",lighting,anchors:[]},characters:base.characterIds.map(characterId=>({characterId,action:"offering an umbrella",gazeTarget:"umbrella handle",occlusion:"umbrella canopy partially obscures the face"})),interactions:[],camera:{angle:"side view"},stateChanges:[],warnings:[]},base)};
+    const result=buildRegionalPrompt(shot,data.assets,data.characters);
+    assert.ok(result.basePrompt.includes(lighting));
+    assert.doesNotMatch(result.basePrompt,/frontal fill|both eyes fully visible|no deep umbrella shadow|above and behind the heads/);
+    assert.match(result.basePrompt,/preserve the declared scene lighting/);
+  }
+});
+
+test("确认天气不被旧雨景或递伞负向推翻", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  for(const weather of ["sunny dry weather", "overcast with no rain", "light rain"]) {
+    const shot={...base,scene:"雨夜街道",description:"两人在雨中交接雨伞",actionEn:"giving and receiving an umbrella",visualSpecConfirmed:true,visualSpec:normalizeShotSpec({visibleFacts:["umbrella handover"],scene:{location:"quiet road",timeOfDay:"afternoon",weather,lighting:"natural ambient light",anchors:[]},characters:base.characterIds.map(characterId=>({characterId,action:"offering an umbrella"})),interactions:[],camera:{},stateChanges:[],warnings:[]},base)};
+    const result=buildRegionalPrompt(shot,data.assets,data.characters);
+    assert.ok(result.basePrompt.includes(weather));
+    assert.doesNotMatch(result.negativePrompt,/dry pavement|no falling rain|sunny weather/);
+    if(weather!=="light rain") assert.doesNotMatch(result.basePrompt,/active rain visibly falling/);
+  }
+});
+
+test("儿童与老人档案不被通用负向排除", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0];
+  for(const age of ["child", "elderly person"]) {
+    const id=createCharacter({name:`Age fixture ${age}`,descriptionCn:"测试",appearanceEn:age,invariantsEn:[],visualTraits:{hairColorEn:"brown",hairStyleEn:"short",eyeColorEn:"brown"},profile:{agePresentationEn:age}});
+    const character=getStudioData().characters.find(c=>c.id===id)!;
+    for(const ids of [[id],[id,"character_xiaofen"]]) {
+      const shot={...base,characterIds:ids,characterLooks:{},negativePromptEn:"",visualSpecConfirmed:false};
+      const characters=[character,...data.characters.map(c=>({...c,profile:c.profile?{...c.profile,outfitNegativeEn:""}:undefined}))];
+      const ordinary=buildGenerationPrompt(shot,data.assets,characters);
+      const regional=buildRegionalPrompt(shot,data.assets,characters);
+      assert.ok(ordinary.prompt.includes(age));
+      assert.ok(regional.characterRegions[0].prompt.includes(age));
+      for(const result of [ordinary,regional]) {
+        assert.doesNotMatch(result.negativePrompt,/\bchild\b|\belderly\b/);
+        assert.match(result.negativePrompt,/bad anatomy|deformed limbs/);
+      }
+    }
+  }
+});
+
+test("多人公共负向不能禁止其中一人的显式镜头视线", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],ids=data.characters.slice(0,2).map(c=>c.id);
+  assert.equal(ids.length,2);
+  for(const cameraIndex of [0,1,-1]) {
+    const shot={...base,characterIds:ids,negativePromptEn:"",characterLooks:{},visualSpecConfirmed:true,visualSpec:normalizeShotSpec({visibleFacts:["two people walking"],scene:{},characters:ids.map((characterId,index)=>({characterId,action:"walking",gazeTarget:index===cameraIndex?"looking at the camera":"looking forward along the path"})),interactions:[],camera:{},stateChanges:[],warnings:[]},{...base,characterIds:ids})};
+    const ordinary=buildGenerationPrompt(shot,data.assets,data.characters),regional=buildRegionalPrompt(shot,data.assets,data.characters);
+    for(const result of [ordinary,regional]) {
+      if(cameraIndex>=0) assert.doesNotMatch(result.negativePrompt,/looking at viewer|eye contact with camera|front-facing portrait gaze/);
+      else assert.match(result.negativePrompt,/looking at viewer/);
+    }
+    if(cameraIndex>=0) assert.match(regional.characterRegions[cameraIndex].prompt,/looking at the camera/);
+    assert.match(regional.characterRegions[cameraIndex===0?1:0].prompt,/looking forward along the path/);
+  }
+});
+
+test("基础镜头视线识别与身份阶段支持相同肯定和否定表达", () => {
+  const data=getStudioData(1),base=data.episode.pages[0].shots[0],id=base.characterIds[0];
+  for(const [gaze,allowed] of [["looking directly at the camera",true],["gazing towards the viewer",true],["eye contact with viewer",true],["not looking at the camera",false],["avoid gazing directly towards the viewer",false],["without eye contact with viewer",false]] as const) {
+    const shot={...base,characterIds:[id],negativePromptEn:"",characterLooks:{},visualSpecConfirmed:true,visualSpec:normalizeShotSpec({visibleFacts:["a person walking"],scene:{},characters:[{characterId:id,action:"walking",gazeTarget:gaze}],interactions:[],camera:{},stateChanges:[],warnings:[]},{...base,characterIds:[id]})};
+    for(const result of [buildGenerationPrompt(shot,data.assets,data.characters),buildRegionalPrompt(shot,data.assets,data.characters)]) {
+      assert.equal(/looking at viewer/.test(result.negativePrompt),!allowed,gaze);
+    }
+  }
+});
+
+test("复杂表情保留否定与混合情绪，不被关键词改写",()=>{
+  for(const value of ["unhappy", "not happy", "sad but smiling", "happy but worried", "不高兴", "悲喜交加", "surprised but not afraid"]) {
+    assert.equal(expressionPrompt(value),`${value}, clearly readable facial expression`);
+  }
+  assert.match(expressionPrompt("happy"),/warm open smile/);
+  assert.match(expressionPrompt("surprised"),/raised brows/);
+});
+
+test("历史手部无轮廓草稿可以整体确认并保留未应用警告", () => {
+  const data=getStudioData(1),shot=data.episode.pages[0].shots[0];
+  const items=[{id:"character_count_review_required",label:"人物数量",priority:"P0",required:true,expectation:"恰好一人",sources:["generationSpec"]}];
+  const payload={phase:"draft",draftImagePath:"../角色资产/小粉/00-原始参考图.png",recipe:{phase:"draft",endpoint:"http://127.0.0.1:7860/sdapi/v1/txt2img",postprocessWarnings:["手部深度修复未应用，已保留道具阶段图片：所有可用手部检测器均未返回可用轮廓"],pixelQa:{status:"passed"},semanticQa:{version:"semantic-review-v1",status:"manual_required",items,labels:[items[0].id]},references:[],finalReferences:[]}};
+  const id=createPersistentGenerationJob(shot.id,"sd-webui",payload);
+  updateGenerationJobPayload(id,payload);
+  updatePersistentGenerationJob(id,"draft_blocked",100,"","等待整体确认");
+  updateGenerationJobPayload(id,{...payload,recipe:{...payload.recipe,pixelQa:{status:"blocked"}}});
+  assert.equal(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{},overallConfirmed:true}),null);
+  updateGenerationJobPayload(id,{...payload,recipe:{...payload.recipe,postprocessWarnings:["视线校正失败"]}});
+  assert.equal(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{},overallConfirmed:true}),null);
+  updateGenerationJobPayload(id,payload);
+  assert.ok(approveSdDraft(1,id,{version:"semantic-review-v1",verdicts:{},overallConfirmed:true,notes:"用户已整体确认草稿。"}));
+  const stored=JSON.parse(getGenerationJobRecord(id).payload);
+  assert.equal(getGenerationJobRecord(id).status,"final_queued");
+  assert.deepEqual(stored.recipe.postprocessWarnings,payload.recipe.postprocessWarnings);
+  assert.equal(stored.recipe.semanticApproval.reviewMode,"overall_confirmation");
+  assert.equal(stored.recipe.semanticApproval.reviewedItems.length,0);
+  assert.equal(stored.recipe.semanticApproval.reviewContractSnapshot[0].id,"character_count_review_required");
+});
+

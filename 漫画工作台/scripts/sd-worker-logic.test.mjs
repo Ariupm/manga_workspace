@@ -1,6 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { baseInteractionGazePrompt } from "./sd-worker-logic.mjs";
+import { gazeRefinementPrompt } from "./sd-worker-logic.mjs";
+import { automaticVisualGateDisposition } from "./sd-worker-logic.mjs";
+
+test("enabled visual gates cannot admit unverified, skipped, failed or absent results", () => {
+  for (const status of ["unverified", "not_required", "failed", "pending", undefined]) {
+    for (const reason of ["cpu_memory_guard_skipped_clip_interrogate", "service_error", "invalid_configuration"]) {
+      assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status, reason }, 1), "block");
+    }
+  }
+  assert.equal(automaticVisualGateDisposition({ enabled: true }, { status: "passed" }), "allow");
+  assert.equal(automaticVisualGateDisposition({ enabled: false }, { status: "not_required" }), "allow");
+  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 1), "retry");
+  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 2), "block");
+});
+
+test("local gaze prompts keep visual direction while implementation coordinates and ids stay outside text", () => {
+  for (const direction of ["down", "up", "left", "right", "down_left", "down_right", "up_left", "up_right"]) {
+    for (const targetKind of ["object", "work_point", "target"]) {
+      const prompt = gazeRefinementPrompt({ direction, targetKind, object: "smartphone", gazeText: "reading the screen", expression: "gentle smile", targetCenter: { x: .37, y: .64 }, gazeTargetId: "prop:actor:998", personIndex: 2 });
+      assert.match(prompt, /reading the screen/);
+      assert.match(prompt, /gentle smile/);
+      assert.match(prompt, /head and eyes directed toward the same/);
+      for (const axis of direction.split("_")) assert.ok(prompt.includes(axis));
+      assert.doesNotMatch(prompt, /prop:|998|0\.37|0\.64|normalized|converge|\[object Object\]/);
+    }
+  }
+  const legacy = gazeRefinementPrompt({ direction: "down", gazeText: { kind: "object" }, object: { id: "private-id" } });
+  assert.doesNotMatch(legacy, /\[object Object\]|private-id|undefined/);
+});
 
 test("structured gaze survives base prompt compilation without object coercion or object-mode leakage", () => {
   for (const object of ["smartphone", "book", "cup", "package", "tool"]) {
@@ -48,6 +77,23 @@ test("base identity mask is a face-only ellipse even when a single-person refere
   assert.ok(plan.normalizedBounds.width < .25);
   assert.ok(plan.normalizedBounds.height < .3);
   assert.ok(plan.normalizedBounds.y + plan.normalizedBounds.height < .32, "identity reference must not reach the upper garment");
+});
+
+test("local face passes preserve projected edge and lower-half noses with truthful fallback", () => {
+  for (const shotSize of ["close-up", "medium shot", "full shot"]) {
+    for (const x of [.02, .5, .98]) for (const y of [.03, .6, .92]) {
+      for (const pass of ["identity", "gaze"]) {
+        const plan = faceRefinementPassPlan({ pass, shotSize, poseNose: { x, y }, region: { xStart: x < .5 ? 0 : .5, xEnd: x < .5 ? .5 : 1 } });
+        assert.deepEqual(plan.center, { x, y, sourceX: "pose_nose", sourceY: "pose_nose" });
+      }
+    }
+  }
+  for (const invalid of [null, undefined, NaN, Infinity, -1, 2]) {
+    const center = gazeMaskCenter({ poseNose: { x: invalid, y: invalid }, region: { xStart: .6, xEnd: 1 }, shotSize: "medium shot" });
+    assert.deepEqual(center, { x: .8, y: .27, sourceX: "region", sourceY: "shot_size" });
+  }
+  assert.equal(gazeMaskCenter({ poseNose: { y: .72 }, region: null }).sourceX, "region");
+  assert.equal(gazeMaskCenter({ poseNose: { y: .72 }, region: null }).y, .72);
 });
 
 test("base identity masks remain inside the matching character region for multiple people", () => {
@@ -124,6 +170,18 @@ test("face pass falls back by region and selects the matching multi-person ident
   assert.equal(plan.denoisingStrength,.28);
 });
 
+test("missing identity never borrows another named character via array position", () => {
+  const other = { characterId: "other", weight: .9 };
+  assert.equal(identityReferenceForCharacter([other], "missing", 0), null);
+  assert.equal(identityReferenceForCharacter([other], "", 0), null);
+  const legacy = { weight: .7 };
+  assert.equal(identityReferenceForCharacter([legacy], "missing", 0), null);
+  assert.equal(identityReferenceForCharacter([legacy], "", 0), legacy);
+  assert.equal(identityReferenceForCharacter([legacy], "", 2), null);
+  for (const refs of [[other, { characterId: "self" }], [{ characterId: "self" }, other]])
+    assert.equal(identityReferenceForCharacter(refs, "self", 0)?.characterId, "self");
+});
+
 test("semantic QA emits review requirements, never fabricated failures", () => {
   const labels=semanticReviewLabels({hasInteraction:true,gazeMode:"object",shotSize:"close-up",poseRequired:true});
   assert.deepEqual(labels,["interaction_review_required","gaze_review_required","framing_review_required","pose_review_required","hands_review_required","prop_review_required","prop_cardinality_review_required"]);
@@ -179,9 +237,10 @@ test("CPU profiles cap peak base controls and run required refinements serially"
   const fast = generationProfilePlan("cpu_local_fast", 1);
   const complex = generationProfilePlan("cpu_local_complex", 2);
   assert.equal(fast.runDraftRefinements, true);
-  assert.equal(fast.maxInitialControlUnits, 3);
+  assert.equal(fast.preferredInitialControlUnits, 3);
+  assert.equal(fast.maxInitialControlUnits, 8);
   assert.equal(fast.draftLongEdge, 448);
-  assert.equal(complex.maxInitialControlUnits, 3);
+  assert.equal(complex.preferredInitialControlUnits, 3);
   const selected = selectControlUnitsForProfile([
     { stage: "identity_reference", id: "identity" },
     { stage: "initial_prop_structure", id: "prop" },
@@ -190,7 +249,7 @@ test("CPU profiles cap peak base controls and run required refinements serially"
   assert.deepEqual(selected.map((item) => item.id), ["identity", "prop", "pose"]);
 });
 
-test("complex CPU prioritizes non-serial pose and support controls in the peak-memory base stage", () => {
+test("complex CPU retains identity with required pose prop and support; only optional controls yield", () => {
   const selected = selectControlUnitsForProfile([
     { stage: "identity_reference", id: "identity" },
     { stage: "upper_body_composition_scale", id: "composition" },
@@ -198,8 +257,8 @@ test("complex CPU prioritizes non-serial pose and support controls in the peak-m
     { stage: "pose", id: "pose" },
     { stage: "support_surface_geometry", id: "support" },
   ], "cpu_local_complex");
-  assert.deepEqual(selected.map((item) => item.id), ["prop", "pose", "support"]);
-  assert.equal(selected.some((item) => item.id === "identity"), false);
+  assert.deepEqual(selected.map((item) => item.id), ["identity", "prop", "pose", "support"]);
+  assert.equal(selected.some((item) => item.id === "identity"), true);
   assert.equal(selected.some((item) => item.id === "composition"), false);
   assert.equal(selected.some((item) => item.id === "prop"), true);
 });
@@ -211,7 +270,16 @@ test("upper-body deferred prop leaves CPU base slots for pose and support", () =
     { stage: "deferred_prop_structure", id: "prop" },
     { stage: "support_surface_geometry", id: "support" },
   ], "cpu_local_complex");
-  assert.deepEqual(selected.map((item) => item.id), ["pose", "prop", "support"]);
+  assert.deepEqual(selected.map((item) => item.id), ["identity", "pose", "prop", "support"]);
+});
+
+test("face-only serial pass cannot replace global identity and hard capacity overflow remains blocked",()=>{
+  const units=[{stage:'identity_reference',characterId:'a'},{stage:'identity_reference',characterId:'b'},{stage:'pose'},...Array.from({length:6},(_,i)=>({stage:'initial_prop_structure',relationId:String(i)}))];
+  const selected=selectControlUnitsForProfile(units,'cpu_local_complex');
+  assert.equal(selected.length,8);
+  assert.equal(controlExecutionCoverage(units,selected,{runRefinements:true,serialCapabilities:{identity_reference:{available:true,preservesPose:true,includesGlobalAppearance:false}}}).complete,false);
+  const double=units.slice(0,5);
+  assert.deepEqual(selectControlUnitsForProfile(double,'cpu_local_fast'),double);
 });
 
 test("coverage only accepts serial compensation with explicit equivalent capabilities", () => {
@@ -254,7 +322,8 @@ test("required props retain their structured category while fine content is defe
   assert.equal(/head and pupils aligned/i.test(result.prompt), true);
   assert.equal([...result.prompt].filter((character) => character === "(").length, [...result.prompt].filter((character) => character === ")").length);
   assert.match(result.prompt, /both declared hands contact distinct object-side anchors/);
-  assert.match(result.prompt, /approximately 0\.08 frame-width by 0\.16 frame-height/);
+  assert.doesNotMatch(result.prompt, /normalized frame position|frame-width|frame-height/);
+  assert.match(result.prompt, /rectangular silhouette/);
   assert.match(result.negative, /readable prop text/);
   assert.deepEqual(result.objects, ["smartphone"]);
 });
@@ -321,6 +390,15 @@ test("outfit contracts bind upper and lower garments to separate body zones", ()
     { zone: "lower", prompt: "a soft pink midi skirt" },
   ]);
   assert.deepEqual(outfitGarmentZones("navy one-piece dress"), [{ zone: "full", prompt: "navy one-piece dress" }]);
+  assert.deepEqual(outfitGarmentZones("yellow blouse"), [{ zone: "upper", prompt: "yellow blouse" }]);
+  assert.deepEqual(outfitGarmentZones("pink skirt"), [{ zone: "lower", prompt: "pink skirt" }]);
+  assert.deepEqual(outfitGarmentZones("yellow blouse with short sleeves, white buttons and pink skirt"), [
+    { zone: "upper", prompt: "yellow blouse with short sleeves, white buttons" },
+    { zone: "lower", prompt: "pink skirt" },
+  ]);
+  assert.deepEqual(outfitGarmentZones("black and white striped shirt plus blue jeans"), [
+    { zone: "upper", prompt: "black and white striped shirt" }, { zone: "lower", prompt: "blue jeans" },
+  ]);
   assert.equal(shouldUseOutfitVisualReference("upper", false), false);
   assert.equal(shouldUseOutfitVisualReference("lower", true), true);
   assert.equal(shouldUseOutfitVisualReference("full", false), false);
@@ -332,18 +410,30 @@ test("prop sizing follows shape and contact span without object-name special cas
   assert.ok(propSizePlan({ shape: "landscape_rect", contactSpan: .09, hasPoseContact: true }).height < .1);
   assert.ok(propSizePlan({ shape: "elongated", contactSpan: .09, hasPoseContact: true }).width > .14);
   const body = propBodySizePlan({ shape: "portrait_rect", orientation: "portrait", contactSpan: .09, hasPoseContact: true });
-  assert.ok(Math.abs(body.width - .0702) < 1e-9);
-  assert.ok(Math.abs(body.height - .160515) < 1e-9);
-  assert.deepEqual(body.envelope, { width: .135, height: .19575 });
+  assert.ok(body.width >= .09 - 1e-9, "the object must reach both contact points");
+  assert.ok(body.envelope.width >= body.width && body.envelope.height >= body.height);
+  for (const shape of ["portrait_rect", "landscape_rect"]) {
+    for (const contactSpan of [.06, .11, .2, .326, .48]) {
+      const actual = propBodySizePlan({ shape, contactSpan, hasPoseContact: true });
+      assert.ok(actual.width >= contactSpan - 1e-9, `${shape}/${contactSpan}: no post-projection shrink`);
+      assert.ok(actual.envelope.width >= actual.width && actual.envelope.height >= actual.height);
+      assert.ok(Number.isFinite(actual.height));
+    }
+  }
+  const independent = propBodySizePlan({ shape: "portrait_rect", contactSpan: .09, hasPoseContact: false });
+  assert.ok(independent.width < .18, "no forced expansion without pose contact evidence");
 });
 
-test("upper-body prompt omits lower garments and shoes", () => {
+test("upper-body framing preserves canonical clothing and environment facts", () => {
   const prompt = upperBodyVisiblePrompt("cream-yellow top with a soft pink midi skirt, clean casual sneakers, plush sofa, subtle foreground object framing the scene, coffee table, strict crop, no visible legs", { suppressForegroundClutter: true });
   assert.match(prompt, /cream-yellow top/);
-  assert.doesNotMatch(prompt, /midi skirt|sneakers/);
-  assert.doesNotMatch(prompt, /sofa/);
-  assert.doesNotMatch(prompt, /foreground|coffee table/);
+  assert.match(prompt, /midi skirt/);
+  assert.match(prompt, /sneakers/);
+  assert.match(prompt, /sofa/);
+  assert.doesNotMatch(prompt, /subtle foreground object/);
+  assert.match(prompt, /coffee table/);
   assert.match(prompt, /no visible legs/);
+  assert.doesNotMatch(prompt, /filling the canvas/);
 });
 
 test("upper-body portable contact prompt keeps acting hands above the lap", () => {
@@ -353,9 +443,9 @@ test("upper-body portable contact prompt keeps acting hands above the lap", () =
   });
   assert.match(prompt, /hands meet at the declared mid-chest contact point/);
   assert.match(prompt, /do not press downward onto a lap or foreground surface/);
-  assert.match(prompt, /no visible floor or ground plane/);
-  assert.doesNotMatch(prompt, /seated on a sofa/);
-  assert.doesNotMatch(prompt, /rug/);
+  assert.doesNotMatch(prompt, /interior backdrop|no visible floor/);
+  assert.match(prompt, /seated on a sofa/);
+  assert.match(prompt, /rug/);
 });
 
 test("draft review blocks visible semantic failures before final refinements", () => {
@@ -391,4 +481,96 @@ test("legacy execution review inputs preserve count anatomy framing gaze and exp
   const ids = new Set(contract.items.map((item) => item.id));
   for (const id of ["character_count_review_required", "anatomy_review_required", "framing_review_required", "gaze_review_required", "expression_review_required", "hands_review_required"]) assert.ok(ids.has(id), id);
   assert.match(contract.items.find((item) => item.id === "character_count_review_required")?.sources.join(" ") || "", /reviewInputs/);
+});
+
+ test("framing preserves outdoor roads and furniture or shoe interactions across prompt regions", () => {
+  for (const story of ["exterior doorway, eyes toward the road", "writing at a desk", "holding a shoe in her hands", "seated on a chair BREAK lying on a bed", "touching the ground beside a road"]) {
+    const prompt = upperBodyVisiblePrompt(story, { suppressForegroundClutter: true });
+    assert.ok(prompt.startsWith(story));
+    assert.doesNotMatch(prompt, /interior backdrop|no visible floor|support surface remain outside/);
+  }
+});
+
+import { characterIdentityGazePolicy } from "./sd-worker-logic.mjs";
+import { identityRefinementPrompts, faceSceneContext } from "./sd-worker-logic.mjs";
+test("identity prompts inherit scene light and only the acting character's occlusion",()=>{
+ const recipe={generationSpec:{visualSpec:{scene:{lighting:"moonlight only; all lamps off"},camera:{angle:"side view"},characters:[{characterId:"a",gazeTarget:"looking left",occlusion:"one eye hidden by hair"},{characterId:"b",gazeTarget:"looking at camera",occlusion:"face behind a red scarf"}]}}};
+ for(const id of ["a","b"]) {
+  const gaze=identityRefinementPlan(characterIdentityGazePolicy(recipe,id).text);
+  const result=identityRefinementPrompts(recipe,{characterId:id,characterPrompt:"canonical identity"},gaze);
+  assert.match(result.prompt,/moonlight only; all lamps off/);
+  assert.match(result.prompt,/side view/);
+  assert.match(result.prompt,id==="a"?/one eye hidden by hair/:/face behind a red scarf/);
+  assert.doesNotMatch(result.prompt,id==="a"?/red scarf/:/one eye hidden by hair/);
+  assert.doesNotMatch(result.prompt,/soft frontal fill|both eyes fully visible|symmetrical readable eyes/);
+  assert.doesNotMatch(result.negative_prompt,/asymmetrical eyes|deep shadow|face hidden by hair|face covered by prop/);
+  assert.match(result.negative_prompt,/wrong identity/);
+  for(const targetKind of ["object","target","work_point"]) {
+   const finalGaze=gazeRefinementPrompt({direction:"left",targetKind,sceneContext:faceSceneContext(recipe,id)});
+   assert.match(finalGaze,/moonlight only; all lamps off/);
+   assert.match(finalGaze,id==="a"?/one eye hidden by hair/:/face behind a red scarf/);
+   assert.doesNotMatch(finalGaze,id==="a"?/red scarf/:/one eye hidden by hair/);
+  }
+ }
+});
+test("identity gaze policy belongs to each character and preserves independent path directions", () => {
+  const recipe={generationSpec:{visualSpec:{characters:[{characterId:"walker",gazeTarget:"looking forward along the path"},{characterId:"portrait",gazeTarget:"looking at the camera"}]},repairPasses:{propInteractions:[{characterId:"walker",gazeMode:"independent"}]}},references:[{role:"identity",characterId:"walker",characterPrompt:"looking at viewer"}]};
+  assert.equal(characterIdentityGazePolicy(recipe,"walker").offCamera,true);
+  assert.equal(characterIdentityGazePolicy(recipe,"portrait").offCamera,false);
+  recipe.generationSpec.repairPasses.propInteractions[0].gazeMode="object";
+  assert.equal(characterIdentityGazePolicy(recipe,"portrait").offCamera,false);
+  assert.equal(characterIdentityGazePolicy(recipe,"absent").offCamera,false);
+  for(const direction of ["looking ahead", "looking down at the floor", "looking away", "gazing left", "looking forward along the path"]) assert.equal(identityRefinementPlan(direction).preservesOffCameraGaze,true);
+});
+
+test("structured gaze identity policy remains per actor without a textual target",()=>{
+ const recipe={poseExecution:{scenePlan:{people:[{characterId:"point",gazeTarget:{kind:"target",point:{x:.8,y:.3},source:"explicit"}},{characterId:"free",gazeTarget:{kind:"independent",point:null}}]}}};
+ assert.equal(characterIdentityGazePolicy(recipe,"point").offCamera,true);
+ assert.equal(identityRefinementPlan(characterIdentityGazePolicy(recipe,"point").text).denoisingStrength,.28);
+ assert.equal(characterIdentityGazePolicy(recipe,"free").offCamera,false);
+});
+
+test("negative camera gaze cannot be misread as permission to face the viewer",()=>{
+ for(const text of ["not looking at the viewer","avoid looking at camera","no forced eye contact with camera","without eye contact with the viewer"]){
+  assert.equal(identityRefinementPlan(text).allowsCameraGaze,false);
+  assert.equal(identityRefinementPlan(text).preservesOffCameraGaze,true);
+ }
+});
+
+test("explicit direct camera gaze remains permitted for its own character",()=>{
+ for(const text of ["looking directly at the camera","gazing towards the viewer","eye contact with the viewer"]){
+  assert.equal(identityRefinementPlan(text).allowsCameraGaze,true);
+  assert.equal(identityRefinementPlan(text).preservesOffCameraGaze,false);
+ }
+});
+
+import { expressionCue, expressionNegativeCue } from "./sd-worker-logic.mjs";
+test("gaze passes preserve negated and mixed expressions instead of forcing happy",()=>{
+  for(const source of ["unhappy","not happy","sad but smiling","happy but worried","不高兴"]) {
+    assert.equal(expressionCue(source),`${source}, clearly readable facial expression`);
+    assert.equal(expressionNegativeCue(source),"");
+    assert.ok(gazeRefinementPrompt({expression:expressionCue(source)}).includes(source));
+  }
+  assert.match(expressionCue("happy"),/warm open smile/);
+  assert.match(expressionNegativeCue("happy"),/sad expression/);
+});
+
+test("identity refinement preserves each actor's current expression with manual override",()=>{
+  const recipe={generationSpec:{visualSpec:{characters:[{characterId:"a",expression:"sad but smiling"},{characterId:"b",expression:"worried"}]}},characterLooks:{b:{expressionEn:"not happy"}}};
+  const plan=identityRefinementPlan("looking forward along the road");
+  const a=identityRefinementPrompts(recipe,{characterId:"a",characterPrompt:"canonical identity"},plan);
+  const b=identityRefinementPrompts(recipe,{characterId:"b",characterPrompt:"canonical identity"},plan);
+  assert.match(a.prompt,/sad but smiling/);assert.doesNotMatch(a.prompt,/not happy/);
+  assert.match(b.prompt,/not happy/);assert.doesNotMatch(b.prompt,/sad but smiling|warm open smile/);
+  assert.match(identityRefinementPrompts({}, {characterId:"c"},plan).prompt,/preserve the existing facial expression/);
+});
+
+test("parcel caption aliases accept equivalent nouns without matching mailbox", () => {
+  for (const object of ["package", "parcel", "box"]) {
+    for (const caption of ["holding a package", "holding a parcel", "holding a box", "holding boxes"]) {
+      assert.equal(evaluateCaptionForRequiredProps(caption, [{ object }]).missing.length, 0);
+    }
+    assert.equal(evaluateCaptionForRequiredProps("standing by a mailbox", [{ object }]).missing.length, 1);
+  }
+  assert.equal(evaluateCaptionForRequiredProps("holding a box", [{ object: "smartphone" }]).missing.length, 1);
 });

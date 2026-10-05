@@ -1,4 +1,5 @@
 const poseKindLabels: Record<string, string> = {
+ pose_v3_head_shoulders:"姿态·头肩景别",pose_v3_chest_action:"姿态·胸部景别",pose_v3_waist_up:"姿态·腰上景别",pose_v3_knee_up:"姿态·膝上景别",pose_v3_full_body:"姿态·全身景别",pose_v3_environment_full:"姿态·环境全景",
   umbrella_handover_v1: "双人·雨伞交接",
   single_full_body_v1: "单人·全身",
   single_action_seated_v1: "单人·坐姿动作",
@@ -36,6 +37,7 @@ const poseKindLabels: Record<string, string> = {
 };
 
 const poseSourceLabels: Record<string, string> = {
+ automatic_story_plan:"剧情动作规划",
   automatic_action_plan: "结构化动作自动选择",
   automatic_interaction_plan: "结构化交互自动选择",
   automatic_template: "自动模板",
@@ -43,6 +45,7 @@ const poseSourceLabels: Record<string, string> = {
 };
 
 const framingLabels: Record<string, string> = {
+ auto_story:"完整骨架统一投影",
   upper_body: "上身裁切骨骼",
   natural_body: "自然范围骨骼",
   full_body: "完整全身骨骼",

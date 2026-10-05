@@ -1,6 +1,8 @@
+import { englishTime } from "./story-time";
 import { createHash } from "node:crypto";
 import type { Asset, ChapterVisualPlan, Character, Shot, ShotVisualSpec, VisualValidationResult } from "./types";
 import { rankInteractionPropCandidates } from "./interaction-prop";
+import { resolveActionDescription } from "./action-description";
 export { rankInteractionPropCandidates };
 
 export const VISUAL_SCHEMA_VERSION = "1.0" as const;
@@ -10,8 +12,11 @@ const array = (value: unknown) => Array.isArray(value) ? value : [];
 const text = (value: unknown, fallback = "unknown") => typeof value === "string" && value.trim() ? value.trim() : fallback;
 const meaningful = (value: unknown) => typeof value === "string" && Boolean(value.trim()) && !/^(unknown|specific story location|coherent everyday environment|cozy home interior|calm dry weather|daytime|motivated soft (?:directional|key) light(?: with readable ambient fill)?|natural storytelling action|gentle, natural expression|looking toward the story focus|hands out of frame|clear storytelling composition)$/i.test(value.trim());
 const resolved = (value: unknown, fallback: string) => meaningful(value) ? String(value).trim() : fallback;
-const englishTime = (value: string) => /夜|晚/.test(value) ? "evening" : /晨|早/.test(value) ? "morning" : /午/.test(value) ? "afternoon" : "daytime";
 const inferredWeather = (shot: Shot) => /雨|伞|rain/i.test(`${shot.scene} ${shot.description}`) ? "visible steady rain" : "calm dry weather";
+type EnvironmentKey = "location" | "timeOfDay" | "weather" | "lighting";
+const hasEnvironmentValue = (value: unknown) => typeof value === "string" && !!value.trim() && value.trim().toLowerCase() !== "unknown";
+const explicitEnvironment = (scene: ShotVisualSpec["scene"] | undefined, key: EnvironmentKey) => scene &&
+  (scene.fallbackValues ? hasEnvironmentValue(scene[key]) && scene.fallbackValues[key] !== scene[key] : meaningful(scene[key]));
 
 const boundedRegion = (value: any, index: number, count: number) => {
   const fallbackStart = index / Math.max(1, count);
@@ -44,6 +49,7 @@ export function normalizeChapterPlan(raw: any): ChapterVisualPlan {
       lighting: resolved(item?.lighting, "motivated soft directional light with readable ambient fill"),
     })),
     timeline: array(raw?.timeline).map((item: any, index) => ({
+      ...(Number.isInteger(item?.shotId) ? { shotId: item.shotId } : {}),
       order: Number(item?.order) || index + 1, sceneId: text(item?.sceneId), summary: text(item?.summary),
       characterStates: array(item?.characterStates).map((state: any) => ({
         characterId: text(state?.characterId, ""), hair: resolved(state?.hair,"hair unchanged from the identity reference"), outfitId: text(state?.outfitId, ""),
@@ -60,17 +66,32 @@ export function normalizeChapterPlan(raw: any): ChapterVisualPlan {
   };
 }
 
-export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
+export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnvironment?: boolean; manualAppearance?: boolean } = {}): ShotVisualSpec {
+  const useSceneFallback = shot.characterIds.length <= 1;
   const rawCharacters = array(raw?.characters);
   const normalizedCharacters = shot.characterIds.map((characterId, index) => {
     const item: any = rawCharacters.find((x: any) => x?.characterId === characterId) || {};
     const look = shot.characterLooks?.[characterId];
-    return { characterId, outfitId: text(item.outfitId, "") || look?.outfitId || shot.outfitId, shoeId: text(item.shoeId, "") || look?.shoeId || shot.shoeId,
-      position: meaningful(look?.positionEn) ? look!.positionEn : resolved(item.position,index===0?"left side of the frame":"right side of the frame"), region: boundedRegion(item.region, index, shot.characterIds.length),
-      action: meaningful(look?.actionEn) ? look!.actionEn : meaningful(shot.actionEn) ? shot.actionEn : resolved(item.action,"performing the current story action"), actionTarget: resolved(item.actionTarget,"the current story focus"),
-      expression: meaningful(look?.expressionEn) ? look!.expressionEn : meaningful(shot.expressionEn) ? shot.expressionEn : resolved(item.expression,"readable attentive expression"), expressionReason: resolved(item.expressionReason,"responding to the visible event"),
+    const region = boundedRegion(item.region, index, shot.characterIds.length);
+    const regionCenter = (region.xStart + region.xEnd) / 2;
+    const defaultPosition = regionCenter < .5 ? "left side of the frame" : regionCenter > .5 ? "right side of the frame" : "center of the frame";
+    const appearanceDefaults = {hair:"hair unchanged from the identity reference",bag:"no visible bag",glasses:"no glasses",outerwearState:"no visible outerwear change"};
+    const appearance = {...appearanceDefaults};
+    const appearanceFallbacks: Partial<typeof appearanceDefaults> = {};
+    for (const key of Object.keys(appearanceDefaults) as Array<keyof typeof appearanceDefaults>) {
+      if (meaningful(item?.appearanceState?.[key])) {
+        appearance[key] = item.appearanceState[key].trim();
+        if (!options.manualAppearance && item.appearanceState.fallbackValues?.[key] === appearance[key]) appearanceFallbacks[key] = appearance[key];
+      } else appearanceFallbacks[key] = appearance[key];
+    }
+    const missingArrays = (["accessories", "condition"] as const).filter(key =>
+      !Array.isArray(item?.appearanceState?.[key]) || (!options.manualAppearance && !item.appearanceState[key].length && item.appearanceState.missingArrays?.includes(key)));
+    return { characterId, outfitId: look?.outfitId || text(item.outfitId, "") || (index === 0 ? shot.outfitId : ""), shoeId: look?.shoeId || text(item.shoeId, "") || (index === 0 ? shot.shoeId : ""),
+      position: meaningful(look?.positionEn) ? look!.positionEn : resolved(item.position, defaultPosition), region,
+      action: resolveActionDescription(meaningful(look?.actionEn) ? look!.actionEn : "", meaningful(item.action) ? item.action : "", useSceneFallback && meaningful(shot.actionEn) ? shot.actionEn : "") || "performing the current story action", actionTarget: resolved(item.actionTarget,"the current story focus"),
+      expression: meaningful(look?.expressionEn) ? look!.expressionEn : resolved(item.expression, resolved(useSceneFallback ? shot.expressionEn : "","readable attentive expression")), expressionReason: resolved(item.expressionReason,"responding to the visible event"),
       gazeTarget: meaningful(look?.gazeEn) ? look!.gazeEn : resolved(item.gazeTarget,"looking toward the current story focus"), hands: meaningful(look?.handsEn) ? look!.handsEn : resolved(item.hands,"both visible hands follow the described action"), occlusion: resolved(item.occlusion,"face and action remain unobstructed"),
-      appearanceState:{hair:resolved(item?.appearanceState?.hair,"hair unchanged from the identity reference"),bag:resolved(item?.appearanceState?.bag,"no visible bag"),accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),glasses:resolved(item?.appearanceState?.glasses,"no glasses"),outerwearState:resolved(item?.appearanceState?.outerwearState,"no visible outerwear change"),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
+      appearanceState:{...appearance,fallbackValues:appearanceFallbacks,missingArrays,accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
   });
   const normalizeInteraction = (item: any) => ({
     type: text(item?.type), actorCharacterId: text(item?.actorCharacterId, ""), targetCharacterId: text(item?.targetCharacterId, ""),
@@ -80,7 +101,7 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
     ownershipAfter: typeof item?.ownershipAfter === "string" ? item.ownershipAfter : null,
   });
   const suppliedInteractions = array(raw?.interactions || (raw?.interaction ? [raw.interaction] : [])).map(normalizeInteraction);
-  const facts = array(raw?.visibleFacts).map((x) => text(x)).join(" ");
+  const facts = useSceneFallback ? array(raw?.visibleFacts).map((x) => text(x)).join(" ") : "";
   const inferredInteractions = suppliedInteractions.length ? [] : normalizedCharacters.flatMap((character) => {
     const source = `${character.action} ${character.actionTarget} ${character.hands} ${character.gazeTarget} ${facts}`;
     const actionable = /\b(?:hold|holding|held|read|reading|use|using|operate|operating|pass|passing|hand|handing|give|giving|receive|receiving|take|taking|reach|reaching|touch|touching|carry|carrying|open|opening|write|writing|pour|pouring|show|showing|inspect|inspecting)\b|拿|持|读|看手机|使用|操作|递|交接|接过|触碰|打开|书写/i.test(source);
@@ -95,7 +116,7 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
       contact: character.hands,
       gaze: character.gazeTarget,
       facts,
-      context: shot.description,
+      context: useSceneFallback ? shot.description : "",
       targetIsCharacter: Boolean(targetIsCharacter),
     });
     // When separate hand clauses name separate props, they are separate
@@ -118,11 +139,20 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
     }));
   });
   const interactions = suppliedInteractions.length ? suppliedInteractions : inferredInteractions;
+  const defaults = { location: resolved(shot.sceneEn,"specific story location"), timeOfDay: englishTime(shot.timeOfDay), weather: inferredWeather(shot), lighting: resolved(shot.lightingEn,"motivated soft key light with readable ambient fill") };
+  const fallbackValues: NonNullable<ShotVisualSpec["scene"]["fallbackValues"]> = {};
+  const environment = { ...defaults };
+  for (const key of Object.keys(defaults) as EnvironmentKey[]) {
+    if (hasEnvironmentValue(raw?.scene?.[key])) {
+      environment[key] = raw.scene[key].trim();
+      if (!options.manualEnvironment && raw.scene.fallbackValues?.[key] === environment[key]) fallbackValues[key] = environment[key];
+    } else fallbackValues[key] = environment[key];
+  }
   return {
     schemaVersion: VISUAL_SCHEMA_VERSION,
     visibleFacts: array(raw?.visibleFacts).map((x) => text(x)).filter(meaningful).length ? array(raw?.visibleFacts).map((x) => text(x)).filter(meaningful) : [resolved(shot.actionEn,"the character performs the current story action")],
-    scene: { sceneId: resolved(raw?.scene?.sceneId,"current_scene"), location: resolved(raw?.scene?.location,resolved(shot.sceneEn,"specific story location")), timeOfDay: resolved(raw?.scene?.timeOfDay,englishTime(shot.timeOfDay)),
-      weather: resolved(raw?.scene?.weather,inferredWeather(shot)), anchors: array(raw?.scene?.anchors).map((x) => text(x)).filter(meaningful), lighting: resolved(raw?.scene?.lighting,resolved(shot.lightingEn,"motivated soft key light with readable ambient fill")) },
+    scene: { sceneId: resolved(raw?.scene?.sceneId,"current_scene"), ...environment, fallbackValues,
+      anchors: array(raw?.scene?.anchors).map((x) => text(x)).filter(meaningful) },
     characters: normalizedCharacters,
     interaction: raw?.interaction ? { type: text(raw.interaction.type), propId: text(raw.interaction.propId, ""),
       actorCharacterId: text(raw.interaction.actorCharacterId, ""), targetCharacterId: text(raw.interaction.targetCharacterId, ""),
@@ -139,19 +169,59 @@ export function normalizeShotSpec(raw: any, shot: Shot): ShotVisualSpec {
   };
 }
 
-export function inheritShotContinuity(spec:ShotVisualSpec,previous:ShotVisualSpec|null,plan:ChapterVisualPlan|null) {
+export function characterContinuityMemory(shots: Shot[], currentIndex: number, allowPending = false) {
+  const wanted = new Set(shots[currentIndex]?.characterIds || []);
+  const latest = new Map<string, { shotId: number; confirmed: boolean; character: ShotVisualSpec["characters"][number] }>();
+  for (const shot of shots.slice(0, currentIndex)) {
+    if (!shot.visualSpec || (!shot.visualSpecConfirmed && !allowPending)) continue;
+    for (const character of shot.visualSpec.characters) if (wanted.has(character.characterId)) {
+      latest.set(character.characterId, { shotId: shot.id, confirmed: shot.visualSpecConfirmed, character: JSON.parse(JSON.stringify(character)) });
+    }
+  }
+  return [...latest.values()];
+}
+
+export function inheritShotContinuity(spec:ShotVisualSpec,previous:ShotVisualSpec|null,plan:ChapterVisualPlan|null, history: ShotVisualSpec["characters"] = []) {
   const inherited:ShotVisualSpec=JSON.parse(JSON.stringify(spec));
   const planScene=plan?.scenes.find((x)=>x.id===inherited.scene.sceneId);
+  const sceneKey = (value: string | undefined) => (value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const hasSceneId = (value: string | undefined) => Boolean(sceneKey(value)) && !/^(?:unknown|current_scene)$/.test(sceneKey(value));
+  // Adjacent panels can change locations. A legacy placeholder ID is not scene identity.
+  const sameScene = previous && (hasSceneId(inherited.scene.sceneId) && hasSceneId(previous.scene.sceneId)
+    ? inherited.scene.sceneId === previous.scene.sceneId
+    : meaningful(inherited.scene.location) && meaningful(previous.scene.location) && sceneKey(inherited.scene.location) === sceneKey(previous.scene.location));
+  const previousScene = sameScene ? previous!.scene : undefined;
+  // A location may persist while its visible environment changes. Anchors can
+  // contain state (lit lamps, wet roads), so do not copy them across a declared
+  // state change, even when an old chapter plan reused the same scene ID.
+  const compatibleState = (candidate: typeof previousScene) => candidate &&
+    (["timeOfDay", "weather", "lighting"] as const).every(key =>
+      !explicitEnvironment(spec.scene,key) || !explicitEnvironment(candidate,key) || sceneKey(spec.scene[key]) === sceneKey(candidate[key]));
+  const previousEnvironment = compatibleState(previousScene) ? previousScene : undefined;
+  const plannedEnvironment = compatibleState(planScene && { ...planScene, sceneId: planScene.id, fallbackValues: {} }) ? planScene : undefined;
   for(const key of ["location","timeOfDay","weather","lighting"] as const) {
-    if(!meaningful(inherited.scene[key])) inherited.scene[key]=meaningful(previous?.scene[key])?previous!.scene[key]:meaningful(planScene?.[key])?String(planScene![key]):key==="weather"?"calm dry weather":key==="lighting"?"motivated soft directional light":key==="timeOfDay"?"daytime":"specific story location";
+    const before = key === "location" ? previousScene : previousEnvironment;
+    const planned = key === "location" ? planScene : plannedEnvironment;
+    if(!explicitEnvironment(inherited.scene,key)) {
+      const source = explicitEnvironment(before,key) ? before : planned && hasEnvironmentValue(planned[key]) ? planned : undefined;
+      if (source) {
+        inherited.scene[key] = source[key];
+        if (inherited.scene.fallbackValues) delete inherited.scene.fallbackValues[key];
+      }
+    }
   }
-  if(!inherited.scene.anchors.length) inherited.scene.anchors=previous?.scene.anchors.length?[...previous.scene.anchors]:planScene?.anchors?[...planScene.anchors]:[];
+  if(!inherited.scene.anchors.length) inherited.scene.anchors=previousEnvironment?.anchors.length?[...previousEnvironment.anchors]:plannedEnvironment?.anchors?[...plannedEnvironment.anchors]:[];
   for(const character of inherited.characters) {
-    const before=previous?.characters.find((x)=>x.characterId===character.characterId);
+    const before=previous?.characters.find((x)=>x.characterId===character.characterId) || history.find(x=>x.characterId===character.characterId);
     if(!meaningful(character.position)&&before)character.position=before.position;
     if(!character.outfitId&&before)character.outfitId=before.outfitId;
     if(!character.shoeId&&before)character.shoeId=before.shoeId;
-    if(before){for(const key of ["hair","bag","glasses","outerwearState"] as const)if(!meaningful(character.appearanceState[key]))character.appearanceState[key]=before.appearanceState[key];if(!character.appearanceState.accessories.length)character.appearanceState.accessories=[...before.appearanceState.accessories];if(!character.appearanceState.condition.length)character.appearanceState.condition=[...before.appearanceState.condition];}
+    if(before){for(const key of ["hair","bag","glasses","outerwearState"] as const)if(!meaningful(character.appearanceState[key]) || character.appearanceState.fallbackValues?.[key] === character.appearanceState[key]) {
+      character.appearanceState[key]=before.appearanceState[key];
+      character.appearanceState.fallbackValues ||= {};
+      if (before.appearanceState.fallbackValues?.[key] === before.appearanceState[key]) character.appearanceState.fallbackValues[key]=before.appearanceState[key];
+      else delete character.appearanceState.fallbackValues[key];
+    }for(const key of character.appearanceState.missingArrays || []) if(!character.appearanceState[key].length)character.appearanceState[key]=[...before.appearanceState[key]];character.appearanceState.missingArrays=(character.appearanceState.missingArrays || []).filter(key=>!character.appearanceState[key].length && before.appearanceState.missingArrays?.includes(key));}
   }
   return inherited;
 }
@@ -206,5 +276,5 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
   return { valid: errors.length === 0 && !blocked, errors, warnings, conflicts, failures, blocked };
 }
 
-export const chapterSystemPrompt = `You are a visual continuity director for serialized anime comics. Output JSON only. Use only supplied character and asset IDs. Every descriptive value, warning and note must be English; IDs must remain unchanged. Describe visible facts, persistent states, locations, weather, lighting, props and continuity. When a harmless visual detail is missing, infer one plausible production-ready choice from the story, character profile, adjacent shots and genre. Never write "unknown", never invent an ID, and never add a new plot event.`;
+export const chapterSystemPrompt = `You are a visual continuity director for serialized anime comics. Output JSON only. Use only supplied character and asset IDs. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Create stable English IDs for story scenes and prop instances, keeping them across panels; these are not character or asset IDs. Describe visible facts, persistent states, locations, weather, lighting, props and continuity. When a harmless visual detail is missing, infer one plausible production-ready choice from the story, character profile, adjacent shots and genre. Never write "unknown", never invent a character or asset ID, and never add a new plot event.`;
 export const shotSystemPrompt = `You are a storyboard visual director for Stable Diffusion. Output JSON only. Every descriptive value, warning and note must be English; supplied IDs must remain unchanged. Convert narrative meaning into directly visible facts and precise subject-action-target relationships. Always output an interactions array. It may be empty only for a genuinely static shot with no person-person or person-prop action. Every explicit prop operation, hand contact, handoff, or multi-subject action must have one complete interactions entry with type, actorCharacterId, targetCharacterId or propId, action, phase, contactPoints, gazeTarget, ownershipBefore, and ownershipAfter; emit multiple entries when the shot contains multiple relations. For every character describe position, normalized xStart/xEnd region, concrete action, actionTarget, facial expression, expressionReason, gazeTarget, visible hands, occlusion, outfitId, shoeId, and appearanceState containing hair, bag, accessories, glasses, outerwearState and visible condition. Describe a physically specific location, time, weather, architectural or furniture anchors, motivated lighting, camera size, angle, axis, focus and composition. Preserve explicit manual camera, character, outfit and shoe selections. Infer plausible non-plot-changing visual details from character assets, adjacent shots and scene context instead of writing "unknown". Never invent a character or asset ID or invisible psychology.`;

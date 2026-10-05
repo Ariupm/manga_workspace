@@ -5,3 +5,13 @@ data/*.db
 data/deepseek-config.json
 exports/*
 !exports/.gitkeep
+
+# 本机配置、数据库及运行产物（保留本地文件）
+.env*
+!.env.example
+data/*.db-*
+data/*.db.*
+*.log
+*.tsbuildinfo
+.idea/
+workspace/

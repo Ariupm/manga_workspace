@@ -1,5 +1,8 @@
+import {poseConditioningPolicy} from "../scripts/pose-conditioning-policy.mjs";
 import type { Shot } from "./types";
 import type { PoseControlV3 } from "./pose-v3/schema";
+import { isNarrativeActionInstruction } from "./action-description";
+import { positivePoseText, basicTemplateFromText, basicFamilyForTemplate } from "./pose-basic-semantics";
 
 export type PosePoint = { x: number; y: number };
 export type PoseGazeTargetKind = "object" | "work_point" | "target" | "independent";
@@ -72,6 +75,9 @@ export type PoseInteractionKindV2 =
   | "confrontation";
 
 export type PoseInteractionInput = {
+  actionPlan?:import("./story-action-contract").StoryActionContract;
+  shape?: string;
+  orientation?: string;
   relationId?: string;
   characterId: string;
   required: boolean;
@@ -90,7 +96,8 @@ export type PoseInteractionInput = {
 export type SupportRelationGeometry = {
   characterId: string;
   supportSurfaceId: string;
-  supportKind: "sofa" | "chair" | "bed" | "floor" | "unknown";
+  supportKind: "sofa" | "chair" | "bed" | "floor" | "wall" | "unknown";
+  backEdge?: { x: number; yStart: number; yEnd: number };
   region: { xStart: number; xEnd: number; yStart: number; yEnd: number };
   pelvisAnchor: PosePoint;
   torsoAnchor: PosePoint;
@@ -117,7 +124,7 @@ export type PosePersonPlanV2 = {
   scale: number;
   target: PosePoint | null;
   gazeTarget: PoseGazeTarget;
-  relationTargets: Array<{ relationId?: string; object: string; purpose: string; target: PosePoint; gazeTarget: PoseGazeTarget; handMode: "one" | "two"; activeHand: "left" | "right" | "both"; objectInstanceId?: string; contactAnchors?: Array<{ hand: "left" | "right"; x: number; y: number }>; wristAssignments?: Array<{ hand: "left" | "right"; joint: number; x: number; y: number }>; conflict?: "wrist_already_reserved" }>;
+  relationTargets: Array<{ actionRelationAudit?:import("./pose-v3/action-relations").ActionRelationAudit; actionPlan?:import("./story-action-contract").StoryActionContract; relationId?: string; object: string; purpose: string; target: PosePoint; gazeTarget: PoseGazeTarget; handMode: "one" | "two"; activeHand: "left" | "right" | "both"; objectInstanceId?: string; contactAnchors?: Array<{ hand: "left" | "right"; x: number; y: number }>; wristAssignments?: Array<{ hand: "left" | "right"; joint: number; x: number; y: number }>; conflict?: "wrist_already_reserved" }>;
   supportRelation: SupportRelationGeometry;
   headDirection: PoseHeadDirection;
   locomotion: PoseLocomotionPlanV2 | null;
@@ -127,6 +134,10 @@ export type PosePersonPlanV2 = {
 
 export type PoseControlProfile = {
   id: "subtle_upper" | "standard_upper" | "dynamic_full" | "multi_contact" | "walk_upper" | "run_upper" | "walk_full" | "run_full";
+  policyVersion?: "pose-conditioning-1" | "pose-conditioning-2";
+  strength?: "auto"|"flexible"|"strict";
+  controlMode?: string;
+  reason?: string;
   weight: number;
   guidanceStart: number;
   guidanceEnd: number;
@@ -163,12 +174,18 @@ export type PoseSafetyResult = {
 export type PoseControlOverrideV1 = {
   schemaVersion: "pose-override-v1";
   templateId?: string;
+  actionGeometry?: import("./pose-v3/action-relations").ActionGeometryInput;
+  conditioning?: import("../scripts/pose-conditioning-policy.mjs").PoseConditioningPreference;
   phase?: PosePhase;
   intensity?: PoseIntensity;
   handedness?: PoseHandedness;
   targetDirection?: "left" | "center" | "right" | "up" | "down";
   mirror?: boolean;
   spacing?: "close" | "normal" | "wide";
+  bodyView?: "front" | "three_quarter" | "left_profile" | "right_profile";
+  kneeSpacing?: "natural" | "together" | "apart";
+  bodyTemplateId?: import("./pose-basic-semantics").BasicTemplateId;
+  armTemplateId?: "hold_one" | "hold_two" | "phone_one" | "phone_two" | "none";
   swapRoles?: boolean;
   confirmPoseContract?: boolean;
   people?: PosePoint[][];
@@ -241,10 +258,10 @@ export const posePresetCatalog: PosePresetDefinition[] = [
   { id: "double_confrontation_v2", label: "对峙", category: "双人互动", peopleCount: 2, family: "confrontation" },
 ];
 
-const openPoseColors = [
+export const openPoseColors = [
   "#ff0000", "#ff5500", "#ffaa00", "#ffff00", "#aaff00", "#55ff00",
   "#00ff00", "#00ff55", "#00ffaa", "#00ffff", "#00aaff", "#0055ff",
-  "#0000ff", "#5500ff", "#aa00ff", "#ff00ff", "#ff00aa",
+  "#0000ff", "#5500ff", "#aa00ff", "#ff00ff", "#ff00aa", "#ff0055",
 ];
 
 export const openPoseLimbs = [
@@ -315,11 +332,11 @@ const actionRules: Array<[PoseActionFamilyV2, RegExp]> = [
   ["lie", /\b(?:lie|lies|lying|lay)\b|lie down|躺|卧倒|平卧/i],
   ["recline", /reclin|lean(?:ing|s)? back|斜靠|倚靠|半躺/i],
   ["crouch_kneel", /crouch|squat|kneel|跪|蹲/i],
-  ["seated", /\b(?:sit|sits|sitting|seated)\b|sofa|couch|chair|坐|沙发|椅子/i],
+  ["seated", /\b(?:sit|sits|sitting|seated)\b|坐/i],
   ["locomotion", /\b(?:walk|walking|walks|walked|run|running|runs|ran|stride|striding|step|stepping|enter|entering|exit|exiting|leave|leaving|approach|approaching)\b|走|跑|迈步|进入|离开|出门|走向/i],
   ["self_touch", /rub(?:bing|s)? .*?(?:eye|eyes|face)|touch(?:ing|es)? .*?(?:eye|eyes|face|forehead)|cover(?:ing|s)? .*?(?:face|eyes)|揉眼|揉脸|摸脸|捂脸|扶额/i],
   ["point", /\bpoint(?:ing|s|ed)?\s+(?:toward|at|to)\b|gesture(?:s|d|ing)? toward|指向|指着|指给/i],
-  ["operate_environment", /turn(?:ing|s|ed)? (?:off|on)|switch(?:ing|es|ed)?|press(?:ing|es|ed)? .*?(?:switch|button)|开灯|关灯|开关|按(?:下)?按钮/i],
+  ["operate_environment", /(?:turn(?:ing|s|ed)?|rotat(?:e|ing)) (?:a |the )?(?:knob|handle)|旋钮|转动把手|turn(?:ing|s|ed)? (?:off|on)|switch(?:ing|es|ed)?|press(?:ing|es|ed)? .*?(?:switch|button)|开灯|关灯|开关|按(?:下)?按钮/i],
   ["push_pull", /\b(?:push|pushing|pull|pulling|drag|dragging)\b|推|拉|拖/i],
   ["pick_place", /\b(?:pick(?:ing)? up|take|taking|remove|removing|place|placing|put|putting|set down)\b|拿起|取出|放下|摆放/i],
   ["open_close", /\b(?:open|opening|close|closing|shut|unfold|fold|turning pages?|flip(?:ping)? pages?)\b|打开|关闭|合上|翻页/i],
@@ -330,7 +347,7 @@ const actionRules: Array<[PoseActionFamilyV2, RegExp]> = [
   ["reach", /\breach(?:ing|es|ed)?\b|extend(?:ing|s|ed)? .*?(?:arm|hand)|伸手|探手|够向/i],
   ["bend", /\b(?:bend|bends|bending|stoop|stooping)\b|lean(?:ing|s)? forward|俯身|弯腰/i],
   ["turn", /turn(?:ing|s|ed)? (?:around|back|head|body)|look(?:ing|s)? back|回头|转身|扭头/i],
-  ["head_gesture", /\b(?:nod|nods|nodding|yawn|yawning|frown|frowning|smile|smiling|sigh|sighing)\b|eyes? (?:light(?:ing)? up|widen(?:ing|s|ed)?)|look(?:ing|s)? up|raise(?:s|d|ing)? .*?head|点头|摇头|抬头|仰头|打哈欠|眼睛一亮|皱眉|微笑|叹气/i],
+  ["head_gesture", /\b(?:nod|nods|nodding|yawn|yawning|frown|frowning|smile|smiling|sigh|sighing)\b|eyes? (?:light(?:ing)? up|widen(?:ing|s|ed)?)|look(?:ing|s)? up|raise(?:s|d|ing)? .*?head|tilt(?:ing)? .*?head|lower(?:ing)? .*?head|turn(?:ing)? .*?head|点头|低头|歪头|摇头|抬头|仰头|打哈欠|眼睛一亮|皱眉|微笑|叹气/i],
 ];
 
 const primaryOrder: PoseActionFamilyV2[] = [
@@ -424,7 +441,7 @@ const textForCharacter = (shot: Shot, characterId: string) => {
     planned?.action, planned?.actionTarget, planned?.gazeTarget, planned?.hands,
     look?.actionEn, look?.gazeEn, look?.handsEn, shot.actionEn, shot.description,
     ...(shot.visualSpecConfirmed ? shot.visualSpec?.visibleFacts || [] : []),
-  ].filter(Boolean).join("; "));
+  ].filter(value => Boolean(value) && !isNarrativeActionInstruction(value)).join("; "));
 };
 
 const primaryTextForCharacter = (shot: Shot, characterId: string) => {
@@ -435,7 +452,7 @@ const primaryTextForCharacter = (shot: Shot, characterId: string) => {
     ...relations.flatMap((item) => [item.type, item.action, item.phase, item.propId, item.gazeTarget, ...item.contactPoints]),
     planned?.action, planned?.actionTarget, planned?.hands,
     look?.actionEn, look?.handsEn, shot.actionEn,
-  ].filter(Boolean).join("; "));
+  ].filter(value => Boolean(value) && !isNarrativeActionInstruction(value)).join("; "));
 };
 
 const regionForCharacter = (shot: Shot, characterId: string, index: number, count: number, interaction?: PoseInteractionInput) => {
@@ -523,7 +540,7 @@ const detectInteractionKind = (source: string): PoseInteractionKindV2 => {
   return "conversation";
 };
 
-const profileForPlan = (peopleCount: number, framingMode: PoseFramingModeV2, people: PosePersonPlanV2[]): PoseControlProfile => {
+export const profileForPlan = (peopleCount: number, framingMode: PoseFramingModeV2, people: PosePersonPlanV2[]): PoseControlProfile => {
   if (peopleCount === 2) return { id: "multi_contact", weight: 0.9, guidanceStart: 0, guidanceEnd: 0.85 };
   const locomotion = people.find((person) => person.primaryAction === "locomotion")?.locomotion;
   if (locomotion) {
@@ -553,14 +570,23 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
       : clean(`${shot.actionEn} ${shot.description}`) ? "shot_action" as const : "fallback" as const;
   const people = shot.characterIds.map((characterId, index) => {
     const text = textForCharacter(shot, characterId);
-    const primaryText = primaryTextForCharacter(shot, characterId);
+    const primaryText = positivePoseText(primaryTextForCharacter(shot, characterId));
     const characterInteractions = interactions.filter((item) => item.characterId === characterId);
     const interaction = characterInteractions.find((item) => item.required) || characterInteractions[0];
+    const explicitBasic = basicTemplateFromText(primaryText);
+    const basicFamilies = new Set(["lie", "recline", "crouch_kneel", "seated", "static"]);
     const primaryDetected = unique(actionRules.filter(([, pattern]) => pattern.test(primaryText)).map(([family]) => family));
     const detected = unique([
       ...primaryDetected,
-      ...actionRules.filter(([, pattern]) => pattern.test(text)).map(([family]) => family),
+      ...actionRules.filter(([, pattern]) => pattern.test(positivePoseText(text))).map(([family]) => family),
     ]);
+    if (explicitBasic) {
+      const family = basicFamilyForTemplate(explicitBasic);
+      for (const list of [primaryDetected, detected]) {
+        for (let i=list.length-1;i>=0;i--) if(basicFamilies.has(list[i])) list.splice(i,1);
+        if(family!=="static") list.unshift(family);
+      }
+    }
     for (const relation of characterInteractions) {
       if (relation.required) {
         if (["read", "watch", "inspect", "capture", "scan", "call"].includes(relation.purpose)) detected.push("read_phone");
@@ -602,7 +628,7 @@ export function derivePoseScenePlanV2(shot: Shot, interactions: PoseInteractionI
     const locomotion = primaryAction === "locomotion"
       ? deriveLocomotionPlan(text, phase, intensity, variantId, framingMode)
       : null;
-    const relationTargets = resolvedInteractionGazeTargets.filter(({ relation }) => relation.required).map(({ relation, gazeTarget: relationGazeTarget }) => ({ relationId: relation.relationId, object: relation.object, purpose: relation.purpose, target: { x: clamp(relation.objectCenter.x, 0.1, 0.9), y: clamp(relation.objectCenter.y, 0.2, 0.85) }, gazeTarget: relationGazeTarget, handMode: relation.handMode, activeHand: relation.activeHand || (relation.handMode === "two" ? "both" : "right"), objectInstanceId: relation.objectInstanceId, contactAnchors: relation.contactAnchors?.map((anchor) => ({ hand: anchor.hand, x: clamp(anchor.x, .05, .95), y: clamp(anchor.y, .1, .9) })) }));
+    const relationTargets = resolvedInteractionGazeTargets.filter(({ relation }) => relation.required).map(({ relation, gazeTarget: relationGazeTarget }) => ({ actionPlan:relation.actionPlan, relationId: relation.relationId, object: relation.object, purpose: relation.purpose, target: { x: clamp(relation.objectCenter.x, 0.1, 0.9), y: clamp(relation.objectCenter.y, 0.2, 0.85) }, gazeTarget: relationGazeTarget, handMode: relation.handMode, activeHand: relation.activeHand || (relation.handMode === "two" ? "both" : "right"), objectInstanceId: relation.objectInstanceId, contactAnchors: relation.contactAnchors?.map((anchor) => ({ hand: anchor.hand, x: clamp(anchor.x, .05, .95), y: clamp(anchor.y, .1, .9) })) }));
     return {
       characterId,
       actions,
@@ -675,7 +701,7 @@ const facePoints = (nose: PosePoint, direction: { dx?: number; dy?: number } = {
 const intensityFactor = (value: PoseIntensity) => value === "dynamic" ? 1.18 : value === "calm" ? 0.86 : 1;
 const phaseFactor = (value: PosePhase) => value === "anticipation" ? 0.76 : value === "follow_through" ? 1.08 : 1;
 
-function buildSinglePerson(plan: PosePersonPlanV2): PosePoint[] {
+function buildSinglePerson(plan: PosePersonPlanV2, unbounded = false): PosePoint[] {
   const cx = plan.anchor.x;
   const variantShift = (plan.variantId - 1) * 0.012;
   const reachFactor = intensityFactor(plan.intensity) * phaseFactor(plan.phase);
@@ -833,11 +859,11 @@ function buildSinglePerson(plan: PosePersonPlanV2): PosePoint[] {
     const center = plan.anchor.x;
     points = points.map((point) => ({ ...point, x: center - (point.x - center) }));
   }
-  return points.map((point) => ({ x: clamp(point.x, 0.03, 0.97), y: point.y }));
+  return unbounded ? points : points.map((point) => ({ x: clamp(point.x, 0.03, 0.97), y: point.y }));
 }
 
-function buildDoublePeople(plan: PoseScenePlanV2): PosePoint[][] {
-  const people = plan.people.map((person) => buildSinglePerson({ ...person, actions: person.actions.includes("locomotion") ? person.actions : ["static"], primaryAction: person.actions.includes("locomotion") ? "locomotion" : "static", mirror: false }));
+function buildDoublePeople(plan: PoseScenePlanV2, unbounded = false): PosePoint[][] {
+  const people = plan.people.map((person) => buildSinglePerson({ ...person, actions: person.actions.includes("locomotion") ? person.actions : ["static"], primaryAction: person.actions.includes("locomotion") ? "locomotion" : "static", mirror: false }, unbounded));
   const [left, right] = people;
   const target = plan.interactionTarget || { x: 0.5, y: 0.5 };
   const setArm = (person: PosePoint[], side: "inner" | "outer", elbow: PosePoint, wrist: PosePoint, personIndex: number) => {
@@ -889,7 +915,7 @@ function buildDoublePeople(plan: PoseScenePlanV2): PosePoint[][] {
   }
   for (const person of people) {
     person.splice(14, 4, ...facePoints(person[0]));
-    person.forEach((point) => { point.x = clamp(point.x, 0.03, 0.97); });
+    if (!unbounded) person.forEach((point) => { point.x = clamp(point.x, 0.03, 0.97); });
   }
   return people;
 }
@@ -963,6 +989,7 @@ const applyFraming = (people: PosePoint[][], framingGeometry: PoseFramingGeometr
 const enforceHeadNeckGeometry = (person: PosePoint[], plan: PosePersonPlanV2) => {
   const nose = person[0], neck = person[1];
   if (!nose || !neck) return;
+  const previousNose = { ...nose };
   const gazePoint = gazeTargetForPersonPlan(plan).point;
   // Encode target-facing head pitch/yaw in the COCO face geometry while keeping
   // the head attached above the neck. A text-only gaze instruction is too weak
@@ -977,6 +1004,16 @@ const enforceHeadNeckGeometry = (person: PosePoint[], plan: PosePersonPlanV2) =>
   const encodedDirection = headDirectionFor(nose, gazePoint);
   plan.headDirection = encodedDirection;
   person.splice(14, 4, ...facePoints(nose, encodedDirection));
+  // Automatic self-touch was solved against the old face. Head-direction
+  // correction must carry its wrist contact along, unless an explicit prop
+  // assignment owns that hand. User-edited joints are applied after this step.
+  if (plan.actions.includes("self_touch")) {
+    const wristIndex = plan.handedness === "left" ? 7 : 4;
+    const assignedToProp = plan.relationTargets.some(relation => relation.wristAssignments?.some(assignment => assignment.joint === wristIndex));
+    if (!assignedToProp && person[wristIndex]) {
+      person[wristIndex] = { x: person[wristIndex].x + nose.x - previousNose.x, y: person[wristIndex].y + nose.y - previousNose.y };
+    }
+  }
 };
 
 const enforceUprightShoulderGeometry = (person: PosePoint[], plan: PosePersonPlanV2) => {
@@ -1043,8 +1080,8 @@ const kindForDouble = (plan: PoseScenePlanV2) => /umbrella|伞/i.test(plan.peopl
   ? "umbrella_handover_v1"
   : `double_action_${plan.interactionKind || "conversation"}_v2`;
 
-export function buildPoseControlFromPlan(plan: PoseScenePlanV2, width = 512, height = 512): PoseControlV2 {
-  const rawPeople = plan.peopleCount === 2 ? buildDoublePeople(plan) : [buildSinglePerson(plan.people[0])];
+export function buildPoseControlFromPlan(plan: PoseScenePlanV2, width = 512, height = 512, unbounded = false): PoseControlV2 {
+  const rawPeople = plan.peopleCount === 2 ? buildDoublePeople(plan, unbounded) : [buildSinglePerson(plan.people[0], unbounded)];
   const runtimeConflicts = plan.people.flatMap((person) => person.relationTargets.filter((relation) => relation.conflict && relation.relationId).map((relation) => ({ characterId: person.characterId, hand: relation.activeHand === "left" ? "left" as const : "right" as const, relationIds: [relation.relationId as string], resolution: "explicit_overlap_requires_review" as const })));
   plan.relationConflicts.push(...runtimeConflicts.filter((conflict) => !plan.relationConflicts.some((existing) => existing.characterId === conflict.characterId && existing.relationIds.includes(conflict.relationIds[0]))));
   if (runtimeConflicts.length) plan.warnings.push("多个关系竞争同一 OpenPose 腕点，已保留显式冲突并停止静默覆盖");
@@ -1135,11 +1172,17 @@ export function parsePoseControlOverride(value: unknown): PoseControlOverrideV1 
   const parsed: PoseControlOverrideV1 = {
     schemaVersion: "pose-override-v1",
     ...(typeof raw.templateId === "string" ? { templateId: raw.templateId } : {}),
+    ...(raw.actionGeometry && typeof raw.actionGeometry==="object"?{actionGeometry:raw.actionGeometry as PoseControlOverrideV1["actionGeometry"]}:{}),
+    ...(raw.conditioning && typeof raw.conditioning==="object"?{conditioning:{...raw.conditioning as PoseControlOverrideV1["conditioning"]}}:{}),
     ...(isPhase(raw.phase) ? { phase: raw.phase } : {}),
     ...(isIntensity(raw.intensity) ? { intensity: raw.intensity } : {}),
     ...(isHandedness(raw.handedness) ? { handedness: raw.handedness } : {}),
     ...(["left", "center", "right", "up", "down"].includes(String(raw.targetDirection)) ? { targetDirection: raw.targetDirection as PoseControlOverrideV1["targetDirection"] } : {}),
     ...(typeof raw.mirror === "boolean" ? { mirror: raw.mirror } : {}),
+    ...(["stand","sit","crouch","kneel_single","kneel_double","recline","lie_supine","lie_side","lie_prone"].includes(String(raw.bodyTemplateId))?{bodyTemplateId:raw.bodyTemplateId as PoseControlOverrideV1["bodyTemplateId"]}:{}),
+    ...(["none","hold_one","hold_two","phone_one","phone_two"].includes(String(raw.armTemplateId))?{armTemplateId:raw.armTemplateId as PoseControlOverrideV1["armTemplateId"]}:{}),
+    ...(["front","three_quarter","left_profile","right_profile"].includes(String(raw.bodyView)) ? {bodyView:raw.bodyView as PoseControlOverrideV1["bodyView"]} : {}),
+    ...(["natural","together","apart"].includes(String(raw.kneeSpacing)) ? {kneeSpacing:raw.kneeSpacing as PoseControlOverrideV1["kneeSpacing"]} : {}),
     ...(["close", "normal", "wide"].includes(String(raw.spacing)) ? { spacing: raw.spacing as PoseControlOverrideV1["spacing"] } : {}),
     ...(typeof raw.swapRoles === "boolean" ? { swapRoles: raw.swapRoles } : {}),
     ...(typeof raw.confirmPoseContract === "boolean" ? { confirmPoseContract: raw.confirmPoseContract } : {}),
@@ -1152,7 +1195,7 @@ export function parsePoseControlOverride(value: unknown): PoseControlOverrideV1 
   return parsed;
 }
 
-export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, value: unknown): PoseControlV2 | PoseControlV3 {
+export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, value: unknown, unbounded = false): PoseControlV2 | PoseControlV3 {
   // V3 overrides belong to the V3 projection editor. Never report a legacy
   // edit as applied when reading a mixed historical recipe.
   if (base.posePlanVersion !== "2.0") return base;
@@ -1247,8 +1290,8 @@ export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, va
     plan.selectorReason = `user selected ${selected?.label || override.templateId} template; geometry, framing and control profile rebuilt from the override`;
     plan.confidence = "high";
   }
-  plan.controlProfile = profileForPlan(plan.peopleCount, plan.framingMode, plan.people);
-  const rebuilt = buildPoseControlFromPlan(plan, base.width, base.height);
+  plan.controlProfile = poseConditioningPolicy(profileForPlan(plan.peopleCount, plan.framingMode, plan.people),plan.people,override.conditioning);
+  const rebuilt = buildPoseControlFromPlan(plan, base.width, base.height, unbounded);
   const people = override.people || rebuilt.people;
   people.forEach((points, index) => {
     const personPlan = plan.people[index];
@@ -1256,7 +1299,7 @@ export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, va
     personPlan.headDirection = headDirectionFor(points[0], gazeTargetForPersonPlan(personPlan).point);
   });
   const safety = validatePosePeople(people, plan);
-  if (!safety.valid && !plan.overrideConflicts.length) return base;
+  if (!unbounded && !safety.valid && !plan.overrideConflicts.length) return base;
   return {
     ...rebuilt,
     source: "user_override",

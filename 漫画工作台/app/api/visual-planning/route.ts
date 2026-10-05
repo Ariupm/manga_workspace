@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { callDeepSeekJson, getDeepSeekConfig } from "@/lib/deepseek";
 import { confirmAllShotVisualSpecs, confirmChapterVisualPlan, confirmShotVisualSpec, getStudioData, recordVisualPlanningFailure, saveChapterVisualPlan, saveShotVisualSpec, updateShotVisualSpec } from "@/lib/db";
-import { assertVisualShape, chapterSystemPrompt, dependencyHash, inheritShotContinuity, normalizeChapterPlan, normalizeShotSpec, shotSystemPrompt, validateVisualIds, VISUAL_SCHEMA_VERSION } from "@/lib/visual-planning";
+import { assertVisualShape, characterContinuityMemory, dependencyHash, inheritShotContinuity, normalizeShotSpec, shotSystemPrompt, validateVisualIds, VISUAL_SCHEMA_VERSION } from "@/lib/visual-planning";
+import { planChapterInBatches } from "@/lib/chapter-planning";
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -20,7 +21,9 @@ async function refineOne(data:ReturnType<typeof getStudioData>,shotId:number,for
   const all=data.episode.pages.flatMap((x)=>x.shots),shot=all.find((x)=>x.id===shotId);
   if(!shot)throw new Error("分格不存在");
   const index=all.findIndex((x)=>x.id===shot.id);
+  const continuityMemory=characterContinuityMemory(all,index,allowPendingPrevious);
   const input={schemaVersion:VISUAL_SCHEMA_VERSION,chapterPlan:data.episode.visualPlanConfirmed?data.episode.visualPlan:null,
+    continuityMemory:{characters:continuityMemory.map(({shotId,confirmed,character})=>({shotId,confirmed,characterId:character.characterId,outfitId:character.outfitId,shoeId:character.shoeId,appearanceState:character.appearanceState})),instruction:"These are the last known states of returning characters, with source shot IDs and confirmation status. Absence from an intervening panel is not removal. Preserve these states unless the current story or manual choice changes them. Do not copy old actions, gaze or environments into the current panel."},
     previousShot:allowPendingPrevious&&all[index-1]?{...shotSummary(all[index-1],false),confirmedVisualSpec:all[index-1].visualSpec}:shotSummary(all[index-1]),currentShot:shotSummary(shot,false),nextShot:shotSummary(all[index+1],false),
     characters:data.characters.filter((x)=>shot.characterIds.includes(x.id)).map((x)=>({id:x.id,name:x.name,appearance:x.appearanceEn,invariants:x.invariantsEn,visualTraits:x.visualTraits,profile:x.profile})),
     allowedAssets:data.assets.filter((x)=>shot.characterIds.includes(x.characterId)).map((x)=>({id:x.id,type:x.type,characterId:x.characterId,description:x.visualDescriptionEn})),
@@ -30,7 +33,7 @@ async function refineOne(data:ReturnType<typeof getStudioData>,shotId:number,for
   const result=await invoke(shotSystemPrompt,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`);
   assertVisualShape("shot",result.data);
   const previous=all[index-1]&&(all[index-1].visualSpecConfirmed||allowPendingPrevious)?all[index-1].visualSpec:null;
-  const spec=inheritShotContinuity(normalizeShotSpec(result.data,shot),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null),validation=validateVisualIds(spec,data.characters,data.assets);
+  const spec=inheritShotContinuity(normalizeShotSpec(result.data,shot),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,continuityMemory.map(item=>item.character)),validation=validateVisualIds(spec,data.characters,data.assets);
   if(!validation.valid)throw new Error(`镜头规格引用了无效资产：${validation.errors.join("；")}`);
   const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.model,generatedAt:new Date().toISOString(),inputHash:hash,usage:result.usage,validation};
   saveShotVisualSpec(shot.id,spec,"deepseek",hash,meta);
@@ -46,15 +49,14 @@ export async function POST(request:Request) {
   try {
     if(body.action==="plan-chapter") {
       const input={schemaVersion:VISUAL_SCHEMA_VERSION,story:data.episode.rawMaterial||data.episode.synopsis,script:data.episode.script,
-        shots:data.episode.pages.flatMap((page)=>page.shots.map((shot)=>({id:shot.id,title:shot.title,description:shot.description,scene:shot.scene,timeOfDay:shot.timeOfDay,characterIds:shot.characterIds}))),
+        shots:data.episode.pages.flatMap((page)=>page.shots.map((shot)=>({id:shot.id,title:shot.title,description:shot.description,scene:shot.scene,timeOfDay:shot.timeOfDay,characterIds:shot.characterIds,characterLooks:shot.characterLooks,outfitId:shot.outfitId,shoeId:shot.shoeId,confirmedVisualSpec:shot.visualSpecConfirmed?shot.visualSpec:null}))),
         characters:data.characters.map((x)=>({id:x.id,name:x.name,invariants:x.invariantsEn})),
         assets:data.assets.map((x)=>({id:x.id,type:x.type,characterId:x.characterId,description:x.visualDescriptionEn})),seriesMemory:data.seriesMemory,
         requiredShape:{schemaVersion:"1.0",scenes:[],timeline:[],warnings:[]}};
-      const result=await invoke(chapterSystemPrompt,`Create the chapter visual plan from this JSON input:\n${JSON.stringify(input)}`);
-      assertVisualShape("chapter",result.data);
-      const plan=normalizeChapterPlan(result.data),validation=validateVisualIds(plan,data.characters,data.assets);
+      const result=await planChapterInBatches(input,callDeepSeekJson);
+      const plan=result.plan,validation=validateVisualIds(plan,data.characters,data.assets);
       if(!validation.valid)return NextResponse.json({error:"视觉规划引用了无效资产",validation},{status:422});
-      const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.model,generatedAt:new Date().toISOString(),inputHash:dependencyHash(input),usage:result.usage,validation};
+      const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.calls.at(-1)?.model,generatedAt:new Date().toISOString(),inputHash:dependencyHash(input),calls:result.calls,planningMode:"bounded_batches",validation};
       saveChapterVisualPlan(episodeId,plan,meta);
       return NextResponse.json({ok:true,plan,meta,validation});
     }
@@ -81,7 +83,7 @@ export async function POST(request:Request) {
         );
         assertVisualShape("shot",converted.data);submitted=converted.data;translationMeta={model:converted.model,usage:converted.usage,translatedAt:new Date().toISOString()};
       }
-      const spec=normalizeShotSpec(submitted,{...shot,characterLooks:{}});
+      const spec=normalizeShotSpec(submitted,{...shot,characterLooks:{}},{manualEnvironment:true,manualAppearance:true});
       const validation=validateVisualIds(spec,data.characters,data.assets);if(!validation.valid)return NextResponse.json({error:"规格引用无效资产",validation},{status:422});
       return NextResponse.json({ok:updateShotVisualSpec(shot.id,spec,dependencyHash({manual:spec})),spec,validation,translationMeta});
     }

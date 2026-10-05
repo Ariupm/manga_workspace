@@ -1,4 +1,10 @@
+import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
+import { synchronizeBasicPosePromptV3 } from "@/lib/pose-v3/prompt-consistency";
 import { NextRequest, NextResponse } from "next/server";
+import { isGenericLocation } from "@/lib/story-location";
+import { callDeepSeekJson } from "@/lib/deepseek";
+import { prepareGenerationLocation } from "@/lib/generation-location";
+import { preparePoseExecutionV3 } from "../../../scripts/pose-execution-v3.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -51,6 +57,8 @@ import {
   expressionPrompt,
   reconcileFinalPrompt,
   validateFinalPrompt,
+  validateShotHandVisibility,
+  validateShotActionSpecificity,
   resolveCharacterAssetDescription,
   sanitizeEnglishPrompt,
 } from "@/lib/prompts";
@@ -331,10 +339,24 @@ export async function POST(request: Request) {
     const fromVersion = shot.visualSpecVersion || 0;
     const normalized = normalizeShotSpec(before || {}, shot);
     const validation = validateVisualIds(normalized, characters, assets);
-    if (validation.errors.length)
-      return NextResponse.json({ error: `已确认视觉规格无法通过当前契约校验：${validation.errors.join("；")}`, code: "VISUAL_SPEC_REQUIRES_RECONFIRMATION", validation }, { status: 422 });
+    if (!validation.valid) {
+      const reasons = [...new Set([
+        ...validation.errors,
+        ...validation.conflicts,
+        ...(validation.failures || []).map(item => item.message),
+      ])];
+      return NextResponse.json({ error: `已确认视觉规格无法通过当前契约校验：${reasons.join("；") || "规格校验未通过"}`, code: "VISUAL_SPEC_REQUIRES_RECONFIRMATION", validation }, { status: 422 });
+    }
     shot = { ...shot, visualSpec: normalized, visualSpecVersion: 1 };
     visualMigrationTrace = { applied: JSON.stringify(before) !== JSON.stringify(normalized), fromVersion, toVersion: normalized.schemaVersion, warnings: validation.warnings };
+  }
+  let locationCompilationTrace = null;
+  try {
+    const prepared = await prepareGenerationLocation(shot, callDeepSeekJson);
+    shot = prepared.shot;
+    locationCompilationTrace = prepared.trace;
+  } catch (error) {
+    return NextResponse.json({ error: `当前场景自动编译失败：${error instanceof Error ? error.message : "请重试"}`, code: "STORY_LOCATION_COMPILATION_FAILED" }, { status: 422 });
   }
   const compiled = buildGenerationPrompt(shot, assets, characters);
   const configuredProfile = String(body.generationProfile || process.env.SD_GENERATION_PROFILE || "cpu_local_fast");
@@ -422,9 +444,11 @@ export async function POST(request: Request) {
     prompt = reconciled.prompt;
     promptRepairs.push(...reconciled.repairs);
   }
-  const promptContractErrors = readContracts.flatMap((contract) =>
-    validateFinalPrompt(prompt, contract).errors,
-  );
+  const promptContractErrors = [
+    ...validateShotActionSpecificity(shot),
+    ...validateShotHandVisibility(shot),
+    ...readContracts.flatMap((contract) => validateFinalPrompt(prompt, contract).errors),
+  ];
   if (promptContractErrors.length)
     return NextResponse.json(
       {
@@ -432,6 +456,11 @@ export async function POST(request: Request) {
         code: "PROMPT_ACTION_CONTRACT_CONFLICT",
         validation: { valid: false, errors: [...new Set(promptContractErrors)] },
       },
+      { status: 422 },
+    );
+  if (isGenericLocation(compiled.environment.location))
+    return NextResponse.json(
+      { error: "当前镜头尚未指定有效地点，请填写当前环境地点。", code: "STORY_LOCATION_REQUIRED", quality },
       { status: 422 },
     );
   if (quality.blockingErrors.length)
@@ -748,6 +777,14 @@ export async function POST(request: Request) {
         promptRepairs.push(...characterReconciled.repairs.map((item) => `regional character ${contract.characterId}: ${item}`));
       }
     }
+    const promptPose = regionalSpec.poseControl?.posePlanVersion === "3.0" ? applyPoseControlOverrideV3(regionalSpec.poseControl, body.poseControlOverride) : null;
+    if (promptPose) {
+      regionalCharacterPrompts = regionalCharacterPrompts.map((text,index) => {
+        const person = promptPose.scenePlan.people.find(p=>p.characterId===shot.characterIds[index]);
+        return person ? synchronizeBasicPosePromptV3(text,person) : text;
+      });
+      if (promptPose.scenePlan.people.length===1) regionalCommonPrompt=synchronizeBasicPosePromptV3(regionalCommonPrompt,promptPose.scenePlan.people[0]);
+    }
     const regionalCombinedPrompt = [regionalCommonPrompt, ...regionalCharacterPrompts].join(" BREAK ");
     const regionalContractErrors = readContracts.flatMap((contract) =>
       validateFinalPrompt(regionalCombinedPrompt, contract).errors,
@@ -788,7 +825,7 @@ export async function POST(request: Request) {
         },
         { status: 422 },
       );
-    const appliedPrompt = canonicalPrompt.prompt;
+    const appliedPrompt = promptPose?.scenePlan.people.length===1 ? synchronizeBasicPosePromptV3(canonicalPrompt.prompt,promptPose.scenePlan.people[0]) : canonicalPrompt.prompt;
     const regionalPrompter =
       shot.characterIds.length > 1 && regionalPrompterAvailable
         ? {
@@ -827,22 +864,17 @@ export async function POST(request: Request) {
         ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")
         : "";
     const automaticPoseControl = regionalSpec.poseControl;
+    if(regionalSpec.repairPasses.actionContractVersion==='story-action-1'&&automaticPoseControl?.posePlanVersion!=='3.0')return NextResponse.json({error:'剧情动作关系没有有效V3构图，不能降级到旧骨架。请调整景别、人物区域或动作目标。',code:'ACTION_CONTRACT_POSE_UNAVAILABLE'},{status:422});
     const resolvedPoseControl = automaticPoseControl && "posePlanVersion" in automaticPoseControl
       ? automaticPoseControl.posePlanVersion === "3.0"
         ? applyPoseControlOverrideV3(automaticPoseControl, body.poseControlOverride)
         : applyPoseControlOverride(automaticPoseControl as PoseControlV2, body.poseControlOverride)
       : automaticPoseControl;
-    if (resolvedPoseControl && "posePlanVersion" in resolvedPoseControl && resolvedPoseControl.posePlanVersion === "3.0" && !resolvedPoseControl.safety.valid) {
-      return NextResponse.json(
-        { error: "V3 动作证据、接触或投影校验失败，已阻止生成。", code: "POSE_V3_CONTROL_CONFLICT", status: resolvedPoseControl.scenePlan.status, errors: resolvedPoseControl.safety.errors, warnings: resolvedPoseControl.safety.warnings },
-        { status: 422 },
-      );
-    }
-    if (body.poseControlOverride && resolvedPoseControl && "safety" in resolvedPoseControl && !resolvedPoseControl.safety.valid) {
-      return NextResponse.json(
-        { error: "人工姿态覆盖与剧情支持面冲突，已阻止生成。", code: "POSE_OVERRIDE_SUPPORT_CONFLICT", errors: resolvedPoseControl.safety.errors, warnings: resolvedPoseControl.scenePlan?.warnings || [] },
-        { status: 422 },
-      );
+    // User requested advisory-only pose gates; preserve the actual failures for audit.
+    const posePreflightWarnings = resolvedPoseControl && "safety" in resolvedPoseControl
+      ? [...resolvedPoseControl.safety.errors] : [];
+    if (resolvedPoseControl?.posePlanVersion === "3.0") {
+      posePreflightWarnings.push(...poseOverlayBindingFailuresV3(resolvedPoseControl.scenePlan.people));
     }
     const hasStructuredPoseOverride = Boolean(
       resolvedPoseControl && "override" in resolvedPoseControl && resolvedPoseControl.override,
@@ -855,6 +887,9 @@ export async function POST(request: Request) {
             model: openPoseModel,
             module: "none",
             weight: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.weight : 0.9,
+            policyVersion: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.policyVersion : undefined,
+            strength: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.strength : undefined,
+            controlMode: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.controlMode : undefined,
             guidanceStart: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.guidanceStart : 0,
             guidanceEnd: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.guidanceEnd : 0.82,
             source: poseOverride || hasStructuredPoseOverride ? "user_override" : resolvedPoseControl.source || "automatic_template",
@@ -864,6 +899,8 @@ export async function POST(request: Request) {
         : null;
     const recipe = {
       provider: "sd-webui",
+      posePreflightPolicy: "advisory",
+      posePreflightWarnings: [...new Set(posePreflightWarnings)],
       phase: "draft",
       generationProfile,
       profilePlan,
@@ -980,6 +1017,7 @@ export async function POST(request: Request) {
       characterCount: quality.characterCount,
       promptQuality: quality,
       environment: compiled.environment,
+      locationCompilationTrace,
       characterLooks: compiled.characterLooks,
       adapterStatus: {
         identity: faceAdapter.validFile
@@ -1005,6 +1043,11 @@ export async function POST(request: Request) {
         requiredPropInteractions,
       },
     };
+    try {
+      preparePoseExecutionV3(recipe);
+    } catch (error) {
+      return NextResponse.json({ code: "POSE_V3_EXECUTION_GEOMETRY_CONFLICT", error: error instanceof Error ? error.message : "V3 生成坐标校验失败" }, { status: 422 });
+    }
     const persistentJobId = createPersistentGenerationJob(
       shot.id,
       "sd-webui",

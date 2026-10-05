@@ -1,0 +1,3 @@
+export type PoseConditioningPreference={strength?:"auto"|"flexible"|"strict";weight?:number;guidanceEnd?:number};
+export function poseConditioningPolicy<T extends {weight?:number;guidanceEnd?:number}>(base:T,people:Array<{relationTargets?:unknown[];actionContacts?:unknown[]}>,preference?:PoseConditioningPreference):T & {policyVersion:"pose-conditioning-2";strength:"auto"|"flexible"|"strict";weight:number;guidanceStart:number;guidanceEnd:number;controlMode:string;reason:string};
+export function poseUnitParameters(control?:{weight?:number;guidanceStart?:number;guidanceEnd?:number;controlMode?:string}):{weight:number;guidance_start:number;guidance_end:number;control_mode:string};

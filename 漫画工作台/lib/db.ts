@@ -1,6 +1,8 @@
+import { draftHasHardFailure } from "../scripts/draft-approval-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { resolveStoryLocation } from "./story-location";
 import { DatabaseSync } from "node:sqlite";
 import type {
   Asset,
@@ -1185,14 +1187,11 @@ export function approveSdDraft(projectId: number, jobId: number, semanticReview?
   if (
     !row ||
     row.provider !== "sd-webui" ||
-    row.status !== "awaiting_draft_approval"
+    !["awaiting_draft_approval", "draft_blocked"].includes(row.status)
   )
     return null;
   const payload = JSON.parse(row.payload);
-  if (payload.recipe?.postprocessWarnings?.length)
-    return null;
-  if (payload.recipe?.pixelQa?.status === "blocked")
-    return null;
+  if (draftHasHardFailure(payload.recipe)) return null;
   const semanticItems = normalizeSemanticReviewItems(payload.recipe?.semanticQa);
   const semanticValidation = validateSemanticReviewSubmission(semanticItems, semanticReview, {
     source: semanticReview?.overallConfirmed ? "manual_overall_confirmation" : "manual_draft_approval",
@@ -1353,7 +1352,7 @@ export function rejectSdDraft(projectId: number, jobId: number) {
   if (
     !row ||
     row.provider !== "sd-webui" ||
-    row.status !== "awaiting_draft_approval"
+    !["awaiting_draft_approval", "draft_blocked"].includes(row.status)
   )
     return false;
   db.prepare(
@@ -1532,14 +1531,31 @@ export function createCharacter(input: {
 const characterAssetTypes = ["face", "turnaround", "expressions", "outfit", "shoes"] as const;
 export type CharacterAssetType = (typeof characterAssetTypes)[number];
 
+function invalidateChangedBaseWardrobe(characterId: string, previous: Record<string,string>, next: Record<string,string>) {
+  const outfitChanged = ["baseOutfitEn", "outfitNegativeEn"].some(key => (previous[key] || "") !== (next[key] || ""));
+  const shoesChanged = (previous.baseShoesEn || "") !== (next.baseShoesEn || "");
+  if (!outfitChanged && !shoesChanged) return;
+  // Full-body references contain both garments and footwear. Preserve the face master.
+  const types = shoesChanged ? ["turnaround", "outfit", "shoes"] : ["turnaround", "outfit"];
+  for (const type of types) {
+    db.prepare("UPDATE character_references SET confirmed=0 WHERE character_id=? AND type=?").run(characterId, type);
+    db.prepare("UPDATE character_asset_candidates SET selected=0 WHERE character_id=? AND asset_type=?").run(characterId, type);
+  }
+  db.prepare("UPDATE assets SET confirmed=0,quality_status='unknown' WHERE id=? AND character_id=?").run(`${characterId}_base_outfit`, characterId);
+  if (shoesChanged) db.prepare("UPDATE assets SET confirmed=0,quality_status='unknown' WHERE id=? AND character_id=?").run(`${characterId}_base_shoes`, characterId);
+  db.prepare("UPDATE characters SET status='draft' WHERE id=?").run(characterId);
+}
+
 export function updateCharacterProfile(characterId: string, input: {
   name: string; descriptionCn: string; conceptCn: string; notes: string;
   appearanceEn: string; invariantsEn: string[]; visualTraits: Record<string, string>;
   profile: Record<string, string>; confirm?: boolean;
 }) {
-  const current = one<any>("SELECT appearance_en,invariants_en,visual_traits_json FROM characters WHERE id=?", characterId);
+  const current = one<any>("SELECT appearance_en,invariants_en,visual_traits_json,profile_json FROM characters WHERE id=?", characterId);
   if (!current) return false;
-  const identityChanged = current.appearance_en !== input.appearanceEn || current.invariants_en !== JSON.stringify(input.invariantsEn) || current.visual_traits_json !== JSON.stringify(input.visualTraits);
+  const previousProfile = safeJson<Record<string,string>>(current.profile_json, {});
+  const identityChanged = current.appearance_en !== input.appearanceEn || current.invariants_en !== JSON.stringify(input.invariantsEn) || current.visual_traits_json !== JSON.stringify(input.visualTraits)
+    || ["agePresentationEn","faceShapeEn","skinToneEn","bodyTypeEn","distinguishingFeaturesEn"].some(key => (previousProfile[key] || "") !== (input.profile[key] || ""));
   db.prepare(`UPDATE characters SET name=?,description_cn=?,concept_cn=?,notes=?,appearance_en=?,invariants_en=?,visual_traits_json=?,profile_json=?,profile_status=?,profile_version=profile_version+1 WHERE id=?`).run(
     input.name, input.descriptionCn, input.conceptCn, input.notes, input.appearanceEn,
     JSON.stringify(input.invariantsEn), JSON.stringify(input.visualTraits), JSON.stringify(input.profile),
@@ -1550,6 +1566,7 @@ export function updateCharacterProfile(characterId: string, input: {
     db.prepare("UPDATE assets SET confirmed=0,quality_status='unknown' WHERE character_id=?").run(characterId);
     db.prepare("UPDATE characters SET status='draft',identity_master_reference_id=NULL WHERE id=?").run(characterId);
   }
+  invalidateChangedBaseWardrobe(characterId, previousProfile, input.profile);
   return true;
 }
 
@@ -1561,10 +1578,12 @@ export function updateCharacterOutfitPrompt(characterId: string, input: {
   const row = one<{ profile_json: string }>("SELECT profile_json FROM characters WHERE id=?", characterId);
   if (!row) return false;
   const profile = safeJson<Record<string, string>>(row.profile_json, {});
+  const previousProfile = { ...profile };
   profile.baseOutfitEn = input.baseOutfitEn;
   profile.baseShoesEn = input.baseShoesEn;
   profile.outfitNegativeEn = input.outfitNegativeEn;
   db.prepare("UPDATE characters SET profile_json=?,profile_version=profile_version+1 WHERE id=?").run(JSON.stringify(profile), characterId);
+  invalidateChangedBaseWardrobe(characterId, previousProfile, profile);
   return true;
 }
 
@@ -1572,21 +1591,35 @@ export function buildCharacterAssetPrompt(characterId: string, type: CharacterAs
   const character = one<any>("SELECT * FROM characters WHERE id=?", characterId);
   if (!character || !characterAssetTypes.includes(type)) return null;
   const profile = safeJson<Record<string, string>>(character.profile_json, {});
-  const common = `polished soft Japanese anime character design, ${character.appearance_en}, ${profile.temperamentEn || "natural calm presence"}, consistent canonical identity, clean light neutral background, text-free, no watermark`;
+  const traits = safeJson<Record<string, string>>(character.visual_traits_json, {});
+  const identity = [character.appearance_en, profile.agePresentationEn, profile.faceShapeEn, profile.skinToneEn, profile.bodyTypeEn, profile.distinguishingFeaturesEn, traits.hairColorEn, traits.hairStyleEn, traits.eyeColorEn, ...safeJson<string[]>(character.invariants_en, [])].filter(value => typeof value === "string" && value.trim()).join(", ");
+  const common = `polished soft Japanese anime character design, ${identity}, ${profile.temperamentEn || "natural calm presence"}, consistent canonical identity, clean light neutral background, text-free, no watermark`;
   const instructions: Record<CharacterAssetType, string> = {
-    face: "single head-and-shoulders canonical identity portrait, front-facing, neutral gentle expression, even soft studio lighting, unobstructed face, exactly one adult person",
-    turnaround: "professional full-body three-view turnaround sheet showing front view, exact side view and back view of the same adult person, identical face, hair, body proportions and outfit in every view",
-    expressions: "professional facial expression sheet of the same adult person showing neutral, smile, surprise, worry, anger and shy expression, consistent face and hairstyle",
-    outfit: `single full-body fashion reference of the same adult person, front three-quarter standing pose, complete outfit fully visible: ${profile.baseOutfitEn || "coherent complete base outfit"}`,
+    face: "single head-and-shoulders canonical identity portrait, front-facing, neutral gentle expression, even soft studio lighting, unobstructed face, exactly one person",
+    turnaround: "professional full-body three-view turnaround sheet showing front view, exact side view and back view of the same person, identical face, hair, body proportions and outfit in every view",
+    expressions: "professional facial expression sheet of the same person showing neutral, smile, surprise, worry, anger and shy expression, consistent face and hairstyle",
+    outfit: `single full-body fashion reference of the same person, front three-quarter standing pose, complete outfit fully visible: ${profile.baseOutfitEn || "coherent complete base outfit"}`,
     shoes: `footwear design reference for the same character, complete pair shown clearly from useful angles: ${profile.baseShoesEn || "coherent base footwear"}`,
   };
+  const assetNegative: Record<CharacterAssetType, string> = {
+    face: "multiple people, multiple views, cropped head, cropped face",
+    turnaround: "different people across views, missing view, extra view, cropped clothing, cropped shoes",
+    expressions: "different people across expressions, missing expression, cropped face",
+    outfit: "duplicate person, fused body, cropped clothing, cropped shoes",
+    shoes: "missing shoe, cropped shoes, mismatched pair",
+  };
+  const wardrobe = type === "turnaround" || type === "outfit"
+    ? [profile.baseOutfitEn && `canonical outfit in every visible view: ${profile.baseOutfitEn}`, profile.baseShoesEn && `canonical footwear: ${profile.baseShoesEn}`]
+    : type === "face" || type === "expressions"
+      ? [profile.baseOutfitEn && `only the visible neckline and clothing follow the canonical outfit: ${profile.baseOutfitEn}; preserve the requested portrait framing`]
+      : [];
   return {
-    prompt: `${common}, ${instructions[type]}`,
-    negativePrompt: `child, chibi, identity drift, inconsistent face, inconsistent hairstyle, wrong eye color, duplicate person, fused body, cropped clothing, cropped shoes, text, letters, logo, watermark${type === "outfit" && profile.outfitNegativeEn ? `, ${profile.outfitNegativeEn}` : ""}`,
+    prompt: [common, instructions[type], ...wardrobe].filter(Boolean).join(", "),
+    negativePrompt: `identity drift, inconsistent face, inconsistent hairstyle, wrong eye color, ${assetNegative[type]}, text, letters, logo, watermark${(type === "outfit" || type === "turnaround") && profile.outfitNegativeEn ? `, ${profile.outfitNegativeEn}` : ""}`,
   };
 }
 
-export function createCharacterAssetJob(characterId: string, type: CharacterAssetType) {
+export function createCharacterAssetJob(characterId: string, type: CharacterAssetType, provider: "sd" | "codex-imagegen" = "sd") {
   const character = one<any>("SELECT * FROM characters WHERE id=?", characterId);
   if (!character || !characterAssetTypes.includes(type)) return { error: "人物或资产类型无效" };
   if (character.profile_status !== "confirmed") return { error: "请先确认人物档案" };
@@ -1595,7 +1628,8 @@ export function createCharacterAssetJob(characterId: string, type: CharacterAsse
   const face = one<any>("SELECT id,path FROM character_references WHERE character_id=? AND type='face' AND confirmed=1 ORDER BY id DESC LIMIT 1", characterId);
   if (type !== "face" && !face) return { error: "请先生成并确认标准正脸" };
   const built = buildCharacterAssetPrompt(characterId, type)!;
-  const result = db.prepare(`INSERT INTO character_asset_jobs(character_id,asset_type,provider,status,prompt,negative_prompt,master_reference_id,stage) VALUES(?,?,'codex-imagegen','queued',?,?,?,'等待生成')`).run(characterId, type, built.prompt, built.negativePrompt, type === "face" ? null : face.id);
+  if (!["sd", "codex-imagegen"].includes(provider)) return { error: "不支持的人物资产提供方" };
+  const result = db.prepare(`INSERT INTO character_asset_jobs(character_id,asset_type,provider,status,prompt,negative_prompt,master_reference_id,stage) VALUES(?,?,?,'queued',?,?,?,'等待生成')`).run(characterId, type, provider, built.prompt, built.negativePrompt, type === "face" ? null : face.id);
   return { id: Number(result.lastInsertRowid) };
 }
 
@@ -1606,6 +1640,11 @@ export function getCharacterAssetJob(jobId: number) {
 export function confirmCharacterAssetCandidate(characterId: string, candidateId: number) {
   const candidate = one<any>("SELECT * FROM character_asset_candidates WHERE id=? AND character_id=?", candidateId, characterId);
   if (!candidate) return { error: "候选图不存在" };
+  const sourceJob = one<any>("SELECT * FROM character_asset_jobs WHERE id=? AND character_id=? AND asset_type=?", candidate.job_id, characterId, candidate.asset_type);
+  const currentPrompt = buildCharacterAssetPrompt(characterId, candidate.asset_type);
+  const profile = one<{profile_status:string}>("SELECT profile_status FROM characters WHERE id=?", characterId);
+  if (profile?.profile_status !== "confirmed") return { error: "请先确认当前人物档案" };
+  if (!characterAssetPromptMatches(sourceJob,currentPrompt)) return { error: "人物档案或资产配方已改变，请重新生成该资产" };
   if (candidate.asset_type !== "face") {
     const job = one<any>("SELECT master_reference_id FROM character_asset_jobs WHERE id=?", candidate.job_id);
     const currentFace = one<any>("SELECT id FROM character_references WHERE character_id=? AND type='face' AND confirmed=1 ORDER BY id DESC LIMIT 1", characterId);
@@ -2029,6 +2068,10 @@ export function selectCandidate(shotId: number, candidateId: number) {
   return true;
 }
 
+export function characterAssetPromptMatches(job: {prompt:string;negative_prompt:string} | null | undefined, current: {prompt:string;negativePrompt:string} | null) {
+  return Boolean(job && current && job.prompt === current.prompt && job.negative_prompt === current.negativePrompt);
+}
+
 export function createGenerationJob(shotId: number) {
   const shot = one<any>("SELECT * FROM shots WHERE id=?", shotId);
   const provider = process.env.IMAGE_PROVIDER;
@@ -2312,17 +2355,7 @@ const cameraEnglish: Record<string, string> = {
   特写: "close-up",
 };
 const sceneEnglish = (value: string) =>
-  /公司/.test(value)
-    ? "modern office"
-    : /街道|通勤/.test(value)
-      ? "city street"
-      : /厨房/.test(value)
-        ? "home kitchen"
-        : /餐厅/.test(value)
-          ? "bright dining room"
-          : /客厅|室内/.test(value)
-            ? "cozy home interior"
-            : "coherent everyday environment";
+  resolveStoryLocation(value)?.location || "";
 
 const panelNarrativePhases = [
   {

@@ -2855,3 +2855,14 @@ button:disabled {
   color: #b54854;
   border-color: #e1b7bc;
 }
+
+.pose-preview-panel { width: 280px; max-width: 100%; }
+.pose-preview-panel img { width: 100%; height: auto; }
+.pose-preview-panel p { font-size: 12px; line-height: 1.5; color: #aaa; }
+.pose-preview-panel button[aria-pressed="true"] { border-color: #e66899; color: #e66899; }
+
+
+.pose-control-card { grid-template-columns: minmax(0, 1fr) minmax(200px, 280px); }
+.pose-control-card .pose-preview-panel { width: 100%; }
+@media (max-width: 1100px) { .pose-control-card { grid-template-columns: minmax(0, 1fr); } .pose-control-card .pose-preview-panel { width: 280px; justify-self: center; } }
+

@@ -1,0 +1,4 @@
+
+# 本机依赖缓存与临时测试产物
+.pnpm-store/
+studio.test.bundle.mjs

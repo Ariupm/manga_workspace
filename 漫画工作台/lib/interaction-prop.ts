@@ -23,16 +23,25 @@ type InteractionPropCatalogEntry = {
   pattern: RegExp;
   role: "tool" | "portable" | "container" | "document";
   generic?: boolean;
+  actionOnly?:boolean;
 };
 
 // The catalog only recognizes aliases. Selection is score-based below; array
 // position is deliberately not a priority signal. Keep tools specific so a
 // structured "scissors" fact is not weakened to an anonymous handheld tool.
 const interactionPropCatalog: InteractionPropCatalogEntry[] = [
-  { propId: "smartphone", pattern: /smartphone|phone screen|mobile phone|cell phone|手机/i, role: "portable" },
+  {propId:"drawer",pattern:/\bdrawer\b|抽屉/,role:"container",actionOnly:true},
+  {propId:"door",pattern:/\bdoor\b|门/,role:"container",actionOnly:true},
+  {propId:"window",pattern:/\bwindow\b|窗/,role:"container",actionOnly:true},
+  {propId:"button",pattern:/\bbutton\b|按钮/,role:"tool",actionOnly:true},
+  {propId:"switch",pattern:/\bswitch\b|开关/,role:"tool",actionOnly:true},
+  {propId:"knob",pattern:/\bknob\b|旋钮/,role:"tool",actionOnly:true},
+  {propId:"keyboard",pattern:/\bkeyboard\b|键盘/,role:"tool",actionOnly:true},
+  {propId:"spoon",pattern:/\bspoon\b|勺/,role:"tool"},
+  { propId: "smartphone", pattern: /smartphone|\bphone\b|phone screen|mobile phone|cell phone|手机/i, role: "portable" },
   { propId: "umbrella", pattern: /umbrella|parasol|雨伞/i, role: "portable" },
   { propId: "book_or_document", pattern: /book|document|letter|page|magazine|notebook|书|文件|信件|纸张/i, role: "document" },
-  { propId: "package", pattern: /package|parcel|delivery box|快递|包裹/i, role: "container" },
+  { propId: "package", pattern: /package|parcel|\bbox\b|delivery box|快递|包裹|箱子/i, role: "container" },
   { propId: "scissors", pattern: /scissors|shears|剪刀/i, role: "tool" },
   { propId: "screwdriver", pattern: /screwdriver|螺丝刀/i, role: "tool" },
   { propId: "hammer", pattern: /hammer|锤子|榔头/i, role: "tool" },
@@ -85,6 +94,7 @@ export function rankInteractionPropCandidates(evidence: InteractionPropEvidence)
     const inGaze = propMentionIndex(gaze, entry.pattern) >= 0;
     const inFacts = propMentionIndex(facts, entry.pattern) >= 0;
     const inContext = propMentionIndex(context, entry.pattern) >= 0;
+    if(entry.actionOnly&&!/open(?:ing)?|clos(?:e|ing)|shut|press|push|pull|rotat|turn|typ(?:e|ing)|开门|关门|按|旋|打字/i.test(action))return [];
     if (!inTarget && !inAction && !contactPoints.length && !inGaze && !inFacts && !inContext) return [];
     let score = 0;
     if (inTarget) score += 60 + (target.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase() === entry.propId ? 30 : 0);

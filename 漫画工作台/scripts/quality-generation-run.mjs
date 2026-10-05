@@ -6,6 +6,8 @@ import sharp from "sharp";
 
 // Explicit diagnostic requests only; never writes production jobs or candidates.
 const fixture = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const endpoint = fixture.endpoint || "/sdapi/v1/txt2img";
+if (!["/sdapi/v1/txt2img", "/sdapi/v1/img2img"].includes(endpoint)) throw new Error("Unsupported diagnostic endpoint");
 const base = "http://127.0.0.1:7860";
 const get = async (route) => {
   const r = await fetch(base + route, { signal: AbortSignal.timeout(10000) });
@@ -31,7 +33,7 @@ const timer = setInterval(async () => {
 try {
   const data = JSON.stringify(fixture.payload);
   const result = await new Promise((resolve, reject) => {
-    const req = http.request(base + "/sdapi/v1/txt2img", { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, res => {
+    const req = http.request(base + endpoint, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(data) } }, res => {
       const chunks = []; res.on("data", c => chunks.push(c)); res.on("error", reject);
       res.on("end", () => { try { const body = Buffer.concat(chunks).toString(); if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode}: ${body.slice(0, 500)}`); resolve(JSON.parse(body)); } catch (e) { reject(e); } });
     });
@@ -43,6 +45,8 @@ try {
   await sharp(bytes).raw().toBuffer();
   fs.writeFileSync(path.join(out, "image.png"), bytes);
   fs.writeFileSync(path.join(out, "result.json"), JSON.stringify({ info: result.info, width: metadata.width, height: metadata.height, sha256: createHash("sha256").update(bytes).digest("hex"), elapsedSeconds: (Date.now() - started) / 1000, visualVerdict: "pending" }, null, 2));
-  status.state = "generated_pending_visual_review";
+  const finalProgress = await get("/sdapi/v1/progress?skip_current_image=true");
+  status.interrupted = finalProgress.state?.interrupted === true;
+  status.state = status.interrupted ? "interrupted_output_not_valid_for_comparison" : "generated_pending_visual_review";
 } catch (error) { status.state = "failed"; status.error = error.message; process.exitCode = 1; }
 finally { clearInterval(timer); status.finishedAt = new Date().toISOString(); saveStatus(); console.log(JSON.stringify(status)); }

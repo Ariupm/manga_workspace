@@ -1,5 +1,11 @@
 "use client";
 
+import { draftHasHardFailure } from "../scripts/draft-approval-policy.mjs";
+import {pairTemplateIdsV3} from "@/lib/pose-v3/action-catalog";
+import { relationPreviewPoints, fullPoseLayout, undoFullPoseLayout, fullPosePreviewSvg } from "@/lib/pose-v3/preview-layout";
+
+import {overlayFailureTextV3,poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toPng } from "html-to-image";
 import { jsPDF } from "jspdf";
@@ -65,7 +71,7 @@ import {
   type PoseControlOverrideV1,
   type PoseControlV2,
 } from "@/lib/pose-v2";
-import { applyPoseControlOverrideV3, poseTemplateRegistryV3, type PoseControlV3 } from "@/lib/pose-v3";
+import { applyPoseControlOverrideV3, poseTemplateRegistryV3, poseTemplateCategoriesV3, type PoseControlV3 } from "@/lib/pose-v3";
 import {
   buildGenerationPrompt,
   buildRegionalPrompt,
@@ -1623,23 +1629,25 @@ function PanelEditor({
         job.provider === "sd-webui",
     )
     .sort((left, right) => right.id - left.id)[0];
-  const sdPreview = latestSdPreviewJob && ["awaiting_draft_approval", "awaiting_final_approval", "draft_blocked"].includes(latestSdPreviewJob.status)
+  const sdPreview = latestSdPreviewJob && ["awaiting_draft_approval", "awaiting_final_approval", "draft_blocked", "failed"].includes(latestSdPreviewJob.status)
     ? (() => {
       try {
         const payload = JSON.parse(latestSdPreviewJob.payload) as {
           draftImagePath?: string;
           finalReviewImagePath?: string;
-          recipe?: { semanticQa?: unknown };
+          phase?: string;
+          recipe?: { semanticQa?: { status?: string }; pixelQa?: { status?: string }; postprocessWarnings?: string[] };
         };
         const stage =
-          latestSdPreviewJob.status === "awaiting_final_approval" ? "final" : "draft";
+          latestSdPreviewJob.status === "awaiting_final_approval" || (latestSdPreviewJob.status === "failed" && payload.phase === "final") ? "final" : "draft";
         const imagePath =
           stage === "final" ? payload.finalReviewImagePath : payload.draftImagePath;
+        if (latestSdPreviewJob.status === "failed" && !imagePath) return null;
         return {
           job: latestSdPreviewJob,
           stage,
           imagePath: imagePath || null,
-          blocked: latestSdPreviewJob.status === "draft_blocked",
+          blocked: latestSdPreviewJob.status === "failed" || draftHasHardFailure(payload.recipe),
           items: normalizeSemanticReviewItems(payload.recipe?.semanticQa),
         };
       } catch {
@@ -1742,6 +1750,8 @@ function PanelEditor({
   const [poseImageOverride, setPoseImageOverride] = useState("");
   const [poseControlOverride, setPoseControlOverride] = useState<PoseControlOverrideV1 | null>(null);
   const [poseEditorOpen, setPoseEditorOpen] = useState(false);
+  const [posePreviewMode, setPosePreviewMode] = useState<"full"|"control">("full");
+  const [poseEditorLayout, setPoseEditorLayout] = useState<ReturnType<typeof fullPoseLayout>|null>(null);
   const [poseEditorSaving, setPoseEditorSaving] = useState(false);
   const [draggingPosePoint, setDraggingPosePoint] = useState<{
     personIndex: number;
@@ -1786,7 +1796,9 @@ function PanelEditor({
     ? editablePositive.split(/\s*,\s*/).filter((term) => term.trim() && !positive.toLowerCase().includes(term.trim().toLowerCase())).join(", ")
     : "";
   const prompt = `${effectivePositive}\n\nNegative: ${editableNegative}`;
-  const posePreview = poseImageOverride || (effectivePoseControl?.svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(effectivePoseControl.svg)}` : "");
+  const fullPreviewSvg = effectivePoseControl?.posePlanVersion === "3.0" ? fullPosePreviewSvg(effectivePoseControl.fullPeople, effectivePoseControl.scenePlan.projection, effectivePoseControl.width, effectivePoseControl.height, effectivePoseControl.scenePlan.relations) : null;
+  const displayedPoseSvg = posePreviewMode === "full" && fullPreviewSvg ? fullPreviewSvg : effectivePoseControl?.svg;
+  const posePreview = poseImageOverride || (displayedPoseSvg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(displayedPoseSvg)}` : "");
   const poseDisplay = effectivePoseControl
     ? poseDisplayDetails(effectivePoseControl.kind, effectivePoseControl.source, effectivePoseControl.selectorReason, effectivePoseControl.framingMode)
     : null;
@@ -1794,21 +1806,29 @@ function PanelEditor({
     ? effectivePoseControl.scenePlan.people.find((person) => person.primaryAction === "locomotion")?.locomotion || null
     : null;
   const availablePosePresets = automaticPoseControlV3
-    ? poseTemplateRegistryV3.filter((template) => automaticPoseControlV3.people.length === 2 ? ["handover","handshake","highfive","embrace","support_walk"].includes(template.id) : !["handover","handshake","highfive","embrace","support_walk"].includes(template.id)).map((template) => ({ id: template.id, label: template.label, category: template.family }))
+    ? poseTemplateRegistryV3.filter((template) => automaticPoseControlV3.people.length === 2 ? pairTemplateIdsV3.includes(template.id) : !pairTemplateIdsV3.includes(template.id)).map((template) => ({ id: template.id, label: template.label, category: poseTemplateCategoriesV3[template.family] || "其他动作" }))
     : automaticPoseControlV2 ? posePresetCatalog.filter((preset) => preset.peopleCount === automaticPoseControlV2.people.length) : [];
+  const actionContractPoseUnavailable=regionalCompiled.repairPasses.actionContractVersion==='story-action-1'&&automaticPoseControlV3==null;
+  const effectiveActionGeometry=effectivePoseControl?.posePlanVersion==="3.0"?effectivePoseControl.scenePlan.people[0]?.actionRelationAudit?.geometry:undefined;
   const updatePoseParameters = (patch: Partial<PoseControlOverrideV1>) => {
     if (!automaticPoseControlV2 && !automaticPoseControlV3) return;
+    if(patch.conditioning && Object.keys(patch).length===1){setPoseControlOverride({schemaVersion:"pose-override-v1",...(poseControlOverride||{}),conditioning:patch.conditioning});return;}
     const next: PoseControlOverrideV1 = {
       schemaVersion: "pose-override-v1",
       ...(poseControlOverride || {}),
       ...patch,
+      ...(patch.templateId && !["stand","sit","crouch","kneel_single","kneel_double","recline","lie_supine","lie_side","lie_prone","walk","run","nod","look_up","head_turn","head_tilt","hold_one","hold_two","phone_one","phone_two"].includes(patch.templateId)?{armTemplateId:"none" as const}:{}),
+      ...(patch.templateId && ["stand","sit","crouch","kneel_single","kneel_double","recline","lie_supine","lie_side","lie_prone"].includes(patch.templateId)?{bodyTemplateId:patch.templateId as PoseControlOverrideV1["bodyTemplateId"]}:{}),
+      ...(patch.templateId && ["hold_one","hold_two","phone_one","phone_two"].includes(patch.templateId)?{armTemplateId:patch.templateId as PoseControlOverrideV1["armTemplateId"]}:{}),
       people: undefined,
       editMode: "parameter_edit",
     };
     const rebuilt = automaticPoseControlV3 ? applyPoseControlOverrideV3(automaticPoseControlV3, next) : applyPoseControlOverride(automaticPoseControlV2!, next);
     setPoseControlOverride(next);
     setPoseImageOverride("");
-    setEditablePosePeople(clonePosePeople(rebuilt.people));
+    const layout = rebuilt.posePlanVersion === "3.0" ? fullPoseLayout((rebuilt as PoseControlV3).fullPeople,(rebuilt as PoseControlV3).scenePlan.projection,relationPreviewPoints((rebuilt as PoseControlV3).scenePlan.relations)) : null;
+    setPoseEditorLayout(layout);
+    setEditablePosePeople(clonePosePeople(layout?.people || rebuilt.people));
   };
   const restoreAutomaticPose = () => {
     setPoseImageOverride("");
@@ -1821,7 +1841,9 @@ function PanelEditor({
     const rebuilt = automaticPoseControlV3 ? applyPoseControlOverrideV3(automaticPoseControlV3, next) : applyPoseControlOverride(automaticPoseControlV2!, next);
     setPoseControlOverride(next);
     setPoseImageOverride("");
-    setEditablePosePeople(clonePosePeople(rebuilt.people));
+    const layout = rebuilt.posePlanVersion === "3.0" ? fullPoseLayout((rebuilt as PoseControlV3).fullPeople,(rebuilt as PoseControlV3).scenePlan.projection,relationPreviewPoints((rebuilt as PoseControlV3).scenePlan.relations)) : null;
+    setPoseEditorLayout(layout);
+    setEditablePosePeople(clonePosePeople(layout?.people || rebuilt.people));
   };
   const copyPrompt = async () => {
     await navigator.clipboard.writeText(prompt);
@@ -1874,7 +1896,9 @@ function PanelEditor({
     );
   };
   const openCurrentPoseEditor = () => {
-    const people=clonePosePeople(effectivePoseControl?.people);
+    const layout=effectivePoseControl?.posePlanVersion === "3.0" ? fullPoseLayout(effectivePoseControl.fullPeople,effectivePoseControl.scenePlan.projection,relationPreviewPoints(effectivePoseControl.scenePlan.relations)) : null;
+    setPoseEditorLayout(layout);
+    const people=clonePosePeople(layout?.people || effectivePoseControl?.people);
     if(!people.length||people.some((person)=>person.length<18)) {
       window.alert("当前姿态模板没有可编辑的骨骼节点，请重新生成视觉规格后再试。");
       return;
@@ -1891,9 +1915,9 @@ function PanelEditor({
       setPoseControlOverride({
         schemaVersion: "pose-override-v1",
         ...(poseControlOverride || {}),
-        people: clonePosePeople(editablePosePeople),
+        people: poseEditorLayout ? undoFullPoseLayout(editablePosePeople,poseEditorLayout) : clonePosePeople(editablePosePeople),
         editMode: "joint_edit",
-        coordinateSpace: "projected_canvas",
+        coordinateSpace: poseEditorLayout ? "full_pose" : "projected_canvas",
         projectionIntent: "lock_current",
       });
       setPoseImageOverride("");
@@ -2228,7 +2252,7 @@ function PanelEditor({
                 <img src={fileUrl(previewImagePath)} alt={shot.title} />
                 <span>
                   {sdPreview?.blocked
-                    ? `任务 #${sdPreview.job.id} · 草稿已阻断 · ${sdPreview.job.stage || "后处理"} · ${sdPreview.job.error || "生成后处理失败"}`
+                    ? `任务 #${sdPreview.job.id} · ${sdPreview.stage === "final" ? "正式图" : "草稿"}已阻断 · ${sdPreview.job.stage || "后处理"} · ${sdPreview.job.error || "生成后处理失败"}`
                     : pendingSdReview
                     ? pendingSdReview.stage === "draft"
                       ? "构图草稿 · 等待确认"
@@ -2286,9 +2310,9 @@ function PanelEditor({
           {sdPreview?.blocked && (
             <section className="semantic-review-panel" aria-label="阻断草稿诊断">
               <header>
-                <div><small>DRAFT BLOCKED</small><h3>任务 #{sdPreview.job.id} · {sdPreview.job.stage || "后处理"}</h3></div>
+                <div><small>{sdPreview.stage === "final" ? "FINAL BLOCKED" : "DRAFT BLOCKED"}</small><h3>任务 #{sdPreview.job.id} · {sdPreview.job.stage || "后处理"}</h3></div>
               </header>
-              <p>{sdPreview.job.error || "后处理失败，不能继续生成成品。"}</p>
+              <p>{sdPreview.job.error || "后处理失败，不能继续生成成品。"}{sdPreview.stage === "final" ? " 已保留正式生成结果供查看，未加入正式候选。" : ""}</p>
               <footer><button onClick={() => quality.valid ? generateEditedPrompt() : repairAndGenerate()} disabled={busy || shot.locked}>修改后重试草稿</button></footer>
             </section>
           )}
@@ -2310,7 +2334,7 @@ function PanelEditor({
                   放弃并重做
                 </button>
                 <button className="primary" onClick={() => submitReview(true)} disabled={busy}>
-                  确认并生成成品
+                  满意，生成正式图
                 </button>
               </footer>
             </section>
@@ -2460,6 +2484,7 @@ function PanelEditor({
                     />
                   </label>
                 </div>
+                {actionContractPoseUnavailable&&<p className="asset-warning">当前动作关系没有有效构图，不能降级使用旧骨架。请调整景别、人物区域或目标位置。</p>}
                 {effectivePoseControl && (
                   <section className="pose-control-card">
                     <div>
@@ -2472,6 +2497,9 @@ function PanelEditor({
                             <span>置信度 {effectivePoseControl.scenePlan.confidence} · 变体 {effectivePoseControl.variantId + 1} · {effectivePoseControl.controlProfile.id}（{effectivePoseControl.controlProfile.weight}/{effectivePoseControl.controlProfile.guidanceEnd}）</span>
                             {automaticPoseControlV3 && <span>自动构图：{automaticPoseControlV3.scenePlan.projection?.composition || "需要调整"} · {automaticPoseControlV3.scenePlan.decisionReasons.join("；")}</span>}
                             {effectiveLocomotion && <span>步态：{effectiveLocomotion.mode === "run" ? "跑动" : "行走"} · {effectiveLocomotion.gaitPhase === "heel_strike" ? "落脚接触" : effectiveLocomotion.gaitPhase === "mid_stance" ? "中支撑" : "蹬地摆动"} · 支撑脚 {effectiveLocomotion.supportSide === "left" ? "左" : "右"} · 摆动脚 {effectiveLocomotion.swingSide === "left" ? "左" : "右"}</span>}
+                            {effectivePoseControl.posePlanVersion === "3.0" && <span>当前显示叠加后的实际姿态：{effectivePoseControl.scenePlan.people.map(p=>[availablePosePresets.find(t=>t.id===p.layers?.bodyTemplateId)?.label||p.basePose,p.templateId!==p.layers?.bodyTemplateId&&p.templateId!==p.layers?.armTemplateId?availablePosePresets.find(t=>t.id===p.templateId)?.label:null,availablePosePresets.find(t=>t.id===p.layers?.armTemplateId)?.label,p.relationTargets.length?"保留固定剧情接触目标（镜像后仍需可达）":""].filter(Boolean).join(" + ")).join(" / ")}</span>}
+                            {effectivePoseControl.posePlanVersion === "3.0" && !effectivePoseControl.safety.valid && [...new Set(effectivePoseControl.safety.errors.map(overlayFailureTextV3))].map((error,i)=><em className="asset-warning" key={"pose-error-"+i}>{error}</em>)}
+                            {effectivePoseControl.posePlanVersion === "3.0" && poseOverlayBindingFailuresV3(effectivePoseControl.scenePlan.people).length>0 && <em className="asset-warning">当前道具动作仅用于骨架预览；生成前需要绑定剧情道具与接触点。</em>}
                             {effectivePoseControl.framingWarnings.map((warning) => <em className="asset-warning" key={warning}>{warning}</em>)}
                           </div>
                           <label>
@@ -2480,7 +2508,11 @@ function PanelEditor({
                               value={poseControlOverride?.templateId || effectivePoseControl.presetId}
                               onChange={(event) => updatePoseParameters({ templateId: event.target.value })}
                             >
-                              {availablePosePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.category} · {preset.label}</option>)}
+                              {[...new Set(availablePosePresets.map((preset) => preset.category))].map((category) => (
+                                <optgroup key={category} label={category}>
+                                  {availablePosePresets.filter((preset) => preset.category === category).map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                                </optgroup>
+                              ))}
                             </select>
                           </label>
                           {effectivePoseControl.scenePlan.visualSpecConfirmed && (
@@ -2493,6 +2525,19 @@ function PanelEditor({
                               确认覆盖已确认剧情姿态
                             </label>
                           )}
+                          {effectivePoseControl.posePlanVersion === "3.0" && effectivePoseControl.people.length===1 && <label>手部叠加<select value={effectivePoseControl.scenePlan.people[0]?.layers?.armTemplateId||"none"} onChange={(event)=>updatePoseParameters({armTemplateId:event.target.value as PoseControlOverrideV1["armTemplateId"]})}><option value="none">无额外手部动作</option><option value="hold_one">单手持物</option><option value="hold_two">双手持物</option><option value="phone_one">单手看手机</option><option value="phone_two">双手看手机</option></select></label>}
+                          {effectivePoseControl.posePlanVersion==="3.0" && effectivePoseControl.scenePlan.people[0]?.actionRelationAudit && <details><summary>动作关系（剧情自动推导，可调整）</summary>
+                            <label>动作机制<select value={poseControlOverride?.actionGeometry?.mechanism||effectiveActionGeometry?.mechanism||""} onChange={event=>updatePoseParameters({actionGeometry:{...poseControlOverride?.actionGeometry,mechanism:event.target.value as NonNullable<PoseControlOverrideV1["actionGeometry"]>["mechanism"]}})}><option value="">待确定</option><option value="hinge">铰链开合</option><option value="slide">滑动</option><option value="press">按压</option><option value="rotate">旋转</option><option value="work">工具接触工作面</option><option value="mouth">杯沿／食物接近口部</option><option value="transfer">从支持面拿取／放置</option><option value="force">推拉施力</option></select></label>
+                            {(["objectCenter","axis","workPoint","toolEnd","mouthContact"] as const).map(key=><label key={key}>{({objectCenter:"物体目标位置",axis:"运动／施力方向",workPoint:"工作面接触点",toolEnd:"工具作用端",mouthContact:"杯沿／食物作用端"})[key]} {(["x","y"] as const).map(coordinate=><input key={coordinate} type="number" aria-label={key+" "+coordinate} placeholder={coordinate} step="0.01" value={poseControlOverride?.actionGeometry?.[key]?.[coordinate]??effectiveActionGeometry?.[key]?.[coordinate]??""} onChange={event=>{const previous=poseControlOverride?.actionGeometry?.[key]||effectiveActionGeometry?.[key];updatePoseParameters({actionGeometry:{...poseControlOverride?.actionGeometry,[key]:{x:previous?.x??0,y:previous?.y??0,[coordinate]:Number(event.target.value)}}});}}/>)}</label>)}
+                            <label>支持面高度<input type="number" min="0" max="1" step="0.01" value={poseControlOverride?.actionGeometry?.supportY??effectiveActionGeometry?.supportY??""} onChange={event=>updatePoseParameters({actionGeometry:{...poseControlOverride?.actionGeometry,supportY:event.target.value?Number(event.target.value):undefined}})}/></label>
+                            {effectiveActionGeometry?.modelVersion&&<small>已根据动作与对象建立关系。尺寸、转角和行程采用代表值，可按场景调整。</small>}
+                            {['hinge','rotate'].includes(effectiveActionGeometry?.mechanism||'')&&<label>转角（弧度）<input type="number" step="0.1" min="-3.14" max="3.14" value={poseControlOverride?.actionGeometry?.angle??effectiveActionGeometry?.angle??1} onChange={event=>updatePoseParameters({actionGeometry:{...poseControlOverride?.actionGeometry,angle:Number(event.target.value)}})}/></label>}
+                            {['slide','press'].includes(effectiveActionGeometry?.mechanism||'')&&<label>移动行程<input type="number" step="0.01" min="0" max="0.3" value={poseControlOverride?.actionGeometry?.travel??effectiveActionGeometry?.travel??0} onChange={event=>updatePoseParameters({actionGeometry:{...poseControlOverride?.actionGeometry,travel:Number(event.target.value)}})}/></label>}
+                            <small>无需逐项填写。高级位置调整使用完整骨架坐标，通常为0～1；方向为向量。</small>
+                          </details>}
+                          <label>骨架约束<select value={poseControlOverride?.conditioning?.strength || "auto"} onChange={event=>updatePoseParameters({conditioning:{strength:event.target.value as "auto"|"flexible"|"strict"}})}><option value="auto">自动：按剧情接触调整</option><option value="flexible">灵活：给模型更多调整空间</option><option value="strict">严格：优先遵循骨架</option></select></label>
+                          <label>OpenPose 权重 {effectivePoseControl.controlProfile.weight.toFixed(2)}<input type="range" min="0" max="2" step="0.01" value={effectivePoseControl.controlProfile.weight} onChange={event=>updatePoseParameters({conditioning:{...poseControlOverride?.conditioning,weight:Number(event.target.value)}})}/></label>
+                          <label>控制至采样进度 {Math.round(effectivePoseControl.controlProfile.guidanceEnd*100)}%<input type="range" min="0" max="1" step="0.01" value={effectivePoseControl.controlProfile.guidanceEnd} onChange={event=>updatePoseParameters({conditioning:{...poseControlOverride?.conditioning,guidanceEnd:Number(event.target.value)}})}/></label>
                           <label>
                             动作阶段
                             <select value={poseControlOverride?.phase || effectivePoseControl.scenePlan.people[0]?.phase || "contact"} onChange={(event) => updatePoseParameters({ phase: event.target.value as PoseControlOverrideV1["phase"] })}>
@@ -2511,7 +2556,7 @@ function PanelEditor({
                           </label>
                           <label>
                             主动手
-                            <select value={poseControlOverride?.handedness || effectivePoseControl.scenePlan.people[0]?.handedness || "right"} onChange={(event) => updatePoseParameters({ handedness: event.target.value as PoseControlOverrideV1["handedness"] })}>
+                            <select value={effectivePoseControl.scenePlan.people[0]?.handedness || "right"} onChange={(event) => updatePoseParameters({ handedness: event.target.value as PoseControlOverrideV1["handedness"] })}>
                               <option value="left">左手</option>
                               <option value="right">右手</option>
                               <option value="both">双手</option>
@@ -2527,6 +2572,10 @@ function PanelEditor({
                               <option value="down">下方</option>
                             </select>
                           </label>
+                          {effectivePoseControl.posePlanVersion === "3.0" && effectivePoseControl.scenePlan.people[0]?.basicGeometry && (<>
+                            <label>身体朝向<select value={effectivePoseControl.scenePlan.people[0].basicGeometry.parameters.view} onChange={(event) => updatePoseParameters({bodyView:event.target.value as PoseControlOverrideV1["bodyView"]})}><option value="front">正面</option><option value="three_quarter">斜侧面</option><option value="left_profile">左侧面</option><option value="right_profile">右侧面</option></select></label>
+                            {effectivePoseControl.scenePlan.people[0].basicGeometry.parameters.templateId === "sit" && <label>坐姿腿距<select value={effectivePoseControl.scenePlan.people[0].basicGeometry.parameters.kneeSpacing} onChange={(event) => updatePoseParameters({kneeSpacing:event.target.value as PoseControlOverrideV1["kneeSpacing"]})}><option value="natural">自然</option><option value="together">并膝</option><option value="apart">分腿</option></select></label>}
+                          </>)}
                           {effectivePoseControl.people.length === 2 && (
                             <label>
                               人物间距
@@ -2537,7 +2586,8 @@ function PanelEditor({
                               </select>
                             </label>
                           )}
-                          <button type="button" onClick={() => updatePoseParameters({ mirror: !(poseControlOverride?.mirror ?? effectivePoseControl.scenePlan.people[0]?.mirror) })}>水平镜像</button>
+                          <button type="button" onClick={() => updatePoseParameters({ mirror: !(poseControlOverride?.mirror ?? effectivePoseControl.scenePlan.people[0]?.mirror) })}>身体镜像</button>
+                          {effectivePoseControl.posePlanVersion==='3.0'&&effectivePoseControl.scenePlan.people.some(p=>p.loadSupport)&&<small>{effectivePoseControl.scenePlan.people.map(p=>`${characters.find(c=>c.id===p.characterId)?.name||'人物'}：${p.pairRole==='active'?'支撑者':'受支撑者'}`).join('；')}</small>}
                           {effectivePoseControl.people.length === 2 && <button type="button" onClick={() => updatePoseParameters({ swapRoles: !poseControlOverride?.swapRoles })}>交换动作角色</button>}
                         </div>
                       )}
@@ -2564,7 +2614,10 @@ function PanelEditor({
                         {(poseImageOverride || poseControlOverride) && <button type="button" onClick={restoreAutomaticPose}>恢复自动推荐</button>}
                       </div>
                     </div>
-                    {posePreview && <img src={posePreview} alt="当前 OpenPose 骨骼预览" />}
+                    {posePreview && <aside className="pose-preview-panel">
+                      {fullPreviewSvg && !poseImageOverride && <><div><button type="button" aria-pressed={posePreviewMode==="full"} onClick={()=>setPosePreviewMode("full")}>完整骨架</button><button type="button" aria-pressed={posePreviewMode==="control"} onClick={()=>setPosePreviewMode("control")}>实际控制图</button></div><p>{posePreviewMode==="full"?"完整骨架 · 白色虚线为取景框，灰色为物品轮廓／中心，白色圆环为抓取目标，短虚线为手腕到目标的间隔。":"实际控制图 · 仅显示当前镜头范围内的关节。"}</p></>}
+                      <img src={posePreview} alt={posePreviewMode==="full"&&fullPreviewSvg&&!poseImageOverride?"完整骨架与实际取景框":"当前 OpenPose 骨骼预览"} />
+                    </aside>}
                     {poseEditorOpen && effectivePoseControl && (
                       <div className="pose-editor-backdrop" role="presentation" onPointerDown={(event) => {
                         if (event.target === event.currentTarget) setPoseEditorOpen(false);
@@ -2573,7 +2626,7 @@ function PanelEditor({
                           <header>
                             <div>
                               <b>编辑当前{editablePosePeople.length>1?"多人":"单人"}骨骼</b>
-                              <span>拖动彩色关节点，连线会实时跟随；应用后只覆盖本格姿态。</span>
+                              <span>{poseEditorLayout?"完整骨架编辑：虚线为实际取景框，应用后保持镜头不变。":"拖动彩色关节点，连线会实时跟随；应用后只覆盖本格姿态。"}</span>
                             </div>
                             <button type="button" onClick={() => setPoseEditorOpen(false)}>关闭</button>
                           </header>
@@ -2586,6 +2639,7 @@ function PanelEditor({
                             onPointerCancel={() => setDraggingPosePoint(null)}
                           >
                             <rect width={effectivePoseControl.width} height={effectivePoseControl.height} fill="#000" />
+                            {poseEditorLayout?.frame && <rect x={poseEditorLayout.frame.x*effectivePoseControl.width} y={poseEditorLayout.frame.y*effectivePoseControl.height} width={poseEditorLayout.frame.width*effectivePoseControl.width} height={poseEditorLayout.frame.height*effectivePoseControl.height} fill="none" stroke="#fff" strokeDasharray="8 6" pointerEvents="none" />}
                             {editablePosePeople.map((person, personIndex) => (
                               <g key={`person-${personIndex}`}>
                                 {poseEditorLimbs.filter(([start,end]) => [person[start], person[end]].every((point) => point && point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)).map(([start, end], limbIndex) => (
@@ -4058,14 +4112,17 @@ function Assets({ data }: { data: StudioData }) {
     const timer = window.setInterval(() => void refreshCharacters(), 3000);
     return () => window.clearInterval(timer);
   }, [current.characters]);
-  const draftProfile = async () => {
+  const draftProfile = async (provider = "deepseek") => {
     setDrafting(true); setAssetMessage("");
-    const response = await fetch("/api/characters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "draftProfile", name: form.name, conceptCn: form.conceptCn, notes: form.notes }) });
+    try {
+    const response = await fetch("/api/characters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "draftProfile", provider, name: form.name, conceptCn: form.conceptCn, notes: form.notes }) });
     const result = await response.json(); setDrafting(false);
     if (!response.ok) return setAssetMessage(result.error || "人物档案草拟失败");
     const draft = result.draft;
     setForm({ ...form, descriptionCn: draft.descriptionCn, appearanceEn: draft.appearanceEn, hairColorEn: draft.hairColorEn, hairStyleEn: draft.hairStyleEn, eyeColorEn: draft.eyeColorEn, invariantsEn: draft.invariantsEn.join(", "), profile: draft.profile });
     setProfileDrafted(true);
+    } catch { setAssetMessage("人物档案请求失败，请检查模型服务后重试"); }
+    finally { setDrafting(false); }
   };
   const create = async () => {
     const response = await fetch("/api/characters", {
@@ -4081,9 +4138,9 @@ function Assets({ data }: { data: StudioData }) {
       setEditingCharacterId(null);
     }
   };
-  const generateAsset = async (characterId: string, type: string) => {
+  const generateAsset = async (characterId: string, type: string, provider = "sd") => {
     setAssetMessage("");
-    const response = await fetch("/api/characters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "generateAsset", characterId, type }) });
+    const response = await fetch("/api/characters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "generateAsset", characterId, type, provider }) });
     const result = await response.json();
     if (!response.ok) return setAssetMessage(result.error || "无法创建生成任务");
     setAssetMessage("任务已创建；可以离开页面，完成后候选会自动出现。");
@@ -4098,7 +4155,7 @@ function Assets({ data }: { data: StudioData }) {
   const analyzeOutfitReference = async (characterId: string, file?: File) => {
     if (!file) return;
     setOutfitAnalyzing(true); setAssetMessage("正在识别服装参考图，请稍候…");
-    const body = new FormData(); body.append("action", "draftOutfitPrompt"); body.append("characterId", characterId); body.append("file", file);
+    const body = new FormData(); body.append("action", "draftOutfitPrompt"); body.append("provider", "codex"); body.append("characterId", characterId); body.append("file", file);
     const response = await fetch("/api/characters", { method: "POST", body });
     const result = await response.json(); setOutfitAnalyzing(false);
     if (!response.ok) return setAssetMessage(result.error || "服装参考图识别失败");
@@ -4240,9 +4297,10 @@ function Assets({ data }: { data: StudioData }) {
                   {latestCandidates.length > 0 && <><small className="candidate-heading">本次新候选</small><div className="asset-candidates">{latestCandidates.map((candidate) => <button key={candidate.id} onClick={() => void confirmAsset(packageCharacter.id, candidate.id)}><img src={fileUrl(candidate.path)} alt={`${label}候选`} /><span>替换为此候选</span></button>)}</div></>}
                   {latestJob?.error && <small className="asset-error">{latestJob.error}</small>}
                   <footer>
-                    <button disabled={Boolean(activeJob) || packageCharacter.profileStatus !== "confirmed" || (type !== "face" && !faceReady)} onClick={() => void generateAsset(packageCharacter.id, type)}>{activeJob ? "有任务生成中" : reference || candidates.length ? "重新生成" : "生成候选"}</button>
+                    <button disabled={Boolean(activeJob) || packageCharacter.profileStatus !== "confirmed" || (type !== "face" && !faceReady)} onClick={() => void generateAsset(packageCharacter.id, type)}>{activeJob ? "有任务生成中" : reference || candidates.length ? "SD 重新生成" : "SD 生成候选"}</button>
+                    <button disabled={Boolean(activeJob) || packageCharacter.profileStatus !== "confirmed" || (type !== "face" && !faceReady)} onClick={() => void generateAsset(packageCharacter.id, type, "codex-imagegen")}>Codex 备选</button>
                     <label>手工上传<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void uploadReference(packageCharacter.id, type, event.target.files?.[0])} /></label>
-                    {type === "outfit" && <label>{outfitAnalyzing ? "正在识别…" : "参考图转提示词"}<input disabled={outfitAnalyzing} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void analyzeOutfitReference(packageCharacter.id, event.target.files?.[0])} /></label>}
+                    {type === "outfit" && <label>{outfitAnalyzing ? "正在识别…" : "Codex 备选：参考图转提示词"}<input disabled={outfitAnalyzing} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void analyzeOutfitReference(packageCharacter.id, event.target.files?.[0])} /></label>}
                   </footer>
                 </article>
               );
@@ -4441,7 +4499,7 @@ function Assets({ data }: { data: StudioData }) {
               change={(value) => setForm({ ...form, conceptCn: value })}
             />
             <Field label="可选备注" textarea value={form.notes} change={(value) => setForm({ ...form, notes: value })} />
-            {!profileDrafted && <button className="primary profile-draft-button" disabled={!form.name || !form.conceptCn || drafting} onClick={() => void draftProfile()}>{drafting ? "正在草拟人物档案…" : "AI 草拟人物设定"}</button>}
+            {!profileDrafted && <button className="primary profile-draft-button" disabled={!form.name || !form.conceptCn || drafting} onClick={() => void draftProfile()}>{drafting ? "正在草拟人物档案…" : "用已配置模型草拟人物设定"}</button>}
             {assetMessage && <p className="asset-error">{assetMessage}</p>}
             {profileDrafted && <>
             <div className="profile-confirm-note"><Check size={14} />请检查并确认以下内容。图片生成只会使用这些英文设定。</div>
@@ -4480,7 +4538,8 @@ function Assets({ data }: { data: StudioData }) {
             </>}
             <footer>
               <button onClick={() => setWizard(false)}>取消</button>
-              {profileDrafted && <button onClick={() => void draftProfile()}>重新草拟</button>}
+              {profileDrafted && <button disabled={drafting} onClick={() => void draftProfile()}>重新草拟</button>}
+              <button disabled={drafting || !form.name || !form.conceptCn} onClick={() => void draftProfile("codex")}>Codex 备选草拟</button>
               <button
                 className="primary"
                 disabled={

@@ -13,6 +13,7 @@ import {
   updateCharacterProfile,
 } from "@/lib/db";
 import { containsCjk } from "@/lib/prompts";
+import { draftCharacterProfile, validateCharacterProfileDraft } from "@/lib/character-profile-draft";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,6 +109,7 @@ export async function POST(request: Request) {
         { status: 422 },
       );
     if (String(form.get("action") || "") === "draftOutfitPrompt") {
+      if (form.get("provider") !== "codex") return NextResponse.json({ error: "图片服装识别当前为 Codex 备选能力；可直接编辑人物档案中的服装描述。" }, { status: 422 });
       const directory = path.join(process.cwd(), "workspace", "character-jobs", "uploads");
       fs.mkdirSync(directory, { recursive: true });
       const extension = file.type === "image/png" ? ".png" : file.type === "image/webp" ? ".webp" : ".jpg";
@@ -150,7 +152,10 @@ export async function POST(request: Request) {
   if (action === "draftProfile") {
     const name = String(body.name || "").trim(), conceptCn = String(body.conceptCn || "").trim();
     if (!name || !conceptCn) return NextResponse.json({ error: "请输入人物名称和中文概念" }, { status: 400 });
-    try { return NextResponse.json({ draft: await runCodexProfileDraft(name, conceptCn, String(body.notes || "")) }); }
+    try {
+      if (body.provider === "codex") return NextResponse.json({ draft: validateCharacterProfileDraft(await runCodexProfileDraft(name, conceptCn, String(body.notes || ""))), provider: "codex" });
+      return NextResponse.json(await draftCharacterProfile(name, conceptCn, String(body.notes || "")));
+    }
     catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 503 }); }
   }
   if (action === "updateProfile") {
@@ -173,7 +178,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ data: getStudioData(Number(body.projectId) || undefined), jobId, generationError });
   }
   if (action === "generateAsset") {
-    const result = createCharacterAssetJob(String(body.characterId), String(body.type) as any);
+    if (body.provider && !["sd", "codex-imagegen"].includes(body.provider)) return NextResponse.json({error:"不支持的人物资产提供方"},{status:422});
+    const result = createCharacterAssetJob(String(body.characterId), String(body.type) as any, body.provider || "sd");
     if ("error" in result) return NextResponse.json(result, { status: 422 });
     launchAssetWorker(result.id);
     return NextResponse.json({ jobId: result.id });

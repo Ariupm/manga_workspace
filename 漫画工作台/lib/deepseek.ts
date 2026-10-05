@@ -84,10 +84,12 @@ function getApiKey() {
   return dpapi("Unprotect", stored.encryptedApiKey);
 }
 
+export type DeepSeekJsonOptions = { timeoutMs?: number; maxTokens?: number; thinking?: "enabled" | "disabled" };
+
 export async function callDeepSeekJson(
   system: string,
   user: string,
-  options: { timeoutMs?: number; maxTokens?: number } = {},
+  options: DeepSeekJsonOptions = {},
 ) {
   const config = readStored();
   if (!config.enabled) throw new Error("DeepSeek 尚未启用。");
@@ -95,7 +97,7 @@ export async function callDeepSeekJson(
 }
 
 export async function callDeepSeekJsonWithConfig(
-  system:string,user:string,config:{baseUrl:string;model:string;apiKey:string},options:{timeoutMs?:number;maxTokens?:number}={}
+  system:string,user:string,config:{baseUrl:string;model:string;apiKey:string},options:DeepSeekJsonOptions={}
 ) {
   const started = Date.now();
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -106,6 +108,7 @@ export async function callDeepSeekJsonWithConfig(
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
       response_format: { type: "json_object" },
       max_tokens: options.maxTokens ?? 12_000,
+      ...(options.thinking && /^deepseek-(?:v4|flash)/i.test(config.model) ? { thinking: { type: options.thinking } } : {}),
       stream: false,
     }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 90_000),
@@ -119,6 +122,7 @@ export async function callDeepSeekJsonWithConfig(
   let envelope: any;
   try { envelope = JSON.parse(raw); } catch { throw new Error("DeepSeek 返回了无效响应。"); }
   const content = envelope?.choices?.[0]?.message?.content;
+  if (envelope?.choices?.[0]?.finish_reason === "length") throw new Error("DeepSeek 输出达到 token 上限，未接受不完整规划。");
   if (!content) throw new Error("DeepSeek 返回内容为空。");
   let data: unknown;
   try { data = JSON.parse(content); } catch { throw new Error("DeepSeek 返回的 JSON 无法解析。"); }

@@ -27,3 +27,9 @@
 - 完成影响架构、运行方式、生成参数或已知缺陷的修改后，先运行 `pnpm memory:sync` 生成待确认草稿，再把长期事实归入对应短记忆文件。
 - 可运行 `pnpm memory:sync` 生成 `PROJECT_MEMORY.pending.md` 草稿；人工确认后运行 `pnpm memory:sync:apply` 写入 `PROJECT_MEMORY.md`。同步器会排除密钥、数据库和 workspace 运行产物，但不替代人工判断。
 - `.env.local` 可能包含本机配置；交接文档只记录变量名和示例，不记录密钥。
+
+## Git 提交仓库
+
+- 用户指定的本项目唯一提交仓库：`https://github.com/Ariupm/manga_workspace.git`。
+- 后续项目更新提交并推送到该仓库；默认使用 `origin` 和当前已配置的跟踪分支。未经用户要求，不切换到其他仓库。
+- 提交前检查变更；不要提交本机密钥、依赖缓存、数据库或运行临时产物。

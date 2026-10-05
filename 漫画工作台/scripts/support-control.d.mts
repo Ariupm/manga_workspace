@@ -1,0 +1,1 @@
+export function supportControlPlan(supportRelations?: import('../lib/pose-v2').SupportRelationGeometry[], width?: number, height?: number): {visible: import('../lib/pose-v2').SupportRelationGeometry[]; skipped: Array<{supportSurfaceId:string;reason:string}>; svg:string|null};

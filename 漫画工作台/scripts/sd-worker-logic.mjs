@@ -1,12 +1,86 @@
+import {relationActionState,actionStageVerb} from "./action-stage-policy.mjs";
+export function expressionCue(value = "") {
+  const source = String(value || "").trim();
+  if (/^(?:happy|joy|joyful|excited|delighted|期待|开心|高兴|惊喜)$/i.test(source))
+    return "genuine happy anticipation, warm open smile, raised cheeks, bright engaged eyes, clearly readable joyful expression";
+  if (/^(?:surprise|surprised|惊讶|震惊)$/i.test(source))
+    return "clearly readable surprised expression, raised brows, widened eyes, slightly parted lips";
+  if (/^(?:worried|concern|concerned|anxious|担心|焦虑)$/i.test(source))
+    return "clearly readable worried expression, gently knitted brows, tense attentive eyes";
+  if (/^(?:sad|悲伤|难过)$/i.test(source))
+    return "clearly readable sad expression, softened eyes, downturned mouth, restrained emotion";
+  return source ? `${source}, clearly readable facial expression` : "readable story-appropriate expression";
+}
+
+export function expressionNegativeCue(value = "") {
+  const source = String(value || "").trim();
+  if (/^(?:happy|joy|joyful|excited|delighted|期待|开心|高兴|惊喜)$/i.test(source))
+    return "blank expression, sad expression, worried expression, downturned mouth, dead eyes";
+  if (/^(?:surprise|surprised|惊讶|震惊)$/i.test(source)) return "flat neutral expression, sleepy eyes";
+  return "";
+}
+
+export function automaticVisualGateDisposition(config = {}, result = {}, attempt = 1) {
+  if (!config.enabled) return "allow";
+  if (result.status === "passed") return "allow";
+  const requestedAttempts = Number(config.maxAttempts ?? 2);
+  const maxAttempts = Number.isFinite(requestedAttempts) ? Math.max(1, requestedAttempts) : 2;
+  // A new seed can address a detected semantic failure, not an unavailable
+  // detector, invalid configuration, missing response, or service exception.
+  if (result.status === "blocked" && Number.isFinite(attempt) && attempt < maxAttempts) return "retry";
+  return "block";
+}
+
 export function identityRefinementPlan(characterPrompt = "", phase = "draft") {
-  const allowsCameraGaze = !/(?:no|without|avoid) eye contact with (?:the )?camera/i.test(characterPrompt) && /(?:looking|gazing) (?:at|toward) (?:the )?(?:viewer|camera)|eye contact with (?:the )?camera/i.test(characterPrompt);
-  const preservesOffCameraGaze = !allowsCameraGaze && /(?:looking|gazing|focused)\s+(?:at|on|toward)|pupils?\s+(?:aimed|directed)|head\s+(?:turned|tilted|facing)|no eye contact with (?:the )?(?:viewer|camera)/i.test(characterPrompt);
+  const forbidsCameraGaze = /(?:no|not|never|without|avoid)\s+(?:forced\s+)?(?:eye contact with (?:the )?(?:viewer|camera)|(?:looking|gazing)\s+(?:directly\s+)?(?:at|towards?)\s+(?:the )?(?:viewer|camera))/i.test(characterPrompt);
+  const allowsCameraGaze = !forbidsCameraGaze && /(?:looking|gazing)\s+(?:directly\s+)?(?:at|towards?)\s+(?:the )?(?:viewer|camera)|eye contact with (?:the )?(?:camera|viewer)/i.test(characterPrompt);
+  const preservesOffCameraGaze = !allowsCameraGaze && (forbidsCameraGaze || /(?:looking|gazing|focused)\s+(?:at|on|toward|forward|ahead|away|down|up|left|right)|pupils?\s+(?:aimed|directed)|head\s+(?:turned|tilted|facing)/i.test(characterPrompt));
   return { allowsCameraGaze, preservesOffCameraGaze, denoisingStrength: preservesOffCameraGaze ? (phase === "draft" ? .28 : .24) : (phase === "draft" ? .38 : .32), controlWeightMode: preservesOffCameraGaze ? "capped_0.78" : "front_facing_min_0.85" };
+}
+export function characterIdentityGazePolicy(recipe = {}, characterId = "") {
+  const character = recipe.generationSpec?.visualSpec?.characters?.find(item => item.characterId === characterId);
+  const reference = recipe.references?.find(item => item.role === "identity" && item.characterId === characterId);
+  const declared = typeof character?.gazeTarget === "string" ? character.gazeTarget.trim() : "";
+  const text = declared || reference?.characterPrompt || "";
+  const plan = identityRefinementPlan(text);
+  const repair = recipe.generationSpec?.repairPasses || {};
+  const relations = repair.propInteractions || (repair.propInteraction ? [repair.propInteraction] : []);
+  const scenePlan = recipe.poseExecution?.scenePlan || recipe.poseControl?.scenePlan;
+  const structured = structuredGazeExecutionPlan({people:(scenePlan?.people || []).filter(person=>person.characterId===characterId)}).hasStructuredTarget;
+  const offCamera = !plan.allowsCameraGaze && (plan.preservesOffCameraGaze || structured || relations.some(item => {
+    const kind = item.gazeTarget?.kind || item.gazeMode;
+    return item.characterId === characterId && kind && kind !== "independent";
+  }));
+  return { text: offCamera && !plan.preservesOffCameraGaze ? [text,"head facing the declared off-camera target"].filter(Boolean).join(", ") : text, offCamera, allowsCameraGaze: plan.allowsCameraGaze, source: declared ? "visualSpec.character.gazeTarget" : structured ? "pose_scene.structured_gaze_target" : "character_identity_prompt" };
+}
+export function faceSceneContext(recipe, characterId) {
+  const spec = recipe.generationSpec?.visualSpec;
+  const person = spec?.characters?.find(item => item.characterId === characterId);
+  return [person?.occlusion, spec?.camera?.angle, spec?.scene?.lighting,
+    "preserve scene illumination, shadows and declared occlusion; refine only the visible facial features",
+  ].filter(value => typeof value === "string" && value.trim() && value !== "unknown").join(", ");
+}
+export function identityRefinementPrompts(recipe, reference, gazePlan) {
+  const person = recipe.generationSpec?.visualSpec?.characters?.find(item => item.characterId === reference.characterId);
+  const expression = recipe.characterLooks?.[reference.characterId]?.expressionEn || person?.expression || "";
+  const prompt = [reference.characterPrompt || recipe.prompt, "detailed facial features, defined pupils, defined nose and lips, preserve the existing head pose and facial proportions",
+    gazePlan.preservesOffCameraGaze ? "preserve the off-camera gaze, head angle and target direction, do not rotate the face toward the viewer" : "preserve the declared gaze direction",
+    person?.gazeTarget, faceSceneContext(recipe, reference.characterId),
+    expression && expression !== "unknown" ? `preserve this character's current story expression: ${expressionCue(expression)}; use the reference for identity, preserve the story expression rather than copying the reference expression` : "preserve the existing facial expression",
+  ].filter(value => typeof value === "string" && value.trim() && value !== "unknown").join(", ");
+  const negative_prompt = "blurry face, featureless face, melted facial features, mismatched eyes, crossed eyes, malformed pupils, wrong identity, wrong hair color, wrong eye color, duplicate face" +
+    (gazePlan.allowsCameraGaze ? "" : ", looking at viewer, eye contact with camera, front-facing portrait gaze");
+  return { prompt, negative_prompt };
 }
 export function gazeMaskCenter({ width, height, poseNose, region = { xStart: 0, xEnd: 1 }, shotSize = "" }) {
   const close = /close-up|extreme close|特写|近景/i.test(shotSize), medium = /medium shot|waist-up|中景/i.test(shotSize);
-  const regionCenter = (region.xStart + region.xEnd) / 2;
-  return { x: Math.max(.12, Math.min(.88, poseNose?.x ?? regionCenter)), y: Math.max(.12, Math.min(.5, poseNose?.y ?? (close ? .3 : medium ? .27 : .23))), sourceX: poseNose ? "pose_nose" : "region", sourceY: poseNose?.y == null ? "shot_size" : "pose_nose" };
+  const validX = Number.isFinite(poseNose?.x) && poseNose.x >= 0 && poseNose.x <= 1;
+  const validY = Number.isFinite(poseNose?.y) && poseNose.y >= 0 && poseNose.y <= 1;
+  const regionCenter = Number.isFinite(region?.xStart) && Number.isFinite(region?.xEnd)
+    ? Math.max(0, Math.min(1, (region.xStart + region.xEnd) / 2)) : .5;
+  // Valid projected nose coordinates are authoritative. Clip the mask at the
+  // canvas edge rather than moving its center away from the person's face.
+  return { x: validX ? poseNose.x : regionCenter, y: validY ? poseNose.y : (close ? .3 : medium ? .27 : .23), sourceX: validX ? "pose_nose" : "region", sourceY: validY ? "pose_nose" : "shot_size" };
 }
 
 const clampNumber = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
@@ -178,7 +252,9 @@ export function compositionDepthPlan({ width = 512, height = 512, shotSize = "",
 }
 
 export function identityReferenceForCharacter(references = [], characterId = "", fallbackIndex = 0) {
-  return references.find((reference) => reference?.characterId === characterId) || references[fallbackIndex] || null;
+  if (characterId) return references.find((reference) => reference?.characterId === characterId) || null;
+  const legacyReference = references[fallbackIndex];
+  return legacyReference && !legacyReference.characterId ? legacyReference : null;
 }
 
 export function faceRefinementPassPlan({
@@ -280,40 +356,44 @@ export function semanticApprovalCoversItems(items = [], approval = null) {
   return items.every((item) => !item.required || approval.verdicts[item.id] === "pass");
 }
 
+const requiredBaseControlStages = new Set(["identity_reference", "pose", "initial_prop_structure", "deferred_prop_structure", "support_surface_geometry"]);
+
 export function generationProfilePlan(profile = "cpu_local_fast", characterCount = 1) {
   const normalized = ["cpu_local_fast", "cpu_local_complex", "gpu_full"].includes(profile) ? profile : "cpu_local_fast";
   if (normalized === "gpu_full") return { id: normalized, cpu: false, maxInitialControlUnits: 8, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 1024, draftSteps: characterCount > 1 ? 16 : 12, finalSteps: 18 };
-  if (normalized === "cpu_local_complex") return { id: normalized, cpu: true, maxInitialControlUnits: 3, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 640, draftSteps: 12, finalSteps: 16 };
-  return { id: normalized, cpu: true, maxInitialControlUnits: 3, runDraftRefinements: true, draftLongEdge: 448, maxTargetEdge: 640, draftSteps: 10, finalSteps: 14 };
+  if (normalized === "cpu_local_complex") return { id: normalized, cpu: true, preferredInitialControlUnits: 3, maxInitialControlUnits: 8, runDraftRefinements: true, draftLongEdge: 512, maxTargetEdge: 640, draftSteps: 12, finalSteps: 16 };
+  return { id: normalized, cpu: true, preferredInitialControlUnits: 3, maxInitialControlUnits: 8, runDraftRefinements: true, draftLongEdge: 448, maxTargetEdge: 640, draftSteps: 10, finalSteps: 14 };
 }
 
 export function selectControlUnitsForProfile(units = [], profile = "cpu_local_fast") {
   const plan = generationProfilePlan(profile);
-  if (!plan.cpu || units.length <= plan.maxInitialControlUnits) return [...units];
+  if (!plan.cpu || units.length <= plan.preferredInitialControlUnits) return [...units];
+  const requiredCount = units.filter(unit=>requiredBaseControlStages.has(unit.stage)).length;
+  const budget = Math.min(plan.maxInitialControlUnits, Math.max(plan.preferredInitialControlUnits, requiredCount));
   const priority = (unit) => {
     if (unit.stage === "pose") return 100;
     if (unit.stage === "support_surface_geometry") return 95;
     if (["initial_prop_structure", "deferred_prop_structure"].includes(unit.stage)) return 90;
-    if (unit.stage === "identity_reference") return 50;
+    if (unit.stage === "identity_reference") return 85;
     if (unit.stage === "upper_body_composition_scale") return 60;
     if (unit.stage === "outfit_reference") return 50;
     return 10;
   };
   return units.map((unit, index) => ({ unit, index, priority: priority(unit) }))
     .sort((a, b) => b.priority - a.priority || a.index - b.index)
-    .slice(0, plan.maxInitialControlUnits)
+    .slice(0, budget)
     .sort((a, b) => a.index - b.index)
     .map((item) => item.unit);
 }
 
 export function controlExecutionCoverage(units = [], selectedUnits = [], { runRefinements = false, serialCapabilities = {} } = {}) {
   const selected = new Set(selectedUnits);
-  const requiredStages = new Set(["identity_reference", "pose", "initial_prop_structure", "deferred_prop_structure", "support_surface_geometry"]);
-  const entries = units.filter((unit) => requiredStages.has(unit.stage)).map((unit) => {
+  const entries = units.filter((unit) => requiredBaseControlStages.has(unit.stage)).map((unit) => {
     const appliedInBase = selected.has(unit);
     const capability = serialCapabilities[unit.stage];
     const seriallyCompensated = !appliedInBase && runRefinements && capability?.available === true
-      && (unit.stage === "identity_reference" || capability.preservesPose === true)
+      && capability.preservesPose === true
+      && (unit.stage !== "identity_reference" || capability.includesGlobalAppearance === true)
       && (!["initial_prop_structure", "deferred_prop_structure"].includes(unit.stage)
         || (capability.includesObject === true && capability.includesRequiredHands === true && capability.includesPoseContact === true));
     return {
@@ -329,6 +409,9 @@ export function controlExecutionCoverage(units = [], selectedUnits = [], { runRe
 }
 
 const propAliases = {
+  package: ["package", "parcel", "box"],
+  parcel: ["package", "parcel", "box"],
+  box: ["box", "package", "parcel"],
   smartphone: ["smartphone", "phone", "cell phone", "mobile phone", "iphone"],
   umbrella: ["umbrella", "parasol"],
   laptop: ["laptop", "notebook computer"],
@@ -342,7 +425,10 @@ export function evaluateCaptionForRequiredProps(caption = "", interactions = [])
   const checks = required.map((item) => {
     const object = String(item.object).toLowerCase();
     const aliases = propAliases[object] || [object.replace(/_/g, " ")];
-    return { relationId: item.relationId || null, object, detected: aliases.some((alias) => normalizedCaption.includes(alias)), aliases };
+    return { relationId: item.relationId || null, object, detected: aliases.some((alias) => {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`\\b${escaped}(?:es|s)?\\b`, "i").test(normalizedCaption);
+    }), aliases };
   });
   return { caption: String(caption || ""), checks, missing: checks.filter((item) => !item.detected) };
 }
@@ -406,15 +492,30 @@ export function handPoseDetectionUsable(payload = {}, options = {}) {
 export function outfitGarmentZones(description = "") {
   const source = String(description || "").trim();
   if (!source) return [{ zone: "full", prompt: "selected outfit" }];
-  const parts = source.split(/\s+(?:with|and|plus)\s+|[,;]+/i).map((part) => part.trim()).filter(Boolean);
+  const parts = source.split(/(\s+(?:with|and|plus)\s+|[,;]+\s*)/i);
   const upperPattern = /\b(top|blouse|shirt|tee|t-shirt|sweater|cardigan|jacket|coat|hoodie|bodice)\b/i;
   const lowerPattern = /\b(skirt|pants|trousers|shorts|jeans|leggings)\b/i;
-  const zones = parts.map((prompt) => {
+  const zones = [];
+  let prefix = "";
+  for (let index = 0; index < parts.length; index += 2) {
+    const prompt = parts[index].trim();
+    if (!prompt) continue;
+    const separator = index ? parts[index - 1] : "";
     const upper = upperPattern.test(prompt);
     const lower = lowerPattern.test(prompt);
-    return { zone: upper && !lower ? "upper" : lower && !upper ? "lower" : "full", prompt };
-  });
-  return zones.length > 1 && zones.some((item) => item.zone !== "full") ? zones : [{ zone: "full", prompt: source }];
+    const full = /\b(dress|jumpsuit|romper|overalls|robe|gown|one-piece)\b/i.test(prompt);
+    if (upper || lower || full) {
+      zones.push({ zone: full || (upper && lower) ? "full" : upper ? "upper" : "lower", prompt: prefix ? prefix + separator + prompt : prompt });
+      prefix = "";
+    } else if (zones.length) {
+      // Sleeve, color and trim clauses describe the preceding garment; they
+      // are not independent requests to repaint the complete outfit.
+      zones[zones.length - 1].prompt += separator + prompt;
+    } else {
+      prefix += separator + prompt;
+    }
+  }
+  return zones.length ? zones : [{ zone: "full", prompt: source }];
 }
 
 export function shouldUseOutfitVisualReference(zone = "full", isolatedGarmentReference = false) {
@@ -440,10 +541,19 @@ export function propBodySizePlan({ shape = "", orientation = "", ...options } = 
   const envelope = propSizePlan({ shape, orientation, ...options });
   const portrait = shape === "portrait_rect" || orientation === "portrait";
   const landscape = shape === "landscape_rect" || orientation === "landscape";
+  const baseWidth = envelope.width * (portrait ? .52 : landscape ? .72 : .64);
+  const baseHeight = envelope.height * (portrait ? .82 : landscape ? .7 : .74);
+  // Pose contacts are already in the caller's coordinate space. A fixed
+  // frame-width cap must not shrink a rectangular object inside its two grips.
+  // Grow the body and its audit envelope together; projection/viewport checks
+  // decide whether it fits, rather than silently moving the hands or clipping it.
+  const span = Math.max(0, Number(options.contactSpan) || 0);
+  const scale = options.hasPoseContact && (portrait || landscape)
+    ? Math.max(1, span / baseWidth) : 1;
   return {
-    width: envelope.width * (portrait ? .52 : landscape ? .72 : .64),
-    height: envelope.height * (portrait ? .82 : landscape ? .7 : .74),
-    envelope,
+    width: baseWidth * scale,
+    height: baseHeight * scale,
+    envelope: { width: envelope.width * scale, height: envelope.height * scale },
   };
 }
 
@@ -468,23 +578,16 @@ function splitPromptClauses(prompt = "") {
 }
 
 export function upperBodyVisiblePrompt(prompt = "", { suppressForegroundClutter = false, raisedHandContact = false } = {}) {
-  const lowerGarment = "(?:midi\\s+|mini\\s+|long\\s+|short\\s+)?(?:skirt|pants|trousers|shorts|jeans|leggings)";
-  return splitPromptClauses(String(prompt || "")
-    .replace(new RegExp(`\\s+(?:with|and|plus)\\s+(?:a|an|the)?\\s*[^,()]*?\\b${lowerGarment}\\b`, "gi"), ""))
-    .filter((clause) => !/\b(?:shoes?|sneakers?|boots?|sandals?|heels?)\b/i.test(clause))
-    .filter((clause) => !/\b(?:sofa|couch|chair|bed|stool|bench)\b/i.test(clause))
-    .filter((clause) => !suppressForegroundClutter || !/\b(?:foreground|coffee table|side table|dining table|desk|countertop|floor|ground|rug|carpet|mat)\b/i.test(clause))
+  // Framing cannot infer whether furniture, footwear or roads are story targets.
+  // Keep the canonical clauses intact; only remove the exact generic decoration.
+  return splitPromptClauses(String(prompt || ""))
+    .filter((clause) => !suppressForegroundClutter || clause !== "subtle foreground object framing the scene")
     .concat([
-      "tight head torso and acting-forearms composition filling the canvas",
-      "lower body and support surface remain outside the frame",
+      "upper-body crop with acting hands and story-relevant background visible",
       ...(raisedHandContact ? [
         "upright torso with acting elbows bent beside the ribcage",
         "acting forearms rise into the frame and the hands meet at the declared mid-chest contact point",
         "acting hands remain above the waist and do not press downward onto a lap or foreground surface",
-      ] : []),
-      ...(suppressForegroundClutter ? [
-        "simple softly blurred interior backdrop with no visible floor or ground plane",
-        "external-observer camera with only the declared story characters visible",
       ] : []),
     ])
     .join(", ");
@@ -504,6 +607,26 @@ export function baseInteractionGazePrompt(item = {}) {
   return "preserve the independently declared gaze";
 }
 
+export function gazeRefinementPrompt({ direction = "", targetKind = "target", object = "", targetDescription = "", gazeText = "", expression = "", sceneContext = "" } = {}) {
+  const readable = value => typeof value === "string" ? value.trim() : "";
+  const directions = {
+    down: "head tilted downward, eyes directed downward",
+    up: "head tilted upward, eyes directed upward",
+    left: "head turned left, eyes directed left",
+    right: "head turned right, eyes directed right",
+    "down-left": "head turned left and tilted downward, eyes directed down and left",
+    "down-right": "head turned right and tilted downward, eyes directed down and right",
+    "up-left": "head turned left and tilted upward, eyes directed up and left",
+    "up-right": "head turned right and tilted upward, eyes directed up and right",
+  };
+  const target = readable(targetDescription) || (targetKind === "object" ? readable(object) || "story object"
+    : targetKind === "work_point" ? `${readable(object) || "tool"} contact point` : "story target");
+  return ["masterpiece, best quality, anime illustration, consistent established facial identity",
+    readable(expression), readable(gazeText), directions[String(direction).replace(/_/g, "-")],
+    `head and eyes directed toward the same ${target}`,
+    "natural eyelids matching the head turn, no eye contact with viewer", readable(sceneContext)].filter(Boolean).join(", ");
+}
+
 export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = []) {
   const objects = interactions.filter((item) => item?.required !== false && item?.object).map((item) => String(item.object).toLowerCase().replace(/_/g, " "));
   if (!objects.length) return { prompt: String(prompt || ""), removed: [], objects: [] };
@@ -521,20 +644,24 @@ export function deferRequiredPropsFromBasePrompt(prompt = "", interactions = [])
   });
   const portable = interactions.filter((item) => item?.required !== false && item?.handMode && item.shape !== "umbrella").map((item) => {
     const contacts = item.contactAnchors || [];
-    const contactSpan = contacts.length > 1 ? Math.max(...contacts.map((point) => point.x)) - Math.min(...contacts.map((point) => point.x)) : 0;
-    const size = propBodySizePlan({ shape: item.shape, orientation: item.orientation, contactSpan, hasPoseContact: contacts.length > 0, regionWidth: Math.max(.1, Number(item.region?.xEnd || 1) - Number(item.region?.xStart || 0)) });
-    const silhouette = /portrait_rect|landscape_rect/.test(item.shape || "") ? "thin rectangular" : item.shape === "cylinder" ? "slender cylindrical" : item.shape === "elongated" ? "narrow elongated" : "compact";
-    const placement = item.objectCenter ? `centered at normalized frame position ${Number(item.objectCenter.x).toFixed(2)} ${Number(item.objectCenter.y).toFixed(2)}` : "centered between the acting hands";
+    const silhouette = /portrait_rect|landscape_rect/.test(item.shape || "") ? "rectangular" : item.shape === "cylinder" ? "cylindrical" : item.shape === "elongated" ? "elongated" : "compact";
     const objectClass = String(item.object || "story object").toLowerCase().replace(/_/g, " ");
     const activeHand = item.activeHand || contacts.find((point) => point.role === "active")?.hand || "declared active";
-    const handContract = item.handMode === "two"
+    const actionState=relationActionState(item);
+    const handContract = actionState?.contactState==='approach'
+      ? `the ${item.handMode==='two'?'two declared hands':activeHand+' hand'} approaching the object without contact; preserve a visible gap`
+      : actionState?.contactState==='released'
+      ? "hands released from the supported object; preserve separation"
+      : item.handMode === "two"
       ? "both declared hands contact distinct object-side anchors"
       : `only the ${activeHand} hand contacts the object; the other hand remains available for its declared action`;
-    const purpose = item.purpose ? `purpose ${String(item.purpose).replace(/_/g, " ")}` : "preserve the declared action purpose";
     const gaze = baseInteractionGazePrompt(item);
-    return `(exactly one clearly visible actual ${objectClass} with a ${silhouette} silhouette:1.5), approximately ${size.width.toFixed(2)} frame-width by ${size.height.toFixed(2)} frame-height, ${placement}, (${handContract}:1.45), ${purpose}, ${gaze}, recognizable as its object category with surface detail deferred, never enlarged into furniture clothing jewelry or a body-sized foreground form`;
+    const purposeVerb = actionState ? actionStageVerb(actionState.actionId,actionState.phase) : { inspect: "examining", read: "reading", watch: "watching", carry: "carrying", offer: "offering", place: "placing", operate: "operating", drink: "drinking from", call: "making a call with", capture: "taking a photo with", scan: "scanning with" }[item.purpose];
+    return [`(exactly one clearly visible actual ${objectClass} with a ${silhouette} silhouette:1.5)`, `(${handContract}:1.45)`, purposeVerb ? `${purposeVerb} the ${objectClass}` : "", gaze].filter(Boolean).join(", ");
   });
-  kept.push(...portable, "fine prop surface rendering is deferred without changing story action hand count or gaze", "preserve the planned wrist elbow and contact-anchor geometry");
+  // Geometry, numerical coordinates and execution-stage instructions remain in
+  // the structured contract/trace and control images, not CLIP prose.
+  kept.push(...portable);
   return {
     prompt: kept.join(", "),
     removed,
