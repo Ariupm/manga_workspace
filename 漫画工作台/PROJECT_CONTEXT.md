@@ -54,3 +54,5 @@ pnpm memory:sync
 - 2026-10-05上游交互事实：ShotVisualSpec.interactions.visualFacts可保存interaction-facts-1的具体对象/数量/实例、动作阶段、接触/支持、视线绑定与分字段来源。新AI道具规划必须提供；UI可编辑；共享契约和有效Pose将其传入PromptPlan/recipe/基础与局部pass。旧规格保持兼容，不自动改写正式数据。
 
 - 2026-10-05英文规划：DeepSeek单次直接英文输出，少量中文由visual-json-language本地编译；保留ID/数字和转换审计。compile-shot-candidate复用已返回规格，校验后保存待确认；shot1259已编译保存v1，无SD生成。
+
+- 2026-10-05应用链续修：新待确认规格阻止生成入口静默退回旧提示词；便携工具分类/具体动作/支持面与有效Pose各对象动作隔离已修复。shot1259校正为v2待确认，未生图。

@@ -34,6 +34,12 @@
 - 第七轮用户要求核对最新提示词：只读正式jobs541/540的实际recipe均未使用AI视觉规格，generationSpec.visualSpec=null；shot1259规格v1仍confirmed=false，按现有优先级走旧分镜兼容路径，这是待确认状态而非未保存。实际提示词保留Cutting open the package with scissors/using scissors，但必需交互只有剪刀，未明确左手稳定包裹/桌面支持和包裹切口视线。模拟确认新规格的纯编译无语法错误、无中文，但原AI把scissors动作归类operate_environment，正向出现operating而不是明确cutting；因此“编译无错误”不能作为该剧情语义完全正确的证据。上述AI动作归类及自由文本语义不足作为已确认的当前输出风险记录，未把模型理解结果伪称验证通过；没有修改/取消用户运行任务、确认规格或生成图片。
 - 后续处理：保持fixed_pending_review交独立复核；最新任务未消费新规格和AI语义风险已明确记录，不标记verified。
 
+
+- 第八轮解决修改（用户要求解决未应用）：生成入口对存在待确认规格返回409/VISUAL_SPEC_PENDING_CONFIRMATION，force不能静默退回旧路径；连续性按钮明确为“确认并用于生图”，不擅自确认规格。便携工具且操作描述明确的环境设施误分类在规范化时纠正为tool并记录原类别及依据；人工分类冲突明确拒绝，不覆盖人工决定。共享编译保留接触阶段具体操作文字，并消费开合/工具等action_specific的明确支持状态。完整链检查发现Pose把purpose=operate的不同动作对象全部广播成主工具动作，已修改为各自actionPlan优先；另修复工具Pose把跨对象视线坐标替换为自身工作点的冲突，保留明确外部对象绑定。
+- 第八轮解决测试：229/229项目测试、68/68执行层测试、TypeScript通过；新增生成/草稿入口force待确认阻断，无模型/SD调用；剪刀切割/锤子操作的分类及非工具设施反例、人工优先、有效Pose编译后独立工具/包裹动作验证通过。实际shot1259复用已返回候选本地校正保存v2，actionId=tool，仍confirmed=false；纯模拟确认的最终有效PromptPlan无错误/无中文，包含cutting open the delivery package、right hand touching the handle、left hand touching the flap、package resting on the desk、package opening视线，无using cardboard或operating。未创建或取消生成任务，旧541/540配方保持。
+- 第八轮完整出图业务链冲突复核：剧情/人工当前动作→新AI指令与分类规范化/来源审计→视觉规格保存/待确认/确认→生成入口选规格与P0→按关系具体动作/支持/视线契约→有效Pose避免跨道具动作广播→共享PromptPlan/recipe/payload→Regional本人区域/ControlNet/单次投影→基础和身份/服装/道具/手/视线局部共享编译→解码/后处理/已配置自动质量门→草稿一次整体确认→成品自动候选回写。单/多人及近中全景沿原矩阵，修复不引用shotID；场景、人数、身份、衣物、遮挡、控制权重/mask保持原消费，未确认新规格明确阻断而非假称应用，历史无规格路径保持。修复本根因的多对象Pose覆盖及跨对象视线坐标冲突；未增加逐项语义审批或成品二次复核。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 第八轮残余风险：分类校正仅覆盖便携工具与明确操作描述的已知冲突，不承诺任意模型语义自动正确；工具/工作面几何仍为代表性布局，具体物体表面与实际像素接触不由文字证明。规格v2须通过现有确认操作才用于新任务，已排队任务不自动换规格；模型随机性与实际视觉执行率保留运行风险。生产构建通过，开发服务恢复http://localhost:3000；本问题交独立诊断复核。
+
 ## ISSUE-SCENE-002 未识别中文地点被硬阻断且生成入口未自动编译
 
 - 优先级：P1

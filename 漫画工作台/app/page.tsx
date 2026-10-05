@@ -4768,7 +4768,7 @@ function VisualSpecEditor({shot,projectId,episodeId,disabled,busy,onRefine,onCon
   return <details className="visual-spec-card" open={open} onToggle={(event)=>setOpen(event.currentTarget.open)}>
     <summary>
       <span><b>第 {shot.position} 格 · {shot.title}</b><small>{shot.visualSpec?`${shot.visualSpecSource} · v${shot.visualSpecVersion} · ${shot.visualSpecConfirmed?"已确认":"待确认"}`:"规则模式 · 尚未细化"}</small></span>
-      <span className="visual-spec-summary-actions"><button type="button" disabled={disabled} onClick={(e)=>{e.preventDefault();void onRefine(Boolean(shot.visualSpec));}}>{busy?"细化中…":shot.visualSpec?"重新分析":"AI 细化"}</button>{shot.visualSpec&&!shot.visualSpecConfirmed&&<button className="primary" type="button" disabled={disabled} onClick={(e)=>{e.preventDefault();void onConfirm();}}>确认</button>}</span>
+      <span className="visual-spec-summary-actions"><button type="button" disabled={disabled} onClick={(e)=>{e.preventDefault();void onRefine(Boolean(shot.visualSpec));}}>{busy?"细化中…":shot.visualSpec?"重新分析":"AI 细化"}</button>{shot.visualSpec&&!shot.visualSpecConfirmed&&<button className="primary" type="button" disabled={disabled} onClick={(e)=>{e.preventDefault();void onConfirm();}}>确认并用于生图</button>}</span>
     </summary>
     {draft&&<div className="visual-spec-form">
       <section className="visual-spec-section facts-section"><div className="visual-spec-section-title"><span>01</span><div><b>画面事实</b><small>每行一条，描述这一格必须清楚传达的信息</small></div></div><textarea value={draft.visibleFacts.join("\n")} onChange={(e)=>setDraft({...draft,visibleFacts:e.target.value.split(/\n/).map(x=>x.trim()).filter(Boolean)})}/></section>

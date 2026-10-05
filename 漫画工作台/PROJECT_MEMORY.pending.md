@@ -5,22 +5,23 @@
 
 ### 检测到的代码变更
 - PROJECT_ISSUES.md
-- PROJECT_MEMORY.pending.md
-- app/api/visual-planning/route.ts
-- lib/chapter-planning.ts
+- app/api/studio/route.ts
+- app/page.tsx
 - lib/interaction-facts.ts
+- lib/pose-v3/action-relations.ts
 - lib/visual-planning.ts
 - scripts/prompt-compiler.mjs
 - tests/prompt-compiler.test.ts
-- lib/visual-json-language.ts
-- tests/visual-json-language.test.ts
+- tests/visual-spec-pending-gate.test.ts
 
 ### 最近一次测试摘要
 ```text
-同步器自动测试调用失败：spawnSync pnpm ENOENT；独立227/227项目测试、68/68执行层测试、TypeScript和生产构建通过。真实shot1259复用DeepSeek候选本地编译保存v1待确认，PromptPlan无错误/无中文；未生成图片。
+测试未执行：spawnSync pnpm ENOENT
 ```
 
 ### 人工确认项
 - [ ] 确认这些变更确实影响项目架构、运行方式、生成参数或已知缺陷。
 - [ ] 将必要的长期事实整理到对应章节，并删除临时信息。
 - [ ] 确认未包含密钥、个人路径、运行产物或未经验证的推断。
+
+本轮人工补充验证：独立pnpm test 229/229及执行层68/68、tsc通过；自动同步器spawnSync pnpm ENOENT不代表独立测试失败。应用链/各对象动作隔离与shot1259 v2待确认见ISSUE-PROMPT-011第八轮；未生图，长期记忆未应用。

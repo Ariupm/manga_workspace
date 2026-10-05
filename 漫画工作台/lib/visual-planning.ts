@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { Asset, ChapterVisualPlan, Character, Shot, ShotVisualSpec, VisualValidationResult } from "./types";
 import { rankInteractionPropCandidates } from "./interaction-prop";
 import { resolveActionDescription } from "./action-description";
-import { normalizeInteractionFacts } from "./interaction-facts";
+import { normalizeInteractionFacts, reconcileInteractionAction } from "./interaction-facts";
 import {actionStageState} from '../scripts/action-stage-policy.mjs';
 export { rankInteractionPropCandidates };
 
@@ -96,7 +96,7 @@ export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnviron
       appearanceState:{...appearance,fallbackValues:appearanceFallbacks,missingArrays,accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
   });
   const normalizeInteraction = (item: any) => ({
-    visualFacts: normalizeInteractionFacts(item?.visualFacts, options.interactionSource || (options.manualAppearance ? 'manual' : 'preserve')),
+    visualFacts: normalizeInteractionFacts(reconcileInteractionAction(item?.visualFacts, text(item?.action), options.interactionSource || (options.manualAppearance ? 'manual' : 'preserve')), options.interactionSource || (options.manualAppearance ? 'manual' : 'preserve')),
     type: text(item?.type), actorCharacterId: text(item?.actorCharacterId, ""), targetCharacterId: text(item?.targetCharacterId, ""),
     propId: text(item?.propId, text(item?.visualFacts?.object?.instanceId, "")), action: text(item?.action, "perform the described interaction"), phase: text(item?.phase, "in progress"),
     contactPoints: array(item?.contactPoints || (item?.contactPoint ? [item.contactPoint] : [])).map((x) => text(x)).filter(meaningful),

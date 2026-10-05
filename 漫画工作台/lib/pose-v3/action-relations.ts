@@ -14,7 +14,7 @@ export function prepareActionRelationsV3(people:PosePoint[][],plans:PosePersonSe
   if(!canonicalId&&!['pick','place','drink','eat'].includes(person.templateId)&&person.relationTargets.every(r=>!['operate'].includes(r.purpose)))continue;
   const id=dynamic.has(person.templateId)?person.templateId:canonicalId!;let g=person.actionGeometryInput;
   if(g?.modelVersion==='action-mechanism-1')g=resolveActionMechanism({...g,actionId:id},person.phase);
-  const actionTargets=person.relationTargets.filter(r=>r.actionPlan?.actionId===id||r.purpose==='operate'||(['pick','place','drink','eat'].includes(id)&&person.relationTargets.length===1));
+  const actionTargets=person.relationTargets.filter(r=>r.actionPlan?.actionId===id||(!r.actionPlan&&r.purpose==='operate')||(['pick','place','drink','eat'].includes(id)&&person.relationTargets.length===1));
   if(!actionTargets.length)continue;
   for(const r of person.relationTargets)r.actionRelationAudit=undefined;
   const phase=person.phase,errors:string[]=[];
@@ -25,9 +25,9 @@ export function prepareActionRelationsV3(people:PosePoint[][],plans:PosePersonSe
   if(actionTargets.length===1&&g?.objectCenter&&Number.isFinite(g.objectCenter.x)&&Number.isFinite(g.objectCenter.y))for(const relation of actionTargets){
    const old={...relation.target},dx=g.objectCenter.x-old.x,dy=g.objectCenter.y-old.y;
    relation.target={...g.objectCenter};person.target={...g.objectCenter};relation.contactAnchors=relation.contactAnchors?.map(a=>({...a,x:g?.gripPoint?g.gripPoint.x+(relation.handMode==='two'?(a.hand==='left'?.025:-.025):0):a.x+dx,y:g?.gripPoint?g.gripPoint.y:a.y+dy}));
-   if((relation.gazeTarget.kind==='object'||relation.gazeTarget.kind==='work_point'))relation.gazeTarget={...relation.gazeTarget,point:g.workPoint||{...g.objectCenter}};
-   if((person.gazeTarget.kind==='object'||person.gazeTarget.kind==='work_point'))person.gazeTarget={...person.gazeTarget,point:g.workPoint||{...g.objectCenter}};
-   const scene=relations.find(r=>r.relationId===relation.relationId);if(scene){scene.objectCenter={...g.objectCenter};scene.contactAnchors=relation.contactAnchors;if(scene.gazeTarget&&(scene.gazeTarget.kind==='object'||scene.gazeTarget.kind==='work_point'))scene.gazeTarget={...scene.gazeTarget,point:g.workPoint||{...g.objectCenter}};}
+   if(relation.gazeTarget.source!=='structured.external_object'&&(relation.gazeTarget.kind==='object'||relation.gazeTarget.kind==='work_point'))relation.gazeTarget={...relation.gazeTarget,point:g.workPoint||{...g.objectCenter}};
+   if(person.gazeTarget.source!=='structured.external_object'&&(person.gazeTarget.kind==='object'||person.gazeTarget.kind==='work_point'))person.gazeTarget={...person.gazeTarget,point:g.workPoint||{...g.objectCenter}};
+   const scene=relations.find(r=>r.relationId===relation.relationId);if(scene){scene.objectCenter={...g.objectCenter};scene.contactAnchors=relation.contactAnchors;if(scene.gazeTarget&&scene.gazeTarget.source!=='structured.external_object'&&(scene.gazeTarget.kind==='object'||scene.gazeTarget.kind==='work_point'))scene.gazeTarget={...scene.gazeTarget,point:g.workPoint||{...g.objectCenter}};}
   }
   const mechanism=['open','close'].includes(id)?g?.mechanism:['write','tool'].includes(id)?'work':['drink','eat'].includes(id)?'mouth':['pick','place'].includes(id)?'transfer':['push','pull'].includes(id)?'force':g?.mechanism;
   if(mechanism&&['open','close'].includes(id)&&!['hinge','slide'].includes(mechanism))errors.push('开合机构与动作不一致：开合需要铰链或滑动关系。');

@@ -73,10 +73,12 @@ export function relationVisualText(relation, stage = 'prop') {
   const geometry = relation.actionRelationAudit?.geometry || relation.actionPlan?.geometry;
   const visualTerms = geometry?.mechanism === 'transfer' ? [] : synchronizedActionTerms(relation).filter(term => !/required story prop|story instance|interaction purpose|surface and exclusion|exclusion regions|wrist anchors|normalized|orientation determined|visible surface follows|action stage|action in progress|before contact|completed action|object position consistent|hands? physically|acting hand at|hand approaching|object remains|object is held|\(.*eyes focused/i.test(term));
   const support=relation.supportLabel ? `the ${relation.supportLabel}` : 'a support surface';
-  const supported = state?.objectState === 'on_support' ? `${object} resting on ${support}` : state?.objectState === 'held' ? relation.supportLabel?`${object} held above the ${relation.supportLabel}`:`${object} held in ${hands}` : '';
+  const supportState = state?.objectState === 'action_specific' ? relation.visualFacts?.support.state : state?.objectState;
+  const supported = supportState === 'on_support' ? `${object} resting on ${support}` : supportState === 'held' ? relation.supportLabel?`${object} held above the ${relation.supportLabel}`:`${object} held in ${hands}` : '';
   const affordance = relation.visualFacts || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
   const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
   return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
+    relation.visualFacts && state?.phase==='contact' && ['tool','open','close','write','push','pull'].includes(state.actionId) ? relation.actionPlan?.evidence : '',
     contact, relation.visualFacts && state?.contactState==='contact' ? `${hands} touching the ${relation.visualFacts.contact.part} of the ${object}` : '',
     ...(stage === 'hand' && contactPassAllowed(relation) ? coverContact || relation.visualFacts ? [] : actionContactTerms(relation) : visualTerms),
     stage === 'hand' ? '' : supported, coverContact,

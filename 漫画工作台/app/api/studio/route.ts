@@ -332,6 +332,8 @@ export async function POST(request: Request) {
       { error: "该分格已锁定，请先解锁后再生成。", code: "SHOT_LOCKED" },
       { status: 409 },
     );
+  if (shot.visualSpec && !shot.visualSpecConfirmed)
+    return NextResponse.json({error: "此分格有新的待确认视觉规格。请在连续性页面确认规格后生成，避免使用旧提示词。", code: "VISUAL_SPEC_PENDING_CONFIRMATION", shotId: shot.id, visualSpecVersion: shot.visualSpecVersion}, {status: 409});
   const assets = getAssets();
   const characters = getCharacters();
   let visualMigrationTrace: { applied: boolean; fromVersion: number; toVersion: string; warnings: string[] } | null = null;

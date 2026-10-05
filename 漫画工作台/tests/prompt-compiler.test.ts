@@ -9,7 +9,7 @@ import {compilePromptFields,compileStagePrompt,createPromptPlan,finalizePromptPl
 import {propGroupOutline,actionOutlineMarkup} from '../scripts/action-mechanism.mjs';
 import {deferRequiredPropsFromBasePrompt,upperBodyVisiblePrompt} from '../scripts/sd-worker-logic.mjs';
 import {normalizeShotSpec,validateVisualIds} from '../lib/visual-planning';
-import {normalizeInteractionFacts,markManualInteractionFactEdits,assertInteractionFactTranslation} from '../lib/interaction-facts';
+import {normalizeInteractionFacts,reconcileInteractionAction,markManualInteractionFactEdits,assertInteractionFactTranslation} from '../lib/interaction-facts';
 import {deriveInteractionContracts} from '../lib/prompts';
 import type {InteractionVisualFacts} from '../lib/types';
 
@@ -305,4 +305,32 @@ test('generic objects and mechanism stages retain the same relation through ever
       }
     }
   }
+});
+
+
+test('portable tool category, specific operation and supported work object survive compilation',()=>{
+ const data=getStudioData(),base=data.episode.pages[0].shots[0],id=base.characterIds[0];
+ for(const [tool,action] of [['scissors','cutting open the cardboard delivery package'],['hammer','hammering the board']] as const){
+  const toolFacts={...structuredFacts(tool,1),actionId:'operate_environment',phase:'contact',contact:{hand:'right',part:'handle',state:'contact'},support:{label:'',state:'held'},gaze:{kind:'object',targetId:'package_01',surface:'',description:'looking at the working point'}};
+  const packageFacts={...structuredFacts('cardboard delivery package',1),object:{label:'cardboard delivery package',count:1,instanceId:'package_01'},actionId:'open',phase:'contact',contact:{hand:'left',part:'flap',state:'contact'},support:{label:'desk',state:'on_support'},gaze:{kind:'object',targetId:'package_01',surface:'opening',description:'looking at the opening'}};
+  const spec=normalizeShotSpec({interactions:[{actorCharacterId:id,propId:'tool',action,visualFacts:toolFacts},{actorCharacterId:id,propId:'package',action:'opening the package',visualFacts:packageFacts}]},base,{interactionSource:'model'});
+  assert.equal(spec.interactions[0].visualFacts?.actionId,'tool');
+  const shot={...base,characterIds:[id],characterLooks:{},visualSpec:spec,visualSpecConfirmed:true};
+  const relations=deriveInteractionContracts(shot,id);
+  assert.equal(relations[0].actionPlan?.geometry.mechanism,'work');
+  const regional=buildRegionalPrompt(shot,data.assets,data.characters);
+  assert.match(regional.characterRegions[0].prompt,new RegExp(action));
+  assert.match(regional.characterRegions[0].prompt,/cardboard delivery package resting on the desk/);
+  assert.match(regional.characterRegions[0].prompt,/left hand touching the flap/);
+  assert.doesNotMatch(regional.characterRegions[0].prompt,/operating/);
+  const effective=buildEffectivePromptPlan(regional,regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3);
+  assert.deepEqual(effective.errors,[]);
+  assert.match(effective.characterPrompts[0],new RegExp(action));
+  assert.doesNotMatch(effective.characterPrompts[0],/using cardboard|operating/);
+  assert.equal(effective.facts.relations.find(r=>r.object==='cardboard delivery package')?.actionPlan?.actionId,'open');
+  assert.equal(effective.facts.relations.find(r=>r.object===tool)?.actionPlan?.actionId,'tool');
+  assert.match(effective.characterPrompts[0],/cardboard delivery package resting on the desk/);
+  assert.throws(()=>reconcileInteractionAction(toolFacts,action,'manual'),/tool/);
+  assert.equal(reconcileInteractionAction({...toolFacts,object:{...toolFacts.object,label:'door control'}},'pressing the control').actionId,'operate_environment');
+ }
 });
