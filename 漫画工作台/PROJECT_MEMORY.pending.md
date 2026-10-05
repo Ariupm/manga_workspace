@@ -5,14 +5,7 @@
 
 ### 检测到的代码变更
 - PROJECT_ISSUES.md
-- app/api/studio/route.ts
-- app/page.tsx
-- lib/interaction-facts.ts
-- lib/pose-v3/action-relations.ts
-- lib/visual-planning.ts
-- scripts/prompt-compiler.mjs
-- tests/prompt-compiler.test.ts
-- tests/visual-spec-pending-gate.test.ts
+- JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md
 
 ### 最近一次测试摘要
 ```text
@@ -24,4 +17,4 @@
 - [ ] 将必要的长期事实整理到对应章节，并删除临时信息。
 - [ ] 确认未包含密钥、个人路径、运行产物或未经验证的推断。
 
-本轮人工补充验证：独立pnpm test 229/229及执行层68/68、tsc通过；自动同步器spawnSync pnpm ENOENT不代表独立测试失败。应用链/各对象动作隔离与shot1259 v2待确认见ISSUE-PROMPT-011第八轮；未生图，长期记忆未应用。
+本轮为只读根因诊断与方案，未改生产代码/数据库/任务，未生成图片。同步器在无Git变更时的files.map异常已登记MEMORY-001；有文档变更后重跑成功。测试自动执行结果不代表本轮修复验收，具体证据见job543方案。

@@ -3,7 +3,7 @@
 ## ISSUE-PROMPT-011 提示词跨层重复编译及正负范围分裂
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 用户报告：按“漫画工作台提示词统一修复方案：最终结构与各层职责”实施，保证最终结果的剧情事实和各层职责统一。
 - 已确认事实：Canonical重复追加腰部裁切；Regional正向含否定句和关系内部ID；worker各局部pass独立拼接协议和全图负向；普通预览与Regional有独立文本路径；人物块按42短语静默截断。
 - 高概率原因：有效画面事实缺少统一编译与阶段选择，各层用文字套话补充控制职责。
@@ -39,6 +39,8 @@
 - 第八轮解决测试：229/229项目测试、68/68执行层测试、TypeScript通过；新增生成/草稿入口force待确认阻断，无模型/SD调用；剪刀切割/锤子操作的分类及非工具设施反例、人工优先、有效Pose编译后独立工具/包裹动作验证通过。实际shot1259复用已返回候选本地校正保存v2，actionId=tool，仍confirmed=false；纯模拟确认的最终有效PromptPlan无错误/无中文，包含cutting open the delivery package、right hand touching the handle、left hand touching the flap、package resting on the desk、package opening视线，无using cardboard或operating。未创建或取消生成任务，旧541/540配方保持。
 - 第八轮完整出图业务链冲突复核：剧情/人工当前动作→新AI指令与分类规范化/来源审计→视觉规格保存/待确认/确认→生成入口选规格与P0→按关系具体动作/支持/视线契约→有效Pose避免跨道具动作广播→共享PromptPlan/recipe/payload→Regional本人区域/ControlNet/单次投影→基础和身份/服装/道具/手/视线局部共享编译→解码/后处理/已配置自动质量门→草稿一次整体确认→成品自动候选回写。单/多人及近中全景沿原矩阵，修复不引用shotID；场景、人数、身份、衣物、遮挡、控制权重/mask保持原消费，未确认新规格明确阻断而非假称应用，历史无规格路径保持。修复本根因的多对象Pose覆盖及跨对象视线坐标冲突；未增加逐项语义审批或成品二次复核。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 第八轮残余风险：分类校正仅覆盖便携工具与明确操作描述的已知冲突，不承诺任意模型语义自动正确；工具/工作面几何仍为代表性布局，具体物体表面与实际像素接触不由文字证明。规格v2须通过现有确认操作才用于新任务，已排队任务不自动换规格；模型随机性与实际视觉执行率保留运行风险。生产构建通过，开发服务恢复http://localhost:3000；本问题交独立诊断复核。
+
+- 第九轮诊断（用户只要求根因与方案）：实际job543已消费新规格，附图与保存草稿一致；已确认自动坐姿未进入prompt、多层action/关系/机制重复、package的landscape_rect在worker被扩为thin rigid，原问题仅部分修复。状态退回partially_fixed。独立支持物误识别/工具工作目标缺失/末端视线矛盾见新增ISSUE-POSE-051/052、ISSUE-GAZE-009。证据及实施/验收方案见JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md；本轮未改生产代码、未生成图片，不宣称程序或视觉验收通过。
 
 ## ISSUE-SCENE-002 未识别中文地点被硬阻断且生成入口未自动编译
 
@@ -3583,3 +3585,87 @@
 - 诊断 Agent 复核证据：workspace/quality-audits/pose-advisory-current.ts及执行回归。
 - 诊断 Agent 复核结论：待独立复核。
 - 后续处理：用户可以重新触发草稿，待诊断复核。
+
+## ISSUE-POSE-051 支持物子串匹配把described识别为床
+
+- 优先级：P1
+- 状态：open
+- 用户报告：结合最新图确认根因并提出方案；关联ISSUE-PROMPT-011与job543。
+- 已确认事实：job543场景desk/chair，实际supportKind=bed且床ControlNet进入基础请求；sourceText的bed仅来自described。
+- 高概率原因：/bed/无词边界；支持物源不读取确认场景支持关系。
+- 未验证假设：对像素失败的独立贡献未通过对照量化。
+- 反证或冲突：保持人工选择、既有advisory政策及一次草稿整体确认，不生成测试图。
+- 复现步骤：只读job543 recipe及requestTrace，沿上述文件推导同输入。
+- 涉及文件：lib/pose-v2.ts:436/464/477、lib/pose-v3/basic-geometry.ts
+- 影响范围：不同角色/区域/道具与对应基础及局部请求。
+- 建议方案：有来源的角色支持物关系优先，旧文本词边界与角色归属校验。
+- 验收标准：described/embedded不命中bed；真实床/椅子、站立及多人混合支持关系正确。
+- 解决 Agent 修改：本轮只出方案，未实施。
+- 解决 Agent 测试：未实施修复测试；已有任务只读诊断。
+- 残余风险：模型随机性与实际视觉执行率保留产品运行风险。
+- 诊断 Agent 复核证据：workspace/job543-root-audit.json及JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md。
+- 诊断 Agent 复核结论：确定代码/数据流缺陷，登记open，不标记verified。
+- 后续处理：按用户本轮诊断方案范围交付，后续实施时进入解决队列。
+
+## ISSUE-POSE-052 工具工作点与被操作对象缺少实例表面绑定
+
+- 优先级：P1
+- 状态：open
+- 用户报告：结合最新图确认根因并提出方案；关联ISSUE-PROMPT-011与job543。
+- 已确认事实：job543工具工作点按工具中心偏移独立生成；visualFacts无workTarget；包裹开合机制ambiguous，投影包裹约35px、剪刀范围约202px。
+- 高概率原因：手接触和注视绑定不能表达工具作用于另一个物体；独立几何没有共同布局。
+- 未验证假设：对像素失败的独立贡献未通过对照量化。
+- 反证或冲突：保持人工选择、既有advisory政策及一次草稿整体确认，不生成测试图。
+- 复现步骤：只读job543 recipe及requestTrace，沿上述文件推导同输入。
+- 涉及文件：lib/types.ts、lib/interaction-facts.ts、lib/story-action-contract.ts:35、lib/pose-v3/action-relations.ts
+- 影响范围：不同角色/区域/道具与对应基础及局部请求。
+- 建议方案：扩展同一交互契约的workTarget/表面/工作阶段与物体形态，联合布局后单次投影。
+- 验收标准：不同工具与目标、双手分工、支持面和尺度具有同源关系；明确未知机制，不用固定任务特例。
+- 解决 Agent 修改：本轮只出方案，未实施。
+- 解决 Agent 测试：未实施修复测试；已有任务只读诊断。
+- 残余风险：模型随机性与实际视觉执行率保留产品运行风险。
+- 诊断 Agent 复核证据：workspace/job543-root-audit.json及JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md。
+- 诊断 Agent 复核结论：确定代码/数据流缺陷，登记open，不标记verified。
+- 后续处理：按用户本轮诊断方案范围交付，后续实施时进入解决队列。
+
+## ISSUE-GAZE-009 跨物体视线末端请求把目标重新写回当前道具
+
+- 优先级：P1
+- 状态：open
+- 用户报告：结合最新图确认根因并提出方案；关联ISSUE-PROMPT-011与job543。
+- 已确认事实：job543剪刀gaze请求坐标指package_01，文字同时要求看包裹与same scissors；同角色同目标执行两次gaze。
+- 高概率原因：worker向gazeRefinementPrompt传当前propInteraction.object，未传解析后的目标label。
+- 未验证假设：对像素失败的独立贡献未通过对照量化。
+- 反证或冲突：保持人工选择、既有advisory政策及一次草稿整体确认，不生成测试图。
+- 复现步骤：只读job543 recipe及requestTrace，沿上述文件推导同输入。
+- 涉及文件：scripts/sd-worker.mjs:1267/1279、scripts/sd-worker-logic.mjs:610
+- 影响范围：不同角色/区域/道具与对应基础及局部请求。
+- 建议方案：按目标ID解析label/surface/point统一使用，并按人物/目标合并视线pass。
+- 验收标准：跨物体与独立人物目标在基础/身份/全部视线payload文字和坐标一致，无重复相反目标。
+- 解决 Agent 修改：本轮只出方案，未实施。
+- 解决 Agent 测试：未实施修复测试；已有任务只读诊断。
+- 残余风险：模型随机性与实际视觉执行率保留产品运行风险。
+- 诊断 Agent 复核证据：workspace/job543-root-audit.json及JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md。
+- 诊断 Agent 复核结论：确定代码/数据流缺陷，登记open，不标记verified。
+- 后续处理：按用户本轮诊断方案范围交付，后续实施时进入解决队列。
+
+## ISSUE-MEMORY-001 无Git变更时记忆同步files.map异常
+
+- 优先级：P2
+- 状态：open
+- 用户报告：结合最新图确认根因并提出方案；关联ISSUE-PROMPT-011与job543。
+- 已确认事实：本轮干净工作区执行pnpm memory:sync，scripts/project-memory-sync.mjs:56抛files.map is not a function。
+- 高概率原因：changedFiles无status返回字符串，调用方假定数组。
+- 未验证假设：对像素失败的独立贡献未通过对照量化。
+- 反证或冲突：保持人工选择、既有advisory政策及一次草稿整体确认，不生成测试图。
+- 复现步骤：只读job543 recipe及requestTrace，沿上述文件推导同输入。
+- 涉及文件：scripts/project-memory-sync.mjs:23/56
+- 影响范围：不同角色/区域/道具与对应基础及局部请求。
+- 建议方案：changedFiles始终返回数组，执行错误与空变更显式描述。
+- 验收标准：干净工作区、有效变更、git执行失败均能生成可读草稿，不自动应用长期记忆。
+- 解决 Agent 修改：本轮只出方案，未实施。
+- 解决 Agent 测试：未实施修复测试；已有任务只读诊断。
+- 残余风险：模型随机性与实际视觉执行率保留产品运行风险。
+- 诊断 Agent 复核证据：workspace/job543-root-audit.json及JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md。
+- 诊断 Agent 复核结论：确定代码/数据流缺陷，登记open，不标记verified。
+- 后续处理：按用户本轮诊断方案范围交付，后续实施时进入解决队列。

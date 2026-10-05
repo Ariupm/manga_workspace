@@ -95,3 +95,5 @@
 - 2026-10-05英文编译边界：本地编译是有界规则，不是任意中文翻译器；未知字段保留候选并明确失败。不透明ID不翻译；held状态无需支持物名称；同视线目标空表面不是相反表面；只有确切not visible indoors模板可跳过，复杂否定仍需校验。
 
 - 2026-10-05：不能只检查Regional初始prompt；Pose曾将同一人物purpose=operate的包裹套成剪刀工具动作。明确actionPlan按每关系隔离，跨对象视线保留外部目标坐标。已有新待确认规格时生成返回明确409，不能静默消费旧路径。
+
+- 2026-10-05 job543：/bed/会命中described，且支持物识别不读确认scene.anchors；确认chair不能证明实际控制为chair。跨对象gaze坐标正确也不代表末端文字正确，剪刀pass仍补same scissors。landscape_rect不能统一扩写为thin rigid，纸箱已有确定错误请求。

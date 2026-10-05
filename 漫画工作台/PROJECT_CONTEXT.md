@@ -56,3 +56,5 @@ pnpm memory:sync
 - 2026-10-05英文规划：DeepSeek单次直接英文输出，少量中文由visual-json-language本地编译；保留ID/数字和转换审计。compile-shot-candidate复用已返回规格，校验后保存待确认；shot1259已编译保存v1，无SD生成。
 
 - 2026-10-05应用链续修：新待确认规格阻止生成入口静默退回旧提示词；便携工具分类/具体动作/支持面与有效Pose各对象动作隔离已修复。shot1259校正为v2待确认，未生图。
+
+- 2026-10-05 job543只读诊断：新规格已进入实际请求，但仍有支持物described→bed误识别、工具目标几何未绑定、纸箱薄片化、自动坐姿漏写和末端视线文字矛盾。PROMPT-011改partially_fixed，新增POSE-051/052与GAZE-009。用户本轮只要求方案，尚未实施；详见JOB543_ROOT_CAUSE_AND_REPAIR_PLAN_2026-10-05.md。
