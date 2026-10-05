@@ -40,3 +40,13 @@ Regional/ControlNet → 基础生成：人物关系独立；携带位置证据�
 ISSUE-PROMPT-013、ISSUE-CONTROL-004推进fixed_pending_review，待独立诊断Agent复核，没有标记verified。
 
 程序逻辑验收通过，未进行图片生成或视觉效果验收。模型随机性、复杂动作执行率和参考图对身体/头部朝向的影响仍是产品运行风险。未更换模型或接入未知内置AI，未任意调参考权重。使用修复需要创建新草稿任务，旧任务配方不自动升级。
+
+## 用户后续结果：job546仍有摆拍（2026-10-05）
+
+用户提供新图后，只读确认它对应job546，状态awaiting_draft_approval。实际requestTrace已含侧背面朝向、右手approaching package with a visible gap、左手在身侧携带手机；旧prop目录名及胸前手机要求已消失。新authored-region-1已保存，identity参考区域mask确实进入请求（x=102，width=205，height=512）。因此不是没有使用本轮修复。
+
+本次只有initial基础生成，没有后序身份/手/视线pass，也没有成品img2img。摆拍在基础txt2img阶段就出现，不能解释为0.35成品重绘或后序pass破坏姿态。
+
+实际条件仍为DreamShaper 8、12步、CFG 5.5、seed 2942319385、关闭骨架，唯一ControlNet单元为ip-adapter-plus-face_sd15、weight=.68。人物区域限制不等于移除参考图的朝向影响；该影响大小未经隔离证明。当前正向gaze字段仅为目标名词the package on the shelf，缺少显式注视动词，是可改进的表达风险；不能据此断言它造成身体正面。模型能力、图像条件及文字表达的贡献尚不能区分。
+
+结论：本轮程序修复进入了真实请求，但没有解决用户反馈的摆拍。原问题仍fixed_pending_review，未据图像将程序修复宣布verified，也未把未证明的模型/参考图原因登记为确定性回归。下一步应明确用户另一套AI的名称及是否使用同一参考图，再决定身份条件解耦或后端调整；不继续承诺追加否定词即可解决。此次只查看用户已生成的图片和任务数据，没有启动SD或生成测试图。最新结果是否采用由用户决定，不增加自动语义质量拦截。
