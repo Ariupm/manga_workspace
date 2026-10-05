@@ -98,3 +98,49 @@ test('reference masks use matching authored regions, never disabled skeleton or 
  assert.equal(referenceRegionPlan(recipe,{characterId:'a',region:{xStart:.2,xEnd:.6}})?.source,'reference.region');
  assert.throws(()=>referenceRegionPlan(recipe,{characterId:'a',region:{xStart:NaN,xEnd:.6}}),/Invalid/);
 });
+import {gazeInstruction,viewCompatibleVisibility} from '../scripts/gaze-expression.mjs';
+
+test('gaze target compilation is explicit and idempotent without inventing head angles',()=>{
+ for(const [input,expected] of [['the package on the shelf','eyes focused on the package on the shelf'],['the other person’s eyes','eyes focused on the other person’s eyes'],['right','looking right'],['down','looking down'],['down at the book','looking down at the book'],['toward the window','looking toward the window'],['(the cup:1.3)','(eyes focused on the cup:1.3)'],['camera','eyes focused on camera']]){
+  assert.equal(gazeInstruction(input),expected);assert.equal(gazeInstruction(expected),expected);
+ }
+ for(const text of ['', 'closed eyes', 'eyes gently closed', 'eyes closed','her eyes are closed','head turned left, eyes looking right','looking down at the book','no eye contact with camera','not looking at the package','gazing at the viewer'])assert.equal(gazeInstruction(text),text);
+ assert.equal(viewCompatibleVisibility('face and upper body clearly visible','front view','package'),'face and upper body clearly visible');
+ assert.equal(viewCompatibleVisibility('face clearly visible','back view','looking at camera'),'face clearly visible');
+ assert.match(viewCompatibleVisibility('face and upper body clearly visible','three-quarter back view','package'),/only the portion/);
+ assert.equal(viewCompatibleVisibility('face hidden behind the box','side view','package'),'face hidden behind the box');
+});
+
+test('new base and every local stage keep target gaze across framing and Pose choices',()=>{
+ for(const camera of ['close-up','medium shot','full shot'])for(const useGeometry of [false,true]){
+  const shot=scene(camera);shot.visualSpec.characters[0].occlusion='face and upper body clearly visible';
+  const regional=buildRegionalPrompt(shot,[],[actor],{posePlannerVersion:'3.0'});
+  const plan=buildEffectivePromptPlan(regional,regional.poseControl as any,{useGeometry});
+  assert.deepEqual(plan.errors,[]);
+  assert.match(plan.characterPrompts[0],/eyes focused on the package on the shelf/);
+  assert.doesNotMatch(plan.characterPrompts[0],/face and upper body clearly visible/);
+  assert.equal(shot.visualSpec.characters[0].gazeTarget,'the package on the shelf');
+  for(const stage of ['identity','outfit','prop','hand','gaze','handoff']){
+   const local=compileStagePrompt(plan,{stage,characterId:'actor',relationId:plan.facts.relations[0]?.relationId});
+   assert.deepEqual(local.errors,[],stage);
+   if(stage!=='hand')assert.match(local.prompt,/eyes focused on the package on the shelf/,stage);
+   else assert.doesNotMatch(local.prompt,/looking at (?:viewer|camera)/);
+  }
+  const prompt=[plan.commonPrompt,...plan.characterPrompts].join(' BREAK ');
+  const final=finalizePromptPlan(plan,{commonPrompt:plan.commonPrompt,characterPrompts:plan.characterPrompts,prompt,negativePrompt:plan.negativePrompt});
+  const recipe:any={prompt,negativePrompt:final.negativePrompt,generationSpec:{promptPlan:final,repairPasses:{propInteractions:final.facts.relations}}};
+  const request=prepareGenerationPromptRequest(recipe,{prompt,negative_prompt:final.negativePrompt},{stage:'base'});
+  assert.match(request.prompt,/eyes focused on the package on the shelf/);
+ }
+});
+import {createPromptPlan} from '../scripts/prompt-compiler.mjs';
+
+test('different actors keep independent gaze; old frozen field text is not migrated at execution',()=>{
+ const input={common:[],characters:[{characterId:'left',fields:[{id:'left.gaze',group:'gaze',text:'the window',source:'manual'}]},{characterId:'right',fields:[{id:'right.gaze',group:'gaze',text:'looking at camera',source:'manual'}]}]};
+ const plan=createPromptPlan(input);
+ assert.match(plan.characterPrompts[0],/eyes focused on the window/);assert.doesNotMatch(plan.characterPrompts[0],/camera/);
+ assert.match(plan.characterPrompts[1],/looking at camera/);assert.doesNotMatch(plan.characterPrompts[1],/window/);
+ assert.equal(input.characters[0].fields[0].text,'the window');
+ const legacy=structuredClone(plan);legacy.facts.characters[0].fields[0].text='the window';
+ const before=JSON.stringify(legacy);compileStagePrompt(legacy,{stage:'gaze',characterId:'left'});assert.equal(JSON.stringify(legacy),before);
+});

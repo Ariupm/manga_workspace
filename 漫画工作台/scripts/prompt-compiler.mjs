@@ -1,3 +1,4 @@
+import {gazeInstruction} from "./gaze-expression.mjs";
 import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState, actionStageVerb } from './action-stage-policy.mjs';
 import {PROMPT_CONSISTENCY_VERSION, factSetConsistencyErrors, promptConsistencyErrors, relationSemanticSignature} from './prompt-consistency.mjs';
 import {assertControlPolicyRequest} from './generation-control-policy.mjs';
@@ -188,7 +189,7 @@ export function compilePromptFields(fields = [], negative = '') {
 
 export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE }) {
   const priority=['position','identity','pose','action','interaction','hands','clothing','body','expression','gaze','occlusion','condition'];
-  characters=characters.map(person=>({...person,fields:[...person.fields].sort((a,b)=>{
+  characters=characters.map(person=>({...person,fields:person.fields.map(f=>f.group==='gaze'?{...f,text:gazeInstruction(f.text)}:f).sort((a,b)=>{
     const rank=f=>priority.includes(f.group)?priority.indexOf(f.group):priority.length;
     return rank(a)-rank(b);
   })}));

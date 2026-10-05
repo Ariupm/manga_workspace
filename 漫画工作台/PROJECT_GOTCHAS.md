@@ -1,5 +1,10 @@
 # 项目坑点与直接解决方案
 
+## 2026-10-05：视线目标表达（ISSUE-GAZE-010）
+
+- 视线字段名称不随文本传入SD，the package on the shelf必须编译为eyes focused on the package on the shelf。归一化要幂等、保留闭眼/否定/看镜头与多人独立；不得因目标在右就硬推头部向右。
+- 程序逻辑验收通过，未进行图片生成或视觉效果验收；实际执行率仍为运行风险。
+
 ## 2026-10-05：人物参考图可选（ISSUE-REFERENCE-001）
 
 - 人物参考与Pose是两个独立策略。关闭参考时不仅基础图，也必须过滤身份/服装及道具、手部、视线等局部阶段的参考来源；activeReferenceImages和请求守卫共同生效。不得要求CLIP/正脸文件，不得从finalReferences重新带回；草稿init_images及几何控制不属于人物资产参考。

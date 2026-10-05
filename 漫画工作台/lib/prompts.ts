@@ -1,3 +1,4 @@
+import {gazeInstruction,viewCompatibleVisibility} from "../scripts/gaze-expression.mjs";
 import {bindWorkInteractions} from './coupled-interactions';
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
 import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
@@ -437,7 +438,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const meaningfulContactText=relationContactText.replace(/both visible hands follow the described action|both visible hands following the described action/gi,"");
   const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(relationActionText);
   if(declaredMode)handMode=declaredMode;
-  const rawSavedGaze=englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId));
+  const rawSavedGaze=gazeInstruction(englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId)));
   const savedGaze=rawSavedGaze === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? inferGazeFromAction(relationActionText) : rawSavedGaze;
   // A carried object does not own the actor's gaze. Keep explicit direction
   // consistent in natural language and the structured target used by Pose/passes.
@@ -1080,7 +1081,7 @@ function defaultLook(
           : "on the right side"),
     actionEn: resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn),
     expressionEn: saved.expressionEn || planned?.expression || shot.expressionEn,
-    gazeEn: (saved.gazeEn === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? "" : saved.gazeEn) || planned?.gazeTarget || storyGazeFallback(shot, character.id) || inferGazeFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
+    gazeEn: gazeInstruction((saved.gazeEn === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? "" : saved.gazeEn) || planned?.gazeTarget || storyGazeFallback(shot, character.id) || inferGazeFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn))),
     handsEn:
       saved.handsEn || planned?.hands ||
       inferHandsFromAction(resolveActionDescription(saved.actionEn, planned?.action, shot.actionEn)),
@@ -1721,9 +1722,9 @@ export function buildRegionalPrompt(
       }).join(', '):englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:interactions.some(r=>r.visualFacts)?'structured_contact+independent_free_hand':sourceFor("handsEn")},
       ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i,'prop',true),source:"interaction_contract"})),
       {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
-      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
+      {id:`${id}.gaze`,group:"gaze",text:`(${gazeInstruction(englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn)))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
-      {id:`${id}.occlusion`,group:"occlusion",text:englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),source:"confirmed_visual_spec"},
+      {id:`${id}.occlusion`,group:"occlusion",text:viewCompatibleVisibility(englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),look.positionEn,look.gazeEn),source:"confirmed_visual_spec"},
     ];
     const compiledFields = compilePromptFields(fields,character.profile?.outfitNegativeEn || "");
     characterFacts.push({characterId:id,fields,negative:compiledFields.negativePrompt});
