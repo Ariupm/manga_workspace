@@ -32,7 +32,10 @@ export function resolvePropVisualFacts(object, action = '') {
 }
 function explicitPropCount(noun,text) {
   const escaped=noun.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const match=text.match(new RegExp(`\\b(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(?:(?:closed|open|stacked|small|large|red|blue|green|white|black)\\s+){0,3}${escaped}(?:s|es)?\\b`,'i'));
+  // Accept authored noun modifiers without a colour/material whitelist. Never
+  // carry a quantity across a clause, support preposition or another number.
+  const modifier = '(?!(?:and|or|then|while|with|without|from|to|on|in|at|of|beside|near|behind|above|below|under|over|holding|touching|taking|one|two|three|four|five|six|seven|eight|nine|ten)\\b)[a-z][a-z-]*';
+  const match=text.match(new RegExp(`\\b(one|two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(?:${modifier}\\s+){0,8}${escaped}(?:s|es)?\\b`,'i'));
   return match ? ({one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10}[match[1].toLowerCase()] ?? Number(match[1])) : null;
 }
 export function propVisualLabel(relation) {

@@ -9,6 +9,18 @@ import {compilePromptFields,compileStagePrompt,createPromptPlan,finalizePromptPl
 import {propGroupOutline,actionOutlineMarkup} from '../scripts/action-mechanism.mjs';
 import {deferRequiredPropsFromBasePrompt,upperBodyVisiblePrompt} from '../scripts/sd-worker-logic.mjs';
 
+test('authored noun modifiers preserve prop counts without borrowing across action clauses',()=>{
+  for(const [family,action,noun,count] of [
+    ['book or document','taking out two paperback books','book',2],
+    ['book or document','carrying three red hardcover books','book',3],
+    ['drink container','holding three transparent bottles','bottle',3],
+    ['food container','holding two hand-painted bowls','bowl',2],
+    ['book or document','two bottles beside a book','book',1],
+    ['book or document','two bottles and a book','book',1],
+    ['book or document','two bottles while touching a book','book',1],
+  ] as const) assert.deepEqual(resolvePropVisualFacts(family,action),{object:noun,expectedCount:count});
+});
+
 test('semantic routing preserves approach gaps and scopes exclusions; ambiguous negatives surface',()=>{
   const result=compilePromptFields([{id:'gaze',text:'eyes focused on a parcel, no eye contact with camera',source:'manual'},{id:'hand',text:'hand approaching the object without contact; preserve a visible gap',source:'phase'}]);
   assert.deepEqual(result.errors,[]);
