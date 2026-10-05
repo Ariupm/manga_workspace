@@ -31,7 +31,8 @@
 - 第六轮解决修改（英文输出/本地编译）：按用户最终指令不采用语言重试。DeepSeek一次返回英文；描述/证据/警告中文由纯本地visual-json-language编译，复用地点规则、通用工具句式和人物名称绑定，保留数字、ID及字段审计；未识别内容明确失败并返回待编译candidate，不删除或编造原文。增加compile-shot-candidate复用已返回JSON，无需再调模型；校验通过才保存为deepseek_local_compile且待确认。章节中文也用同一编译器，不因语言再次调用。修复held状态无支持物名被错误拒绝、同目标空surface与明确surface被误判矛盾；当前英文中的not visible indoors按确切不可视模板跳过、no outerwear转人物范围负向。
 - 第六轮解决测试：227/227项目测试、68/68执行层测试、类型和生产构建通过。真实shot1259在一次返回中识别8个中文来源证据，复用候选本地编译后POST成功，规格v1/source=deepseek_local_compile/confirmed=false；主体和证据英文，剪刀和包裹各1件，两关系视线均指package_01。只读纯编译该规格：PromptPlan.errors为空，公共/人物正向无中文。完整业务链复核：剧情及人工选择→单次DeepSeek输出→本地字段编译/原文审计→形状/来源/ID/交互P0→规格持久化与待确认→具体契约/有效Pose→PromptPlan/recipe/payload→Regional/ControlNet→基础及各局部pass→质量门/草稿整体确认→正式候选；实例数、手、阶段和控制坐标不被语言转换改写，未知文本失败不落库/不伪报已应用，旧任务不重编，审批路径不改。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 第六轮残余风险：本地编译是有界视觉语义/短语转换，不是任意中文翻译模型；未知或复杂句明确报错并保留候选，不能承诺全部中文自动成功。中文不透明ID保持原引用，原文审计可含中文但执行规格描述必须英文。模型动作理解与代表性几何仍是已有运行风险；本次未确认规格，也未发起SD。
-- 后续处理：第六轮推进fixed_pending_review，交诊断Agent独立复核，不标记verified。
+- 第七轮用户要求核对最新提示词：只读正式jobs541/540的实际recipe均未使用AI视觉规格，generationSpec.visualSpec=null；shot1259规格v1仍confirmed=false，按现有优先级走旧分镜兼容路径，这是待确认状态而非未保存。实际提示词保留Cutting open the package with scissors/using scissors，但必需交互只有剪刀，未明确左手稳定包裹/桌面支持和包裹切口视线。模拟确认新规格的纯编译无语法错误、无中文，但原AI把scissors动作归类operate_environment，正向出现operating而不是明确cutting；因此“编译无错误”不能作为该剧情语义完全正确的证据。上述AI动作归类及自由文本语义不足作为已确认的当前输出风险记录，未把模型理解结果伪称验证通过；没有修改/取消用户运行任务、确认规格或生成图片。
+- 后续处理：保持fixed_pending_review交独立复核；最新任务未消费新规格和AI语义风险已明确记录，不标记verified。
 
 ## ISSUE-SCENE-002 未识别中文地点被硬阻断且生成入口未自动编译
 
