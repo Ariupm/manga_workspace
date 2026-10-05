@@ -1,4 +1,5 @@
 import {usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
+import {deferDraftHandDetail} from './cpu-generation-policy.mjs';
 import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
 import {relationGazeDescription,isLastRelationGaze,propPhysicalAppearance} from './sd-worker-logic.mjs';
 import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action-mechanism.mjs";
@@ -129,11 +130,14 @@ try {
     try { assertControlPolicyRequest(recipe,request,context); compiledRequest = prepareGenerationPromptRequest(recipe,request,context); }
     catch(error) { promptCompilationFailure = error; throw error; }
     const trace = recipe.promptRequestTraces?.at(-1);
+    const requestStarted = performance.now();
+    if (trace) Object.assign(trace, { phase: recipe.phase || payload.phase || "final", startedAt: new Date().toISOString(), steps: compiledRequest.steps, width: compiledRequest.width, height: compiledRequest.height });
     try {
       const result = await postJson(url,compiledRequest);
       if(trace)trace.requestStatus = result.status >= 200 && result.status < 300 ? "succeeded" : "failed";
       return result;
     } catch(error) { if(trace)trace.requestStatus="failed"; throw error; }
+    finally { if (trace) Object.assign(trace, { completedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - requestStarted) }); }
   };
   if(geometryEnabled&&recipe.generationSpec?.repairPasses?.actionContractVersion==='story-action-1'&&recipe.poseControl?.posePlanVersion!=='3.0')throw new Error('Story action contract requires its V3 geometry; legacy fallback is not executable');
   preparePoseExecutionV3(recipe);
@@ -833,6 +837,7 @@ try {
   const relationId = propInteraction.relationId || `legacy:${propInteractions.indexOf(propInteraction) + 1}`;
   updateRelationTrace(relationId, "executing");
   let relationFailed = false;
+  let contactSucceeded = false;
   if(propInteraction.required && response.images?.[0]) {
     if(status()==="cancelled")process.exit(0);
     const width=recipe.width,height=recipe.height;
@@ -1022,6 +1027,7 @@ try {
         }
         contactTrace.output = contactTrace.outputs.at(-1)?.output || null;
         contactTrace.requestStatus = "succeeded";
+        contactSucceeded = true;
       } catch (error) {
         relationFailed = true;
         contactTrace.requestStatus = "failed";
@@ -1031,7 +1037,12 @@ try {
         update(phase === "draft" ? "draft_running" : "final_running", 96, "", warning);
       }
     }
-    if (response.images?.[0] && contactPassAllowed(propInteraction) && recipe.handRefinement?.enabled && recipe.handRefinement?.model && geometry.contacts.length) {
+    const handDetailAvailable = Boolean(response.images?.[0] && contactPassAllowed(propInteraction) && recipe.handRefinement?.enabled && recipe.handRefinement?.model && geometry.contacts.length);
+    const handDetailDeferred = handDetailAvailable && deferDraftHandDetail({ policy: recipe.cpuOptimization, phase, profile: profilePlan.id, contactSucceeded, relationFailed });
+    if (handDetailDeferred) {
+      recipe.passTraces.push({ stage: "hand_refinement", phase, relationId, characterId: propInteraction.characterId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "skipped", semanticStatus: "not_applied", reason: "cpu_draft_hand_detail_deferred_to_final", contactCompletionStatus: "succeeded", deferredTo: "final" });
+    }
+    if (handDetailAvailable && !handDetailDeferred) {
       const contactSpanPx = geometry.contacts.length > 1 ? Math.max(...geometry.contacts.map((anchor) => anchor.x * width)) - Math.min(...geometry.contacts.map((anchor) => anchor.x * width)) : Infinity;
       const handRadius = Math.max(22, Math.min(34, Math.round(Math.min(width, height) * .06), Number.isFinite(contactSpanPx) ? Math.floor(contactSpanPx * .44) : 34));
       const handMasks = await Promise.all(geometry.contacts.map(async (anchor) => {

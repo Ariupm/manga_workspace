@@ -4834,7 +4834,7 @@ type SdRecipe = {
   appearanceCoverage?: Array<{characterId:string;face:string;hair:string;outfit:string;detail:string}>;
   poseUsage?: {version:string;enabled:boolean;status:string};
   geometryPassAudit?: {status:string;reason:string;skipped:string[]};
-  promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string}>;
+  promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string;phase?:string;durationMs?:number}>;
   references?: Array<{
     role: string;
     assetId: string;
@@ -4959,7 +4959,7 @@ function JobDetailsButton({ payload }: { payload: string }) {
                           </details>
                           {recipe.appearanceCoverage?.map(c=><p key={c.characterId}><b>{c.characterId} · 外观约束范围</b><br/><small>{c.detail}</small></p>)}
                           {!!recipe.promptRequestTraces?.length && <details><summary>实际请求提示词</summary>
-                            {recipe.promptRequestTraces.map((trace,index)=>(<p key={index}><b>{trace.stage} · {trace.requestStatus}</b><br/><small>{trace.prompt}<br/>负向：{trace.negativePrompt}</small></p>))}
+                            {recipe.promptRequestTraces.map((trace,index)=>(<p key={index}><b>{trace.phase === "draft" ? "草稿 · " : trace.phase === "final" ? "成品 · " : ""}{trace.stage} · {trace.requestStatus}{typeof trace.durationMs === "number" && Number.isFinite(trace.durationMs) ? ` · ${(trace.durationMs / 1000).toFixed(1)}秒` : ""}</b><br/><small>{trace.prompt}<br/>负向：{trace.negativePrompt}</small></p>))}
                           </details>}
                         </details>
                       )}

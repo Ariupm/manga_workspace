@@ -1,4 +1,5 @@
 import {poseUsagePlan} from '../../../scripts/generation-control-policy.mjs';
+import {cpuGenerationPolicy} from '../../../scripts/cpu-generation-policy.mjs';
 import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
 import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
@@ -920,6 +921,7 @@ export async function POST(request: Request) {
       posePreflightWarnings: [...new Set(posePreflightWarnings)],
       phase: "draft",
       generationProfile,
+      cpuOptimization: cpuGenerationPolicy(generationProfile),
       profilePlan,
       endpoint: `${base}/sdapi/v1/txt2img`,
       model: String(options.sd_model_checkpoint || "未知"),
