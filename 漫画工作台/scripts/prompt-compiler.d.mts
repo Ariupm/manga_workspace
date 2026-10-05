@@ -1,10 +1,10 @@
 export type PromptField = {id:string;group?:string;text:string;source:string};
 export type PromptCompilation = {prompt:string;negativePrompt:string;audit:any[];errors:string[];statistics:{characters:number;terms:number}};
 export type PromptCharacterFacts = {characterId:string;fields:PromptField[];negative?:string;region?:{xStart:number;xEnd:number}};
-export type PromptPlan = {version:string;factsHash:string;facts:{common:PromptField[];characters:PromptCharacterFacts[];relations:any[];style:string;negativeBlocks:Record<string,string>};commonPrompt:string;characterPrompts:string[];negativePrompt:string;characterNegatives:{characterId:string;prompt:string}[];audit:any[];errors:string[];appliedPrompt?:string;executionHash?:string};
+export type PromptPlan = {version:string;factsHash:string;facts:{consistencyVersion?:string;common:PromptField[];characters:PromptCharacterFacts[];relations:any[];style:string;negativeBlocks:Record<string,string>};commonPrompt:string;characterPrompts:string[];negativePrompt:string;characterNegatives:{characterId:string;prompt:string}[];audit:any[];errors:string[];appliedPrompt?:string;executionHash?:string};
 export const PROMPT_COMPILER_VERSION:string;
 export const ART_STYLE:string;
-export function relationVisualText(relation:any,stage?:string):string;
+export function relationVisualText(relation:any,stage?:string,explicitPhase?:boolean):string;
 export function resolvePropVisualFacts(object:string,action?:string):{object:string;expectedCount:number};
 export function propVisualLabel(relation:any):string;
 export function transferSupportLabel(action:string,context?:string):string;

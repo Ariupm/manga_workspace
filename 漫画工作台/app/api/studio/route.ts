@@ -1,3 +1,4 @@
+import {poseUsagePlan} from '../../../scripts/generation-control-policy.mjs';
 import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
 import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
@@ -335,6 +336,8 @@ export async function POST(request: Request) {
     );
   if (shot.visualSpec && !shot.visualSpecConfirmed)
     return NextResponse.json({error: "此分格有新的待确认视觉规格。请在连续性页面确认规格后生成，避免使用旧提示词。", code: "VISUAL_SPEC_PENDING_CONFIRMATION", shotId: shot.id, visualSpecVersion: shot.visualSpecVersion}, {status: 409});
+  if (body.poseControlEnabled !== undefined && typeof body.poseControlEnabled !== 'boolean') return NextResponse.json({error:'骨架启用选项必须是布尔值',code:'INVALID_POSE_USAGE'},{status:422});
+  const poseUsage = poseUsagePlan(body.poseControlEnabled ?? shot.poseControlEnabled ?? true);
   const assets = getAssets();
   const characters = getCharacters();
   let visualMigrationTrace: { applied: boolean; fromVersion: number; toVersion: string; warnings: string[] } | null = null;
@@ -765,7 +768,7 @@ export async function POST(request: Request) {
       | undefined;
     let regionalCommonPrompt = sanitizeEnglishPrompt([regionalSpec.commonPrompt,regionalOverride?.commonPrompt ? extractPromptEditorialDiff(regionalSpec.commonPrompt,regionalOverride.commonPrompt) : ""].filter(Boolean).join(", "));
     const promptPose = regionalSpec.poseControl?.posePlanVersion === "3.0" ? applyPoseControlOverrideV3(regionalSpec.poseControl, body.poseControlOverride) : null;
-    const effectivePromptFacts = buildEffectivePromptPlan(regionalSpec,promptPose);
+    const effectivePromptFacts = buildEffectivePromptPlan(regionalSpec,promptPose,{useGeometry:poseUsage.enabled});
     let regionalCharacterPrompts = effectivePromptFacts.characterPrompts.map((text,index)=>sanitizeEnglishPrompt([
       text,Array.isArray(regionalOverride?.characterPrompts) && regionalOverride.characterPrompts.length===regionalSpec.regionPrompts.length
         ? extractPromptEditorialDiff(regionalSpec.regionPrompts[index],String(regionalOverride.characterPrompts[index])) : "",
@@ -877,7 +880,7 @@ export async function POST(request: Request) {
         ? body.poseImageOverride.trim().replace(/^data:image\/[^;]+;base64,/, "")
         : "";
     const automaticPoseControl = regionalSpec.poseControl;
-    if(regionalSpec.repairPasses.actionContractVersion==='story-action-1'&&automaticPoseControl?.posePlanVersion!=='3.0')return NextResponse.json({error:'剧情动作关系没有有效V3构图，不能降级到旧骨架。请调整景别、人物区域或动作目标。',code:'ACTION_CONTRACT_POSE_UNAVAILABLE'},{status:422});
+    if(poseUsage.enabled&&regionalSpec.repairPasses.actionContractVersion==='story-action-1'&&automaticPoseControl?.posePlanVersion!=='3.0')return NextResponse.json({error:'剧情动作关系没有有效V3构图，不能降级到旧骨架。请调整景别、人物区域或动作目标。',code:'ACTION_CONTRACT_POSE_UNAVAILABLE'},{status:422});
     const resolvedPoseControl = automaticPoseControl && "posePlanVersion" in automaticPoseControl
       ? automaticPoseControl.posePlanVersion === "3.0"
         ? applyPoseControlOverrideV3(automaticPoseControl, body.poseControlOverride)
@@ -896,7 +899,7 @@ export async function POST(request: Request) {
       resolvedPoseControl && openPoseAvailable
         ? {
             ...resolvedPoseControl,
-            enabled: true,
+            enabled: poseUsage.enabled,
             model: openPoseModel,
             module: "none",
             weight: "controlProfile" in resolvedPoseControl ? resolvedPoseControl.controlProfile.weight : 0.9,
@@ -912,6 +915,7 @@ export async function POST(request: Request) {
         : null;
     const recipe = {
       provider: "sd-webui",
+      poseUsage,
       posePreflightPolicy: "advisory",
       posePreflightWarnings: [...new Set(posePreflightWarnings)],
       phase: "draft",
@@ -973,17 +977,17 @@ export async function POST(request: Request) {
         assetWarnings: regionalSpec.assetWarnings,
         poseControl,
         structureControl: { cannyModel: cannyModel || null, depth: { enabled: false, status: "unavailable_manual_required" } },
-        repairPasses: regionalSpec.repairPasses,
+        repairPasses: poseUsage.enabled ? regionalSpec.repairPasses : {...regionalSpec.repairPasses,propInteractions:promptPlan.facts.relations},
         riskProfile: regionalSpec.repairPasses?.risk || null,
         qualityGate: {
           expectedFaceWidthPx: expectedFaceWidth,
           minimumReadableFaceWidthPx: 64,
           preferredExpressionFaceWidthPx: 96,
-          requiresFaceRefinement: true,
+          requiresFaceRefinement: poseUsage.enabled,
           warnings: [
             ...([...new Set(promptRepairs)].length ? [`服务端已按动作契约自动修复最终提示词：${[...new Set(promptRepairs)].join("；")}`] : []),
             ...regionalSpec.assetWarnings,
-            ...(shot.characterIds.length > 2 && regionalSpec.repairPasses?.risk?.poseRequired
+            ...(poseUsage.enabled && shot.characterIds.length > 2 && regionalSpec.repairPasses?.risk?.poseRequired
               ? ["三人以上镜头不自动套用双人骨架，必须使用人工 OpenPose 编辑或上传姿势图"]
               : []),
             ...((resolvedPoseControl && "scenePlan" in resolvedPoseControl)
@@ -994,7 +998,7 @@ export async function POST(request: Request) {
               .map((plan) => `${plan.entry.asset.name} 不是去人脸纯服装参考，本次仅使用其结构化文字，避免身份和构图污染`),
             ...(outfits.length && !outfitReferences.length ? ["服装参考未进入 ControlNet：当前镜头仅使用服装文字，必须人工复核服装一致性"] : []),
             ...(/雨|rain|umbrella|伞/i.test(`${shot.scene} ${shot.description}`)
-              ? ["雨伞、刘海和逆光可能遮挡面部；已启用面部补光与局部身份精修"]
+              ? ["雨伞、刘海和逆光可能遮挡面部；当前场景光线和遮挡关系将保留"]
               : []),
           ],
           outfitConditioning: outfitPlans.map((plan) => ({
@@ -1006,9 +1010,13 @@ export async function POST(request: Request) {
         },
       },
       poseControl,
-      appearanceCoverage: appearanceControlCoverage(references,shot.characterIds),
+      appearanceCoverage: appearanceControlCoverage(
+        poseUsage.enabled ? references : references.filter((reference) =>
+          reference && (reference.role === "identity" || !("stagedOnly" in reference && reference.stagedOnly))),
+        shot.characterIds,
+      ),
       identityRefinement: {
-        enabled: true,
+        enabled: poseUsage.enabled,
         scope: "face_only_high_resolution",
         draftDenoisingStrength: 0.38,
         finalDenoisingStrength: 0.32,
@@ -1018,7 +1026,7 @@ export async function POST(request: Request) {
         processHeight: 512,
       },
       handRefinement: {
-        enabled: handRefinerAvailable && requiredPropInteractions.some((item) => item?.required !== false && item?.handMode),
+        enabled: poseUsage.enabled && handRefinerAvailable && requiredPropInteractions.some((item) => item?.required !== false && item?.handMode),
         module: "depth_hand_refiner",
         model: handRefinerAvailable ? handRefinerModel : null,
         weight: 0.58,
@@ -1043,11 +1051,11 @@ export async function POST(request: Request) {
           : outfits.length
             ? "text_only_manual_review"
             : "not_selected",
-        pose: openPoseModel || "unavailable",
+        pose: poseUsage.enabled ? openPoseModel || "unavailable" : "disabled_by_user",
         depth: "unavailable_manual_required",
-        hands: handRefinerAvailable ? "depth_hand_refiner" : "manual_review_required",
+        hands: !poseUsage.enabled ? "disabled_by_user" : handRefinerAvailable ? "depth_hand_refiner" : "manual_review_required",
         fallbackReason:
-          faceAdapter.validFile && outfitAdapter.validFile && (!regionalSpec.poseControl || openPoseAvailable)
+          faceAdapter.validFile && outfitAdapter.validFile && (!poseUsage.enabled || !regionalSpec.poseControl || openPoseAvailable)
             ? null
             : "IP-Adapter 或 OpenPose ControlNet 模型不可用",
       },

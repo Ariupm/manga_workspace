@@ -303,6 +303,7 @@ export type Shot = {
   visualSpecDependencyHash: string;
   generationWidth: number;
   generationHeight: number;
+  poseControlEnabled?: boolean;
   cropX: number;
   cropY: number;
   cropScale: number;

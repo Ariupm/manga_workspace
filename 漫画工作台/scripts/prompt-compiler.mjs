@@ -1,4 +1,6 @@
 import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState, actionStageVerb } from './action-stage-policy.mjs';
+import {PROMPT_CONSISTENCY_VERSION, factSetConsistencyErrors, promptConsistencyErrors, relationSemanticSignature} from './prompt-consistency.mjs';
+import {assertControlPolicyRequest} from './generation-control-policy.mjs';
 
 export const PROMPT_COMPILER_VERSION = 'comic-facts-1';
 export const ART_STYLE = 'anime illustration, clean line art, soft cel shading';
@@ -60,7 +62,7 @@ export function visibleClothingText(value, camera) {
     .map(term=>/\b(?:dress|gown|jumpsuit)\b/i.test(term) ? `upper portion of ${term.replace(/\b(?:midi|maxi|floor-length|knee-length)\s+/gi,'')}` : term).join(', ');
 }
 
-export function relationVisualText(relation, stage = 'prop') {
+export function relationVisualText(relation, stage = 'prop', explicitPhase = false) {
   const state = relationActionState(relation);
   if (!relation?.required) return '';
   const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
@@ -91,6 +93,7 @@ export function relationVisualText(relation, stage = 'prop') {
   const affordance = relation.visualFacts || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
   const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
   return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
+    explicitPhase && state && ['pick','place'].includes(state.actionId) ? `${actionStageVerb(state.actionId,state.phase)} the ${object}` : '',
     relation.visualFacts && state?.phase==='contact' && ['tool','open','close','write','push','pull'].includes(state.actionId) ? relation.actionPlan?.evidence : '',
     contact, relation.visualFacts && state?.contactState==='contact' ? `${hands} touching the ${relation.visualFacts.contact.part} of the ${object}` : '',
     ...(stage === 'hand' && contactPassAllowed(relation) ? coverContact || relation.visualFacts ? [] : actionContactTerms(relation) : visualTerms),
@@ -180,13 +183,19 @@ export function compilePromptFields(fields = [], negative = '') {
 }
 
 export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE }) {
+  const priority=['position','identity','pose','action','interaction','hands','clothing','body','expression','gaze','occlusion','condition'];
+  characters=characters.map(person=>({...person,fields:[...person.fields].sort((a,b)=>{
+    const rank=f=>priority.includes(f.group)?priority.indexOf(f.group):priority.length;
+    return rank(a)-rank(b);
+  })}));
   const shared = compilePromptFields(common);
   const people = characters.map(person => ({ ...person, compiled: compilePromptFields(person.fields, person.negative || '') }));
   const commonNegatives = people.length === 1 ? people[0].compiled.negativePrompt : promptTerms(people[0]?.compiled.negativePrompt).filter(term => people.every(p => promptTerms(p.compiled.negativePrompt).includes(term))).join(', ');
   const negative = uniquePrompt([...Object.values(negativeBlocks), shared.negativePrompt, commonNegatives].filter(Boolean).join(', '));
-  const snapshot = { common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
+  const snapshot = { consistencyVersion:PROMPT_CONSISTENCY_VERSION, common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
   const relationErrors=relations.filter(r=>!Number.isInteger(r.expectedCount??1)||(r.expectedCount??1)<1||(r.expectedCount??1)>16).map(r=>`${r.relationId}: prop count must be an integer from 1 to 16`);
-  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit)], errors: [...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors] };
+  const consistencyErrors=[...factSetConsistencyErrors(snapshot),...people.flatMap(p=>promptConsistencyErrors({prompt:p.compiled.prompt,negative:[negative,p.compiled.negativePrompt].join(', '),person:p,relations})),...promptConsistencyErrors({prompt:shared.prompt,negative})];
+  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit)], errors: [...new Set([...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors,...consistencyErrors])] };
 }
 
 /** Recompile owned relation fields after Pose changes; never append a second state. */
@@ -206,7 +215,7 @@ export function rebindPromptPlanRelations(plan, relations) {
       return f;
     });
     const insertion=fields.findIndex(f=>f.group==='expression');
-    fields.splice(insertion<0?fields.length:insertion,0,...owned.map(r=>({id:`${person.characterId}.interaction.${r.relationId}`,group:'interaction',text:relationVisualText(r),source:'effective_interaction_contract'})));
+    fields.splice(insertion<0?fields.length:insertion,0,...owned.map(r=>({id:`${person.characterId}.interaction.${r.relationId}`,group:'interaction',text:relationVisualText(r,'prop',true),source:'effective_interaction_contract'})));
     return {...person,fields};
   });
   return createPromptPlan({...plan.facts,characters,relations});
@@ -269,6 +278,11 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const relation = relationId ? plan.facts.relations.find(r => r.relationId === relationId) : null;
   if (!person) throw new Error(`Missing prompt facts for character ${characterId}`);
   if (relationId && (!relation || relation.characterId !== characterId)) throw new Error('Prompt relation does not belong to character');
+  const consistent=plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION;
+  const suppliedDetails=details;
+  // Gaze is owned by the effective person facts, not a second worker sentence.
+  if(consistent&&stage==='gaze')details='';
+  if(consistent&&stage==='handoff')details=promptTerms(details).filter(t=>!/holds?|holding|approach|grip|extend|hand|gaze|look/i.test(t)).join(', ');
   const allowed = {
     identity: ['identity', 'expression', 'gaze', 'occlusion'],
     outfit: ['clothing', 'condition'],
@@ -281,14 +295,21 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const fields = person.fields.filter(f => allowed.includes(f.group) && !(relation && ['action','hands'].includes(f.group)) && !(stage === 'hand' && f.group === 'action'));
   // A garment pass has an explicit garment zone; never request the other garments.
   const selected = fields.filter(f => !(stage === 'outfit' && details && f.group === 'clothing') && !(stage === 'gaze' && details && f.group === 'gaze'));
-  const relationText = relation && stage !== 'gaze' ? relationVisualText(relation,stage) : '';
-  const scene = plan.facts.common.filter(f => ['lighting', 'style'].includes(f.group));
+  if(consistent&&['prop','hand','outfit','handoff'].includes(stage))selected.push(...person.fields.filter(f=>['pose','occlusion'].includes(f.group)&&!selected.includes(f)));
+  const linked=consistent&&relation ? plan.facts.relations.filter(r=>r.characterId===characterId&&r.required&&r.relationId!==relationId&&(r.objectInstanceId===relation.visualFacts?.workTarget?.instanceId||r.visualFacts?.workTarget?.instanceId===relation.objectInstanceId)) : [];
+  const relationText = relation && stage !== 'gaze' ? uniquePrompt([relation,...linked].map(r=>relationVisualText(r,stage,consistent)).join(', ')) : '';
+  const scene = plan.facts.common.filter(f => (consistent?['lighting','style','cameraAngle']:['lighting', 'style']).includes(f.group));
   const exclusions = { identity: 'blurry face, malformed eyes, wrong identity', outfit: 'wrong garment category, wrong garment color, missing clothing layer', prop: 'duplicated prop, unrelated object, malformed hands', hand: 'extra hand, fused fingers, broken wrist, detached hand', gaze: 'crossed eyes, mismatched pupils', handoff: 'fused hands, disconnected umbrella handle' }[stage];
   const personExclusions = promptTerms(person.negative).filter(term => ['identity','gaze'].includes(stage)
     ? !/garment|clothing|coat|skirt|dress|bag|shoe|full body|legs/i.test(term)
     : stage === 'outfit' ? !/eye contact|looking at|gaze|pupils/i.test(term) : false).join(', ');
   const localNegative = [personExclusions, relation?.negative?.join(', '), relation?.expectedCount>1 ? exclusions.replace('duplicated prop','incorrect prop count') : exclusions, negative].filter(Boolean).join(', ');
-  return compilePromptFields([...selected, { id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' }, { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
+  const result=compilePromptFields([...selected, { id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' }, { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
+  if(consistent){
+    result.errors.push(...promptConsistencyErrors({prompt:result.prompt,negative:result.negativePrompt,person,relations:plan.facts.relations}));
+    if(suppliedDetails!==details)result.audit.push({factId:`${stage}.details`,source:'stage_context',requested:suppliedDetails,applied:details,reason:'effective_facts_own_action_and_gaze'});
+  }
+  return result;
 }
 
 export function finalizePromptPlan(plan, { commonPrompt, characterPrompts, prompt, negativePrompt, editorial = '' }) {
@@ -300,6 +321,11 @@ export function finalizePromptPlan(plan, { commonPrompt, characterPrompts, promp
   const commonPersonNegative = personNegatives[0]?.filter(t => personNegatives.every(n => n.includes(t))).join(', ') || '';
   const effectiveNegative = uniquePrompt([negativePrompt, shared.negativePrompt, commonPersonNegative, edit.negativePrompt].filter(Boolean).join(', '));
   const facts = {...plan.facts, characters:plan.facts.characters.map((person,index)=>({...person,negative:uniquePrompt([person.negative,people[index]?.negativePrompt].filter(Boolean).join(', '))}))};
+  if(facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION){
+    errors.push(...promptConsistencyErrors({prompt:shared.prompt,negative:effectiveNegative}));
+    people.forEach((p,i)=>errors.push(...promptConsistencyErrors({prompt:p.prompt,negative:[effectiveNegative,facts.characters[i]?.negative].join(', '),person:facts.characters[i],relations:facts.relations})));
+    if(facts.characters.length===1)errors.push(...promptConsistencyErrors({prompt,negative:effectiveNegative,person:facts.characters[0],relations:facts.relations}));
+  }
   const factsHash = hash(facts);
   return { ...plan, facts, factsHash, characterNegatives:facts.characters.map(p=>({characterId:p.characterId,prompt:p.negative})), commonPrompt: shared.prompt, characterPrompts: people.map(p => p.prompt), appliedPrompt: prompt, negativePrompt: effectiveNegative, executionHash: hash({ prompt, negativePrompt: effectiveNegative, factsHash }), errors, audit: [...plan.audit, ...shared.audit, ...people.flatMap(p => p.audit), ...edit.audit] };
 }
@@ -319,18 +345,28 @@ export function assertPromptPlanRecipe(recipe) {
 
 /** Pure request adapter: all new image requests pass here before transport. */
 export function prepareGenerationPromptRequest(recipe, payload, context) {
+  assertControlPolicyRequest(recipe,payload,context);
   assertPromptPlanRecipe(recipe);
   const plan = recipe.generationSpec?.promptPlan;
   if (!plan) return payload; // immutable legacy recipe compatibility
   let compiled;
   if (context.stage === 'base') {
-    const blocks = payload.prompt.split(/\s+BREAK\s+/).map((text,i)=>compilePromptFields([{id:`base.${i}`,text,source:'compiled_base_execution'}]));
+    const basePrompt=plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION?plan.appliedPrompt:payload.prompt;
+    const blocks = basePrompt.split(/\s+BREAK\s+/).map((text,i)=>compilePromptFields([{id:`base.${i}`,text,source:'compiled_base_execution'}]));
     const errors = blocks.flatMap(p=>p.errors);
+    if(plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION){
+      blocks.forEach((p,i)=>errors.push(...promptConsistencyErrors({prompt:p.prompt,negative:[payload.negative_prompt,plan.negativePrompt,plan.facts.characters[i-1]?.negative].join(', '),person:plan.facts.characters[i-1],relations:plan.facts.relations})));
+    }
     if(errors.length)throw new Error(errors.join('; '));
     compiled = { prompt:blocks.map(p=>p.prompt).join(' BREAK '),negativePrompt:uniquePrompt([payload.negative_prompt,plan.negativePrompt,...blocks.map(p=>p.negativePrompt)].join(', ')),audit:blocks.flatMap(p=>p.audit) };
+    if(basePrompt!==payload.prompt)compiled.audit.push({factId:'base.prompt',source:'worker',requested:payload.prompt,applied:basePrompt,reason:'effective_facts_own_base_request'});
   } else {
     // Execution projection may change coordinates, never the contract semantics.
     const executable = recipe.generationSpec.repairPasses?.propInteractions || [];
+    if(plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION)for(const r of plan.facts.relations){
+      const actual=executable.find(e=>e.relationId===r.relationId&&e.characterId===r.characterId);
+      if(actual&&relationSemanticSignature(actual)!==relationSemanticSignature(r))throw new Error(`Stage semantic drift: ${r.relationId}`);
+    }
     const stagedPlan = { ...plan, facts: { ...plan.facts, relations: plan.facts.relations.map(r => executable.find(e => e.relationId === r.relationId && e.characterId === r.characterId) || r) } };
     compiled = compileStagePrompt(stagedPlan, context);
     if (compiled.errors.length) throw new Error(compiled.errors.join('; '));

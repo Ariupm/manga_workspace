@@ -8,6 +8,9 @@
 
 ## 技术栈与目录
 
+- 2026-10-05：单格新增持久化 `poseControlEnabled`，新 recipe 冻结 `pose-usage-1`。关闭保留骨架资产/参数，停用骨架、关联轮廓、无独立图像定位的局部精修及裁切，身份参考留在人物区域基础请求。仍使用现有 SD WebUI 后端，未接入 FLUX.2 或 Qwen-Image-Edit/ComfyUI。
+- 新提示词快照带 `prompt-consistency-1`：公共镜头展示、人物优先顺序、关联工具/目标上下文共用有效事实，实际请求检查明确矛盾与语义漂移。旧快照保持原路径；规则有界，不能保证任意文本或模型视觉执行无误。
+
 - 新任务提示词统一由 `scripts/prompt-compiler.mjs` 编译为公共正向、人物正向、分范围负向和阶段投影；recipe 保存 comic-facts-1 快照，worker 所有图像请求通过共享适配器。详见 `PROMPT_ARCHITECTURE_REPAIR_2026-10-05.md`；历史配方保留旧执行路径，程序验收未包含生图。
 - 第二轮以实际两本书输入复核：交互数量/阶段进入控制轮廓，API/UI 共用 buildEffectivePromptPlan；新配方基础延后政策不再追加另一套数量/动作文字。220 项项目测试和 68 项执行逻辑测试通过，未进行视觉验收。
 

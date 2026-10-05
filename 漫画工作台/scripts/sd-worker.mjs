@@ -1,3 +1,4 @@
+import {usesPoseGeometry,assertControlPolicyRequest} from './generation-control-policy.mjs';
 import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
 import {relationGazeDescription,isLastRelationGaze,propPhysicalAppearance} from './sd-worker-logic.mjs';
 import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action-mechanism.mjs";
@@ -122,9 +123,10 @@ try {
   const recipe = payload.recipe;
   assertPromptPlanRecipe(recipe);
   let promptCompilationFailure = null;
+  const geometryEnabled = usesPoseGeometry(recipe);
   const sendGeneration = async (context, url, request) => {
     let compiledRequest;
-    try { compiledRequest = prepareGenerationPromptRequest(recipe,request,context); }
+    try { assertControlPolicyRequest(recipe,request,context); compiledRequest = prepareGenerationPromptRequest(recipe,request,context); }
     catch(error) { promptCompilationFailure = error; throw error; }
     const trace = recipe.promptRequestTraces?.at(-1);
     try {
@@ -133,9 +135,9 @@ try {
       return result;
     } catch(error) { if(trace)trace.requestStatus="failed"; throw error; }
   };
-  if(recipe.generationSpec?.repairPasses?.actionContractVersion==='story-action-1'&&recipe.poseControl?.posePlanVersion!=='3.0')throw new Error('Story action contract requires its V3 geometry; legacy fallback is not executable');
+  if(geometryEnabled&&recipe.generationSpec?.repairPasses?.actionContractVersion==='story-action-1'&&recipe.poseControl?.posePlanVersion!=='3.0')throw new Error('Story action contract requires its V3 geometry; legacy fallback is not executable');
   preparePoseExecutionV3(recipe);
-  const executionScenePlan = recipe.poseExecution?.scenePlan || recipe.poseControl?.scenePlan;
+  const executionScenePlan = geometryEnabled ? recipe.poseExecution?.scenePlan || recipe.poseControl?.scenePlan : null;
   recipe.stageOutputs = Array.isArray(recipe.stageOutputs) ? recipe.stageOutputs : [];
   const stageDirectory = path.join(root, "workspace", "generated", "stages");
   const persistStageOutput = (stage, relationId, imageBase64) => {
@@ -162,8 +164,8 @@ try {
   const profilePlan = generationProfilePlan(recipe.generationProfile || "cpu_local_fast", recipe.characterCount || 1);
   recipe.generationProfile = profilePlan.id;
   recipe.profilePlan = { ...(recipe.profilePlan || {}), ...profilePlan };
-  const poseControl = recipe.poseControl;
-  const baseUpperBody = poseControl?.framingMode === "upper_body" || recipe.poseExecution?.framingMode === "upper_body";
+  const poseControl = geometryEnabled ? recipe.poseControl : null;
+  const baseUpperBody = geometryEnabled && (poseControl?.framingMode === "upper_body" || recipe.poseExecution?.framingMode === "upper_body");
   const poseImageBase64 = poseControl?.enabled
     ? poseControl.image ||
       (poseControl.svg
@@ -182,11 +184,12 @@ try {
   );
   let controlUnits = [];
   const requiredBaseInteractions = (recipe.generationSpec?.repairPasses?.propInteractions || []).filter((item) => item?.required !== false);
-  const deferredBase = deferRequiredPropsFromBasePrompt(recipe.prompt, requiredBaseInteractions,{structuredVisual:Boolean(recipe.generationSpec?.promptPlan)});
-  recipe.generationSpec.deferRequiredProps = requiredBaseInteractions.length > 0;
-  recipe.generationSpec.deferredBasePrompt = requiredBaseInteractions.length ? { objects: deferredBase.objects, removedClauseCount: deferredBase.removed.length } : null;
+  const deferredBase = geometryEnabled ? deferRequiredPropsFromBasePrompt(recipe.prompt, requiredBaseInteractions,{structuredVisual:Boolean(recipe.generationSpec?.promptPlan)}) : {prompt:recipe.prompt,objects:[],removed:[]};
+  recipe.generationSpec.deferRequiredProps = geometryEnabled && requiredBaseInteractions.length > 0;
+  recipe.generationSpec.deferredBasePrompt = geometryEnabled && requiredBaseInteractions.length ? { objects: deferredBase.objects, removedClauseCount: deferredBase.removed.length } : null;
   const allReferences = recipe.references || [];
   const initialReferences =
+    !geometryEnabled ? allReferences.filter(reference => reference.role === "identity" || !reference.stagedOnly) :
     recipe.characterCount > 1 && recipe.identityRefinement?.enabled
       ? allReferences.filter((reference) => reference.role === "identity" && !reference.stagedOnly)
       : allReferences.filter((reference) => !reference.stagedOnly);
@@ -197,7 +200,7 @@ try {
     if (!fs.existsSync(referencePath)) continue;
     let effectiveRegionMask;
     let identityMaskPlan = null;
-    if (reference.role === "identity") {
+    if (geometryEnabled && reference.role === "identity") {
       const characterRegions = recipe.generationSpec?.characterRegions || [];
       const characterIndex = characterRegions.findIndex((item) => item.characterId === reference.characterId);
       const identityIndex = initialIdentityReferences.indexOf(reference);
@@ -270,7 +273,7 @@ try {
       stage: "pose",
     });
   }
-  const initialCannyModel = recipe.generationSpec?.structureControl?.cannyModel;
+  const initialCannyModel = geometryEnabled ? recipe.generationSpec?.structureControl?.cannyModel : null;
   const initialPropInteractions = recipe.generationSpec?.repairPasses?.propInteractions || (recipe.generationSpec?.repairPasses?.propInteraction ? [recipe.generationSpec.repairPasses.propInteraction] : []);
   if (initialCannyModel) for (const initialPropInteraction of initialPropInteractions.filter((item) => item?.required)) {
     const initialCharacterIndex = (recipe.generationSpec?.characterRegions || []).findIndex((item) => item.characterId === initialPropInteraction.characterId);
@@ -324,7 +327,7 @@ try {
   }
   const supportPlan = supportControlPlan(executionScenePlan?.supportRelations || [], recipe.width, recipe.height);
   const supportRelations = supportPlan.visible;
-  recipe.supportControl = { status: supportRelations.length ? "unavailable" : "not_visible_in_frame", skipped: supportPlan.skipped, supportSurfaceIds: supportRelations.map(s=>s.supportSurfaceId), actorSkeletonSource: "openpose_only", actorChainRenderedInCanny: false };
+  recipe.supportControl = { status: !geometryEnabled ? "disabled_by_user" : supportRelations.length ? "unavailable" : "not_visible_in_frame", skipped: supportPlan.skipped, supportSurfaceIds: supportRelations.map(s=>s.supportSurfaceId), actorSkeletonSource: "openpose_only", actorChainRenderedInCanny: false };
   if (initialCannyModel && supportPlan.svg) {
     const supportImage = (await sharp(Buffer.from(supportPlan.svg)).png().toBuffer()).toString("base64");
     const supportOutput = persistStageOutput("control_support", "scene", supportImage);
@@ -392,13 +395,13 @@ try {
     appliedInitialControlStages: controlUnits.map((unit) => unit.stage || unit.role || "initial"),
     omittedInitialControlStages,
     deferredDraftControlStages,
-    draftRefinementsEnabled: phase !== "draft" || profilePlan.runDraftRefinements,
-    executionStrategy: profilePlan.cpu ? "required_base_controls_with_optional_budget" : "parallel_base_controls_with_serial_refinements",
+    draftRefinementsEnabled: geometryEnabled && (phase !== "draft" || profilePlan.runDraftRefinements),
+    executionStrategy: !geometryEnabled ? "prompt_and_character_references_without_pose_geometry" : profilePlan.cpu ? "required_base_controls_with_optional_budget" : "parallel_base_controls_with_serial_refinements",
     preferredBaseControlBudget: profilePlan.preferredInitialControlUnits || profilePlan.maxInitialControlUnits,
     requiredBudgetExpansion: profilePlan.cpu && controlUnits.length > profilePlan.preferredInitialControlUnits,
   };
   const requiredControlCoverage = controlExecutionCoverage(requestedControlUnits, controlUnits, {
-    runRefinements: phase !== "draft" || profilePlan.runDraftRefinements,
+    runRefinements: geometryEnabled && (phase !== "draft" || profilePlan.runDraftRefinements),
     serialCapabilities: {
       identity_reference: { available: true, preservesPose: true, includesGlobalAppearance: false },
       initial_prop_structure: { available: true, includesObject: true, includesRequiredHands: false, includesPoseContact: false, preservesPose: true },
@@ -580,7 +583,7 @@ try {
     ? Math.max(...occupancyPoints.map((point) => point.y)) - Math.min(...occupancyPoints.map((point) => point.y))
     : 0;
   const occupancyCropRequired = deterministicCloseCrop && poseOccupancyHeight < .68;
-  if (phase === "draft" && recipe.poseControl?.framingMode === "upper_body" && Number(recipe.characterCount || 1) === 1 && (recipe.poseControl?.rasterPostCropRequired === true || occupancyCropRequired)) {
+  if (geometryEnabled && phase === "draft" && recipe.poseControl?.framingMode === "upper_body" && Number(recipe.characterCount || 1) === 1 && (recipe.poseControl?.rasterPostCropRequired === true || occupancyCropRequired)) {
     const scale = Number(executionScenePlan?.framingGeometry?.scale || 1);
     const cropRatio = scale >= 1.5 ? .74 : scale >= 1.35 ? .82 : .9;
     const sourceBuffer = Buffer.from(response.images[0], "base64");
@@ -611,7 +614,7 @@ try {
       output: { width: recipe.width, height: recipe.height },
       poseOccupancyHeight,
     };
-  } else if (phase === "draft" && recipe.poseControl?.framingMode === "upper_body" && Number(recipe.characterCount || 1) === 1) {
+  } else if (geometryEnabled && phase === "draft" && recipe.poseControl?.framingMode === "upper_body" && Number(recipe.characterCount || 1) === 1) {
     recipe.framingPostCrop = {
       status: "not_required_pose_occupancy",
       source: "poseControl.people upper-body occupancy",
@@ -621,7 +624,12 @@ try {
   }
   if (recipe.requestTrace) recipe.requestTrace.stageOutputs = recipe.stageOutputs;
   const postprocessWarnings = [];
-  const runRefinements = phase !== "draft" || profilePlan.runDraftRefinements;
+  const runRefinements = geometryEnabled && (phase !== "draft" || profilePlan.runDraftRefinements);
+  if (!geometryEnabled) {
+    recipe.geometryPassAudit = {status:'disabled_by_user',reason:'saved skeleton is not image localization',skipped:['pose','prop_structure','support_structure','identity_local','outfit_local','prop_local','hand_local','gaze_local','handoff','framing_crop']};
+    recipe.framingControl = {status:'disabled_by_user'};
+    recipe.framingPostCrop = {status:'disabled_by_user'};
+  }
   // CPU execution keeps peak memory bounded by staging identity separately from
   // the pose/structure controls. It also prevents a broad identity reference
   // from competing with later off-camera gaze reconstruction.
@@ -1247,7 +1255,7 @@ try {
     updateRelationTrace(relationId, relationFailed ? "failed" : "semantic_pending", relationFailed ? "gaze or prop pass failed" : "semantic QA requires review");
   }
   }
-  if (recipe.generationSpec?.repairPasses?.handoff && response.images?.[0]) {
+  if (runRefinements && recipe.generationSpec?.repairPasses?.handoff && response.images?.[0]) {
     if (status() === "cancelled") process.exit(0);
     const width = recipe.width;
     const height = recipe.height;
@@ -1400,7 +1408,7 @@ try {
   recipe.structuredGazeExecution = {
     version: "structured-gaze-executor-v1",
     phase,
-    status: phase !== "final"
+    status: !geometryEnabled ? "disabled_by_user" : phase !== "final"
       ? "deferred_final_only"
       : finalStructuredGazePlan.passes.length
         ? "executing"

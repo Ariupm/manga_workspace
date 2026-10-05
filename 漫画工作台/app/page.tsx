@@ -1799,7 +1799,7 @@ function PanelEditor({
   const prompt = `${effectivePositive}\n\nNegative: ${editableNegative}`;
   const executionPromptPreview=(()=>{
     try {
-      const plan=buildEffectivePromptPlan(regionalCompiled,effectivePoseControl?.posePlanVersion==='3.0'?effectivePoseControl as PoseControlV3:null);
+      const plan=buildEffectivePromptPlan(regionalCompiled,effectivePoseControl?.posePlanVersion==='3.0'?effectivePoseControl as PoseControlV3:null,{useGeometry:shot.poseControlEnabled!==false});
       return {prompt:[plan.commonPrompt,...plan.characterPrompts].join(' BREAK '),errors:plan.errors};
     } catch(error){return {prompt:'',errors:[error instanceof Error?error.message:String(error)]};}
   })();
@@ -2494,7 +2494,13 @@ function PanelEditor({
                     />
                   </label>
                 </div>
-                {actionContractPoseUnavailable&&<p className="asset-warning">当前动作关系没有有效构图，不能降级使用旧骨架。请调整景别、人物区域或目标位置。</p>}
+                {shot.poseControlEnabled!==false&&actionContractPoseUnavailable&&<p className="asset-warning">当前动作关系没有有效构图，不能降级使用旧骨架。请调整景别、人物区域或目标位置。</p>}
+                <label className="pose-usage-toggle">
+                  <input type="checkbox" checked={shot.poseControlEnabled !== false}
+                    onChange={event => void mutate("updateShot", {shotId:shot.id,patch:{poseControlEnabled:event.target.checked}})} />
+                  启用现有骨架控制
+                  <small>{shot.poseControlEnabled === false ? "骨架已保留但不用于生成；关联的道具轮廓、骨架定位精修和裁切也停用。保留人物参考，动作由提示词表达。" : "使用现有骨架及参数约束动作。关闭后可随时重新启用。"}</small>
+                </label>
                 {effectivePoseControl && (
                   <section className="pose-control-card">
                     <div>
@@ -4826,6 +4832,8 @@ type SdRecipe = {
   prompt?: string;
   negativePrompt?: string;
   appearanceCoverage?: Array<{characterId:string;face:string;hair:string;outfit:string;detail:string}>;
+  poseUsage?: {version:string;enabled:boolean;status:string};
+  geometryPassAudit?: {status:string;reason:string;skipped:string[]};
   promptRequestTraces?: Array<{stage:string;characterId:string|null;relationId:string|null;prompt:string;negativePrompt:string;requestStatus:string}>;
   references?: Array<{
     role: string;
@@ -4936,6 +4944,8 @@ function JobDetailsButton({ payload }: { payload: string }) {
                   </div>
                   {recipe.generationSpec && (
                     <>
+                      {recipe.poseUsage && <p><b>骨架控制：{recipe.poseUsage.enabled ? "启用" : "用户关闭"}</b>{!recipe.poseUsage.enabled && " · 保留骨架，使用提示词与人物参考；骨架定位的局部精修和裁切停用。"}</p>}
+                      {recipe.geometryPassAudit && <details><summary>本次跳过的骨架关联处理</summary><small>{recipe.geometryPassAudit.skipped.join(' · ')}</small></details>}
                       {recipe.generationSpec.promptPlan && (
                         <details>
                           <summary>提示词组织与来源</summary>

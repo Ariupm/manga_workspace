@@ -1,4 +1,5 @@
 import {mechanismPromptTerms} from "./action-mechanism.mjs";
+import {usesPoseGeometry} from './generation-control-policy.mjs';
 import {phaseInteractionTerms,synchronizedActionTerms,relationActionState} from "./action-stage-policy.mjs";
 import {upperTorsoFramingFailures} from "./pose-framing-guard.mjs";
 import {overlayGeometryFailures} from "./pose-overlay-guard.mjs";
@@ -126,6 +127,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
 // Both the API and worker use this entry point. Replaying a final-stage recipe
 // recompiles from the saved source, never from already projected coordinates.
 export function preparePoseExecutionV3(recipe) {
+  if (!usesPoseGeometry(recipe)) return recipe;
   if (recipe.poseControl?.posePlanVersion !== "3.0") return recipe;
   const source = recipe.poseExecution?.sourceRepairPasses || recipe.generationSpec?.repairPasses || {};
   const execution = compilePoseExecutionV3(recipe.poseControl, source, { advisory: recipe.posePreflightPolicy === "advisory" });

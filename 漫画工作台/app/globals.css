@@ -1985,6 +1985,17 @@ button:disabled {
   font-style: normal;
   line-height: 1.5;
 }
+.pose-usage-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 12px 0;
+}
+
+.pose-usage-toggle input { width: auto; }
+.pose-usage-toggle small { grid-column: 2; line-height: 1.5; }
+
 .pose-control-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;

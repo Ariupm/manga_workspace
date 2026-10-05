@@ -1583,15 +1583,25 @@ export function buildGenerationPrompt(
 }
 
 /** API and UI use the same effective Pose-to-prompt projection. */
-export function buildEffectivePromptPlan(regional:ReturnType<typeof buildRegionalPrompt>,control:PoseControlV3|null):PromptPlan {
+export function buildEffectivePromptPlan(regional:ReturnType<typeof buildRegionalPrompt>,control:PoseControlV3|null,options:{useGeometry?:boolean}={}):PromptPlan {
   if(!control)return createPromptPlan(structuredClone(regional.promptPlan.facts));
-  const execution=compilePoseExecutionV3(control,regional.repairPasses,{advisory:true});
-  const projected=rebindPromptPlanRelations(regional.promptPlan,execution.repairPasses.propInteractions||[]);
+  // Semantic edits survive switching the skeleton off; pixel projection does not.
+  const relations=options.useGeometry===false ? regional.promptPlan.facts.relations.map(r=>{
+    const selected=control.scenePlan.relations?.find(s=>s.relationId===r.relationId&&s.characterId===r.characterId);
+    const audit=selected?.actionRelationAudit;
+    if(!audit)return r;
+    const actionId=selected?.actionPlan?.actionId||audit.geometry?.actionId||r.actionPlan?.actionId;
+    const state=actionStageState(actionId,audit.phase);
+    return {...r,actionRelationAudit:audit,actionPlan:r.actionPlan&&{...r.actionPlan,actionId,phase:audit.phase},
+      visualFacts:r.visualFacts&&{...r.visualFacts,actionId,phase:audit.phase,contact:{...r.visualFacts.contact,state:audit.contactState},support:{...r.visualFacts.support,state:['held','on_support'].includes(state.objectState)?state.objectState:r.visualFacts.support.state}}};
+  }) : compilePoseExecutionV3(control,regional.repairPasses,{advisory:true}).repairPasses.propInteractions||[];
+  const projected=rebindPromptPlanRelations(regional.promptPlan,relations);
   for(const facts of projected.facts.characters){
     const person=control.scenePlan.people.find(p=>p.characterId===facts.characterId);
     if(!person)continue;
-    facts.fields=facts.fields.map(field=>field.group==='action'?{...field,text:synchronizeBasicPosePromptV3(field.text,person,{structuredRelations:true}),source:'effective_pose_contract'}:field);
-    facts.fields.push({id:`${facts.characterId}.pose`,group:'pose',text:synchronizeBasicPosePromptV3('',person,{structuredRelations:true}),source:'effective_pose_contract'});
+    const bodyText=facts.fields.filter(field=>field.group==='pose').map(field=>field.text).join(', ');
+    facts.fields=facts.fields.filter(field=>field.group!=='pose').map(field=>field.group==='action'?{...field,text:synchronizeBasicPosePromptV3(field.text,person,{structuredRelations:true}),source:'effective_pose_contract'}:field);
+    facts.fields.push({id:`${facts.characterId}.pose`,group:'pose',text:synchronizeBasicPosePromptV3(bodyText,person,{structuredRelations:true}),source:'effective_pose_contract'});
   }
   return createPromptPlan(projected.facts);
 }
@@ -1633,6 +1643,8 @@ export function buildRegionalPrompt(
     : "exactly one foreground person, solo";
   const commonFields: PromptField[] = [
     {id:"camera",group:"camera",text:resolvedCamera,source:"resolved_camera"},
+    {id:"cameraAngle",group:"cameraAngle",text:shot.visualSpecConfirmed?shot.visualSpec?.camera.angle||'':'',source:"confirmed_camera"},
+    {id:"presentation",group:"presentation",text:shot.visualSpecConfirmed?[shot.visualSpec?.camera.angle,shot.visualSpec?.camera.focus,shot.visualSpec?.camera.composition].filter(Boolean).join(', '):'',source:"confirmed_camera"},
     {id:"location",group:"environment",text:[env.location,env.midground,env.background,env.foreground,rainDetails].filter(Boolean).join(", "),source:shot.visualSpecConfirmed?"confirmed_scene":"resolved_scene"},
     {id:"count",group:"count",text:principalCount,source:"character_ids"},
     {id:"composition",group:"composition",text:isMulti?"single continuous narrative scene, distinct foreground people":"",source:"character_count"},
@@ -1676,6 +1688,7 @@ export function buildRegionalPrompt(
     ]).join(", ");
     const fields: PromptField[] = [
       {id:`${id}.position`,group:"position",text:englishVisual(look.positionEn),source:sourceFor("positionEn")},
+      {id:`${id}.bodyPose`,group:"pose",text:shot.visualSpecConfirmed?[shot.visualSpec?.characters.find(p=>p.characterId===id)?.bodyPose,shot.visualSpec?.characters.find(p=>p.characterId===id)?.bodySupport?`supported by ${shot.visualSpec.characters.find(p=>p.characterId===id)?.bodySupport}`:''].filter(Boolean).join(', '):'',source:"confirmed_body_pose"},
       {id:`${id}.identity`,group:"identity",text:identity,source:stateHair?"confirmed_hair_state+character_profile":"character_profile+effective_traits"},
       {id:`${id}.body`,group:"body",text:englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",source:"character_profile"},
       {id:`${id}.clothing`,group:"clothing",text:[
@@ -1691,7 +1704,7 @@ export function buildRegionalPrompt(
         const hand=/left hand/i.test(term)?'left':/right hand/i.test(term)?'right':null;
         return hand&&!interactions.some(r=>r.visualFacts&&(r.activeHand==='both'||r.activeHand===hand));
       }).join(', '):englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:interactions.some(r=>r.visualFacts)?'structured_contact+independent_free_hand':sourceFor("handsEn")},
-      ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i),source:"interaction_contract"})),
+      ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i,'prop',true),source:"interaction_contract"})),
       {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
       {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
@@ -1745,7 +1758,8 @@ export function buildRegionalPrompt(
   negativeBlocks.identity = negativeBlocks.identity.replace(outfitNegatives, "");
   const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks});
   const negativePrompt = promptPlan.negativePrompt;
-  const regionPrompts = characterRegions.map((region) => region.prompt);
+  characterRegions.forEach((region,index)=>{region.prompt=promptPlan.characterPrompts[index];});
+  const regionPrompts = promptPlan.characterPrompts;
   const characterInteractionContracts = shot.characterIds.flatMap((id) => deriveInteractionContracts(shot, id)).map((item)=>interactionForShotFraming(item,shot));
   const poseHeight = /wide shot|full shot/i.test(resolvedCamera) ? 768 : 512;
   const useV3=options.posePlannerVersion === "3.0"||characterInteractionContracts.some(r=>r.actionPlan);
