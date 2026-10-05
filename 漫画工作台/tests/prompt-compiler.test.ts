@@ -8,6 +8,60 @@ import {synchronizeBasicPosePromptV3} from '../lib/pose-v3/prompt-consistency';
 import {compilePromptFields,compileStagePrompt,createPromptPlan,finalizePromptPlan,prepareGenerationPromptRequest,validatePromptEditorial,assertPromptPlanRecipe,resolvePropVisualFacts,visibleClothingText,rebindPromptPlanRelations} from '../scripts/prompt-compiler.mjs';
 import {propGroupOutline,actionOutlineMarkup} from '../scripts/action-mechanism.mjs';
 import {deferRequiredPropsFromBasePrompt,upperBodyVisiblePrompt} from '../scripts/sd-worker-logic.mjs';
+import {normalizeShotSpec,validateVisualIds} from '../lib/visual-planning';
+import {normalizeInteractionFacts,markManualInteractionFactEdits,assertInteractionFactTranslation} from '../lib/interaction-facts';
+import {deriveInteractionContracts} from '../lib/prompts';
+import type {InteractionVisualFacts} from '../lib/types';
+
+const structuredFacts=(label='book',count=2):InteractionVisualFacts=>({version:'interaction-facts-1',object:{label,instanceId:`group:${label}`,count},actionId:'pick',phase:'follow_through',contact:{hand:'left',part:label==='book'?'covers':'body',state:'contact'},support:{label:'package',state:'held'},gaze:{kind:'object',targetId:`group:${label}`,surface:label==='book'?'covers':'body',description:`eyes focused on the ${label}`},provenance:{object:{source:'narrative',evidence:`${count} ${label}`}}});
+
+test('structured upstream facts own quantity, hands, stage and gaze through base and local payloads',()=>{
+  const data=getStudioData(),base=data.episode.pages[0].shots[0],id=base.characterIds[0];
+  for(const [label,count] of [['book',2],['bottle',3],['lantern',4]] as const){
+    const raw={characters:[{characterId:id,action:'taking out one book',actionTarget:label,hands:'right hand holding a book',gazeTarget:'eyes focused on book pages'}],interactions:[{type:'prop_operation',actorCharacterId:id,propId:'opaque-story-id',action:'taking out the object',phase:'in progress',contactPoints:['right hand'],gazeTarget:'eyes focused on book pages',visualFacts:structuredFacts(label,count)}]};
+    const spec=normalizeShotSpec(raw,base,{interactionSource:'model',requireInteractionFacts:true});
+    const shot={...base,characterIds:[id],cameraEn:'medium shot',characterLooks:{},visualSpec:spec,visualSpecConfirmed:true};
+    const relation=deriveInteractionContracts(shot,id)[0];
+    assert.equal(relation.object,label);assert.equal(relation.expectedCount,count);assert.equal(relation.objectInstanceId,`group:${label}`);assert.equal(relation.activeHand,'left');assert.equal(relation.contactAnchors.length,1);assert.equal(relation.contactAnchors[0].hand,'left');assert.equal(relation.actionPlan?.phase,'follow_through');assert.equal(relation.actionPlan?.geometry.objectCount,count);assert.equal(relation.gazeTarget.targetId,`group:${label}`);
+    const regional=buildRegionalPrompt(shot,data.assets,data.characters,{posePlannerVersion:'3.0'}),plan=buildEffectivePromptPlan(regional,regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3);
+    assert.deepEqual(plan.errors,[]);assert.match(plan.characterPrompts[0],new RegExp(label));assert.doesNotMatch(plan.characterPrompts[0],/one book|right hand|book pages|opaque-story-id/);
+    const freeHand=buildRegionalPrompt({...shot,characterLooks:{[id]:{handsEn:'right hand waving'}} as typeof base.characterLooks},data.assets,data.characters);
+    assert.match(freeHand.characterRegions[0].prompt,/right hand waving/);
+    const final=finalizePromptPlan(plan,{commonPrompt:plan.commonPrompt,characterPrompts:plan.characterPrompts,prompt:[plan.commonPrompt,...plan.characterPrompts].join(' BREAK '),negativePrompt:plan.negativePrompt});
+    const recipe={promptPlan:final,prompt:final.appliedPrompt,negativePrompt:final.negativePrompt,repairPasses:{propInteractions:[relation]}};
+    for(const stage of ['base','prop','hand','gaze']){
+      const controls={ControlNet:{args:[{weight:.61,guidance_end:.72,model:'retained-control'}]}};
+      const payload=prepareGenerationPromptRequest(recipe,{prompt:recipe.prompt,negative_prompt:recipe.negativePrompt,mask:'keep-mask',alwayson_scripts:controls},{stage,characterId:id,relationId:relation.relationId});
+      assert.equal(payload.mask,'keep-mask');assert.doesNotMatch(payload.prompt,/one book|right hand|book pages|opaque-story-id/);
+      assert.deepEqual(payload.alwayson_scripts,controls);
+      if(stage!=='gaze')assert.match(payload.prompt,new RegExp(label));
+    }
+  }
+});
+
+test('structured facts fail explicitly, retain provenance, and preserve legacy compatibility',()=>{
+  const data=getStudioData(),shot=data.episode.pages[0].shots[0],id=shot.characterIds[0];
+  assert.equal(normalizeInteractionFacts(undefined),undefined);
+  for(const count of [0,1.5,17,'2'])assert.throws(()=>normalizeInteractionFacts({...structuredFacts(),object:{...structuredFacts().object,count}}),/数量/);
+  assert.throws(()=>normalizeInteractionFacts({...structuredFacts('door',2),actionId:'open'}),/执行几何/);
+  assert.throws(()=>normalizeInteractionFacts({...structuredFacts(),phase:'anticipation'}),/阶段/);
+  assert.throws(()=>normalizeInteractionFacts({...structuredFacts(),gaze:{...structuredFacts().gaze,targetId:''}}),/目标/);
+  const manual=normalizeInteractionFacts(structuredFacts(),'manual')!;
+  assert.equal(manual.provenance.phase?.source,'manual');assert.deepEqual(normalizeInteractionFacts(manual),manual);
+  const original=normalizeInteractionFacts(structuredFacts(),'model')!;
+  const edited=markManualInteractionFactEdits({...original,object:{...original.object,count:3}},original)!;
+  assert.equal(edited.provenance.object?.source,'manual');assert.equal(edited.provenance.phase?.source,'model');assert.equal(edited.provenance.gaze?.source,'model');
+  const translationInput={interactions:[{actorCharacterId:id,visualFacts:original}]};
+  assert.doesNotThrow(()=>assertInteractionFactTranslation(translationInput,translationInput));
+  assert.throws(()=>assertInteractionFactTranslation(translationInput,{interactions:[]}),/翻译/);
+  assert.throws(()=>assertInteractionFactTranslation(translationInput,{interactions:[{actorCharacterId:id,visualFacts:edited}]}),/翻译/);
+  const raw={characters:[{characterId:id,action:'holding two books',actionTarget:'books',hands:'both hands holding books',gazeTarget:'eyes focused on books'}],interactions:[{type:'prop_operation',actorCharacterId:id,propId:'book',action:'holding two books',phase:'contact',contactPoints:['both hands'],gazeTarget:'eyes focused on books'}]};
+  assert.throws(()=>normalizeShotSpec(raw,shot,{requireInteractionFacts:true}),/visualFacts/);
+  const legacy=normalizeShotSpec(raw,shot);assert.equal(legacy.interactions[0].visualFacts,undefined);assert.match(validateVisualIds(legacy,data.characters,data.assets).warnings.join(' '),/旧文本/);
+  const conflict=normalizeShotSpec({...raw,interactions:[{...raw.interactions[0],visualFacts:{...structuredFacts(),actionId:'place',support:{label:'table',state:'held'}}}]},shot);
+  assert.equal(validateVisualIds(conflict,data.characters,data.assets).blocked,true);
+  assert.throws(()=>deriveInteractionContracts({...shot,visualSpec:conflict,visualSpecConfirmed:true},id),/冲突/);
+});
 
 test('authored noun modifiers preserve prop counts without borrowing across action clauses',()=>{
   for(const [family,action,noun,count] of [
@@ -19,6 +73,34 @@ test('authored noun modifiers preserve prop counts without borrowing across acti
     ['book or document','two bottles and a book','book',1],
     ['book or document','two bottles while touching a book','book',1],
   ] as const) assert.deepEqual(resolvePropVisualFacts(family,action),{object:noun,expectedCount:count});
+});
+
+test('structured instances separate same-type groups, resolve external gaze, and follow effective Pose phases',()=>{
+  const data=getStudioData(),base=data.episode.pages[0].shots[0],id=base.characterIds[0];
+  const relation=(facts:InteractionVisualFacts,actor=id)=>({type:'prop_operation',actorCharacterId:actor,targetCharacterId:'',propId:'book',action:'holding the object',phase:'contact',contactPoints:['left hand'],gazeTarget:'eyes focused on the object',ownershipBefore:actor,ownershipAfter:actor,visualFacts:facts});
+  const otherFacts=structuredFacts('book',3);otherFacts.object.instanceId='other-books';otherFacts.gaze.targetId='other-books';
+  const twoShot={...base,characterIds:[id,'other'],characterLooks:{}};
+  const separate=normalizeShotSpec({characters:[{characterId:id},{characterId:'other'}],interactions:[relation(structuredFacts()),relation(otherFacts,'other')]},twoShot);
+  assert.equal(deriveInteractionContracts({...twoShot,visualSpec:separate,visualSpecConfirmed:true},id)[0].expectedCount,2);
+  assert.equal(deriveInteractionContracts({...twoShot,visualSpec:separate,visualSpecConfirmed:true},'other')[0].expectedCount,3);
+  const collision=normalizeShotSpec({...separate,interactions:[separate.interactions[0],{...separate.interactions[1],visualFacts:{...otherFacts,object:{...otherFacts.object,instanceId:'group:book'},gaze:{...otherFacts.gaze,targetId:'group:book'}}}]},twoShot);
+  assert.match(validateVisualIds(collision,data.characters,data.assets).failures!.map(f=>f.message).join(' '),/共享实例/);
+  const bottle=structuredFacts('bottle',1);bottle.actionId='hold';bottle.phase='contact';bottle.contact.hand='right';bottle.gaze.targetId='group:book';bottle.gaze.surface='covers';
+  const spec=normalizeShotSpec({characters:[{characterId:id}],interactions:[relation(structuredFacts()),relation(bottle)]},{...base,characterLooks:{}});
+  const contracts=deriveInteractionContracts({...base,characterLooks:{},visualSpec:spec,visualSpecConfirmed:true},id);
+  assert.equal(contracts[1].gazeTarget.targetId,'group:book');assert.deepEqual(contracts[1].gazeTarget.point,contracts[0].objectCenter);assert.match(contracts[1].gaze,/book covers/);
+  const multiRegional=buildRegionalPrompt({...base,characterLooks:{},visualSpec:spec,visualSpecConfirmed:true},data.assets,data.characters,{posePlannerVersion:'3.0'});
+  const multiEffective=buildEffectivePromptPlan(multiRegional,multiRegional.poseControl as import('../lib/pose-v3/schema').PoseControlV3);
+  assert.equal(multiEffective.facts.relations[1].gazeTarget.targetId,'group:book');assert.deepEqual(multiEffective.facts.relations[1].gazeTarget.point,multiEffective.facts.relations[0].objectCenter);
+  const single={...base,characterLooks:{},visualSpec:{...spec,interactions:[spec.interactions[0]]},visualSpecConfirmed:true};
+  const regional=buildRegionalPrompt(single,data.assets,data.characters,{posePlannerVersion:'3.0'});
+  for(const phase of ['anticipation','contact','follow_through'] as const){
+    const control=applyPoseControlOverrideV3(regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3,{schemaVersion:'pose-override-v1',templateId:'pick',phase});
+    const plan=buildEffectivePromptPlan(regional,control),r=plan.facts.relations[0];
+    assert.equal(r.expectedCount,2);assert.equal(r.visualFacts.phase,phase);assert.equal(r.visualFacts.contact.state,phase==='anticipation'?'approach':'contact');assert.equal(r.visualFacts.support.state,phase==='follow_through'?'held':'on_support');
+  }
+  const placed=buildEffectivePromptPlan(regional,applyPoseControlOverrideV3(regional.poseControl as import('../lib/pose-v3/schema').PoseControlV3,{schemaVersion:'pose-override-v1',templateId:'place',phase:'follow_through'}));
+  assert.equal(placed.facts.relations[0].visualFacts.actionId,'place');assert.equal(placed.facts.relations[0].purpose,'place');assert.equal(placed.facts.relations[0].visualFacts.contact.state,'released');assert.equal(placed.facts.relations[0].expectedCount,2);
 });
 
 test('semantic routing preserves approach gaps and scopes exclusions; ambiguous negatives surface',()=>{

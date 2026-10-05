@@ -124,6 +124,17 @@ export type ChapterVisualPlan = {
   warnings: string[];
 };
 
+export type InteractionVisualFacts = {
+  version: "interaction-facts-1";
+  object: { label: string; instanceId: string; count: number };
+  actionId: "pick" | "place" | "open" | "close" | "operate_environment" | "write" | "tool" | "push" | "pull" | "hold" | "inspect" | "drink" | "carry" | "touch" | "read";
+  phase: "anticipation" | "contact" | "follow_through";
+  contact: { hand: "left" | "right" | "both"; part: string; state: "approach" | "contact" | "released" };
+  support: { label: string; state: "on_support" | "held" | "unspecified" };
+  gaze: { kind: "object" | "character" | "independent"; targetId: string; surface: string; description: string };
+  provenance: Partial<Record<"object" | "phase" | "contact" | "support" | "gaze", { source: "manual" | "narrative" | "model" | "legacy_default"; evidence: string }>>;
+};
+
 export type ShotVisualSpec = {
   schemaVersion: "1.0";
   visibleFacts: string[];
@@ -169,6 +180,7 @@ export type ShotVisualSpec = {
     phase: string;
   } | null;
   interactions: Array<{
+    visualFacts?: InteractionVisualFacts;
     type: string;
     actorCharacterId: string;
     targetCharacterId: string;

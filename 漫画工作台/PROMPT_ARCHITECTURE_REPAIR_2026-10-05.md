@@ -128,3 +128,34 @@ medium close-up, chest-up framing, frame from chest to head, home interior, exac
 可迁移到同类场景的是事实来源与优先级、同源编译、人物区域范围、阶段投影和实际请求审计，不是“两本书”的固定文本。现有程序矩阵覆盖不同人物数量、区域、景别、道具组与动作阶段；不意味着任意剧情都被正确解析。复杂多对象、多阶段、中文量词或含糊数量仍需上游结构化关系，数量缺失默认1仍是已知边界。组轮廓的并排布局是几何假设，并不证明像素正确。
 
 全链复核见ISSUE-PROMPT-011第三轮记录。程序逻辑验收通过，未进行图片生成或视觉效果验收；模型随机性和实际视觉执行率保留为产品运行风险，状态fixed_pending_review。
+
+## 第四轮：上游结构化事实与统一执行（2026-10-05）
+
+已在现有ShotVisualSpec.interactions增加可版本化visualFacts，不建立第二份独立业务规格。旧schemaVersion 1.0保留，新增嵌套版本interaction-facts-1；旧规格缺失字段时保持缺失，标记legacy_text_inference_or_default。新AI道具规划必须完整提供；新字段形状进入缓存输入指纹，旧缓存不会被当作新规划结果。
+
+最终数据链：剧情/人工选择 → 章节场景与连续性计划 → 当前分镜视觉规格 → 结构化事实归一化/校验及规格确认 → InteractionContract → 有效Pose投影 → PromptPlan → recipe/payload → Regional/ControlNet → 基础与各局部pass → 质量门/草稿整体确认 → 自动候选回写。
+
+| 层级 | 唯一职责 |
+| --- | --- |
+| 剧情与人工选择 | 提供内容及明确选择，作为规划输入 |
+| 章节视觉计划 | 提供场景和跨镜头连续性，不替当前镜头决定瞬时动作 |
+| 当前视觉规格 | 保存具体对象、数量、动作阶段、接触、支持物及视线绑定 |
+| 归一化与校验 | 保留字段、来源，拒绝非法数量、未知目标和共享实例矛盾 |
+| 交互契约 | 将明确事实转换为现有实例、接触锚点、视线点与几何输入 |
+| 有效Pose | 应用人工动作/阶段覆盖及坐标投影，同步有效状态 |
+| 提示词编译 | 按人物、可见景别、基础/局部阶段表达事实，不重新猜数量 |
+| 执行和候选 | 保留控制、mask及质量阻断，如实记录请求与状态 |
+
+具体字段：object.label是具体英文物体名称，object.instanceId标识同一实例或组，object.count是1至16整数；actionId为受支持动作类型；phase为anticipation/contact/follow_through；contact包含hand、part和state；support包含label与state；gaze包含kind、targetId、surface与description；provenance按object/phase/contact/support/gaze保存source和evidence。
+
+例如两本书已从包裹取出、手触封面：object={label:book,instanceId:books-group,count:2}，actionId=pick，phase=follow_through，contact={hand:left,part:covers,state:contact}，support={label:package,state:held}，gaze={kind:object,targetId:books-group,surface:covers,description:eyes focused on the book covers}。以上是数据说明，实际选择手和镜头阶段以剧情/人工规格为准，不是任务硬编码。
+
+界面可直接编辑上述交互字段。保存整份规格时比较原字段，只将变化字段标为manual，未修改的模型或剧情来源保留。对象视线允许绑定另一已声明物体；人物目标必须在当前镜头中。同一人物多关系不能声明矛盾视线，同一共享组不能声明不同数量或支持状态。普通旧角色文字不再覆盖明确对象关系，但独立自由手动作仍保留。
+
+本轮发现并修复：多人公共块广播旧人物动作、明确接触字段导致自由手动作被清空、人工从pick改place时动作ID未随执行几何更新。有效Pose现同时同步动作ID/阶段/接触/支持事实，再编译基础及局部请求。未新增逐项语义确认或成品二次审批。
+
+224/224项目测试、68/68执行层测试、类型检查与生产构建通过；完整链路证据见ISSUE-PROMPT-011第四轮。程序逻辑验收通过，未进行图片生成或视觉效果验收。未修改正式数据库、已排队recipe或用户资产。旧分镜需点击重新分析并使用新规格；历史配方仍按原快照执行。
+
+限制：结构化不能证明模型完全理解剧情；narrative来源是附证据的规划声明。非参数动作的接近阶段尚无几何执行器，明确拒绝而非伪装成可执行控制；应明确受支持动作，不能为了消除错误随意改写剧情。组轮廓为代表性几何，视线表面没有细化至像素区域，实际视觉执行率仍是产品运行风险。
+
+补充验收：中文规格翻译不得丢失visualFacts或改变数量、动作、阶段、参与手、接触/支持状态及视线ID，违反时不保存；旧单interaction入口也保留。多物体组的开关设施、工具/书写、推拉、饮用动作尚无组执行几何，明确要求拆成独立交互实例；不把一个设施轮廓配上多个物体的提示词伪报为一致。

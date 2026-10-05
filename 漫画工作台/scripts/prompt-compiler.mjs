@@ -61,8 +61,8 @@ export function visibleClothingText(value, camera) {
 }
 
 export function relationVisualText(relation, stage = 'prop') {
-  if (!relation?.required) return '';
   const state = relationActionState(relation);
+  if (!relation?.required) return '';
   const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
   const label = propVisualLabel(relation), object = (relation.expectedCount||1)>1 ? label.replace(/^\S+\s+/,'') : relation.object;
   const contact = state?.contactState === 'approach' ? `${hands} approaching the ${object} with a visible gap`
@@ -74,10 +74,11 @@ export function relationVisualText(relation, stage = 'prop') {
   const visualTerms = geometry?.mechanism === 'transfer' ? [] : synchronizedActionTerms(relation).filter(term => !/required story prop|story instance|interaction purpose|surface and exclusion|exclusion regions|wrist anchors|normalized|orientation determined|visible surface follows|action stage|action in progress|before contact|completed action|object position consistent|hands? physically|acting hand at|hand approaching|object remains|object is held|\(.*eyes focused/i.test(term));
   const support=relation.supportLabel ? `the ${relation.supportLabel}` : 'a support surface';
   const supported = state?.objectState === 'on_support' ? `${object} resting on ${support}` : state?.objectState === 'held' ? `${object} held above ${relation.supportLabel?`the ${relation.supportLabel}`:'the previous support surface'}` : '';
-  const affordance = state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
+  const affordance = relation.visualFacts || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
   const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
   return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
-    contact, ...(stage === 'hand' && contactPassAllowed(relation) ? coverContact ? [] : actionContactTerms(relation) : visualTerms),
+    contact, relation.visualFacts && state?.contactState==='contact' ? `${hands} touching the ${relation.visualFacts.contact.part} of the ${object}` : '',
+    ...(stage === 'hand' && contactPassAllowed(relation) ? coverContact || relation.visualFacts ? [] : actionContactTerms(relation) : visualTerms),
     stage === 'hand' ? '' : supported, coverContact,
     stage === 'hand' || relation.orientation === 'contextual' || relation.orientation === 'not_applicable' ? '' : `${object} in ${relation.orientation} orientation`,
     stage === 'hand' || relation.viewerSurface === 'contextual' ? '' : relation.viewerSurface === 'back' ? `${object} back casing facing the viewer` : `${object} ${relation.viewerSurface} visible`,

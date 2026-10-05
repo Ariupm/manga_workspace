@@ -8,7 +8,9 @@ export function actionStageState(actionId, phase='contact') {
 export function relationActionState(relation) {
  const plan=relation?.actionPlan,audit=relation?.actionRelationAudit;
  if(audit)return {...actionStageState(plan?.actionId||audit.geometry?.actionId,audit.phase),contactState:audit.contactState,contactRequired:audit.contactState==='contact'};
- return plan?actionStageState(plan.actionId,plan.phase):null;
+ if(plan)return actionStageState(plan.actionId,plan.phase);
+ const facts=relation?.visualFacts;
+ return facts?{actionId:facts.actionId,phase:facts.phase,contactState:facts.contact.state,contactRequired:facts.contact.state==='contact',objectState:facts.support.state}:null;
 }
 export function actionStageVerb(actionId,phase='contact') {
  const verb={open:'opening',close:'closing',operate_environment:'operating',write:'writing with',tool:'using',push:'pushing',pull:'pulling',pick:'picking up',place:'placing'}[actionId]||actionId;

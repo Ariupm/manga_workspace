@@ -3,6 +3,7 @@ import { callDeepSeekJson, getDeepSeekConfig } from "@/lib/deepseek";
 import { confirmAllShotVisualSpecs, confirmChapterVisualPlan, confirmShotVisualSpec, getStudioData, recordVisualPlanningFailure, saveChapterVisualPlan, saveShotVisualSpec, updateShotVisualSpec } from "@/lib/db";
 import { assertVisualShape, characterContinuityMemory, dependencyHash, inheritShotContinuity, normalizeShotSpec, shotSystemPrompt, validateVisualIds, VISUAL_SCHEMA_VERSION } from "@/lib/visual-planning";
 import { planChapterInBatches } from "@/lib/chapter-planning";
+import {interactionFactsShape,interactionFactsInstruction,markManualInteractionFactEdits,assertInteractionFactTranslation} from '@/lib/interaction-facts';
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -28,13 +29,14 @@ async function refineOne(data:ReturnType<typeof getStudioData>,shotId:number,for
     characters:data.characters.filter((x)=>shot.characterIds.includes(x.id)).map((x)=>({id:x.id,name:x.name,appearance:x.appearanceEn,invariants:x.invariantsEn,visualTraits:x.visualTraits,profile:x.profile})),
     allowedAssets:data.assets.filter((x)=>shot.characterIds.includes(x.characterId)).map((x)=>({id:x.id,type:x.type,characterId:x.characterId,description:x.visualDescriptionEn})),
     requiredShape:{schemaVersion:"1.0",visibleFacts:[],scene:{},characters:[],interactions:[{type:"",actorCharacterId:"",targetCharacterId:"",propId:"",action:"",phase:"",contactPoints:[],gazeTarget:"",ownershipBefore:null,ownershipAfter:null}],camera:{},stateChanges:[],warnings:[]}};
+  input.requiredShape.interactions[0]=Object.assign(input.requiredShape.interactions[0],{visualFacts:interactionFactsShape});
   const hash=dependencyHash(input);
   if(shot.visualSpec&&shot.visualSpecDependencyHash===hash&&!force)return {cached:true,spec:shot.visualSpec,shotId};
-  const result=await invoke(shotSystemPrompt,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`);
+  const result=await invoke(`${shotSystemPrompt} ${interactionFactsInstruction}`,`Create the shot visual specification from this JSON input:\n${JSON.stringify(input)}`);
   assertVisualShape("shot",result.data);
   const previous=all[index-1]&&(all[index-1].visualSpecConfirmed||allowPendingPrevious)?all[index-1].visualSpec:null;
-  const spec=inheritShotContinuity(normalizeShotSpec(result.data,shot),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,continuityMemory.map(item=>item.character)),validation=validateVisualIds(spec,data.characters,data.assets);
-  if(!validation.valid)throw new Error(`镜头规格引用了无效资产：${validation.errors.join("；")}`);
+  const spec=inheritShotContinuity(normalizeShotSpec(result.data,shot,{interactionSource:'model',requireInteractionFacts:true}),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,continuityMemory.map(item=>item.character)),validation=validateVisualIds(spec,data.characters,data.assets);
+  if(!validation.valid)throw new Error(`镜头规格校验失败：${[...validation.errors,...(validation.failures||[]).map(f=>f.message)].join("；")}`);
   const meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:result.model,generatedAt:new Date().toISOString(),inputHash:hash,usage:result.usage,validation};
   saveShotVisualSpec(shot.id,spec,"deepseek",hash,meta);
   return {cached:false,spec,shotId,meta,validation};
@@ -81,15 +83,20 @@ export async function POST(request:Request) {
           `${shotSystemPrompt} Translate and repair the supplied existing specification. Preserve its exact story meaning, character IDs, asset IDs, manual camera choice and explicit visual decisions. Replace every Chinese descriptive value and every "unknown" placeholder with concise production-ready English. Return the complete shot specification JSON shape, not a patch.`,
           `Existing specification:\n${serialized}\nAllowed character IDs: ${JSON.stringify(shot.characterIds)}\nAllowed assets: ${JSON.stringify(data.assets.filter((asset)=>shot.characterIds.includes(asset.characterId)).map((asset)=>({id:asset.id,type:asset.type,characterId:asset.characterId})))}`,
         );
-        assertVisualShape("shot",converted.data);submitted=converted.data;translationMeta={model:converted.model,usage:converted.usage,translatedAt:new Date().toISOString()};
+        assertVisualShape("shot",converted.data);assertInteractionFactTranslation(submitted,converted.data);submitted=converted.data;translationMeta={model:converted.model,usage:converted.usage,translatedAt:new Date().toISOString()};
       }
-      const spec=normalizeShotSpec(submitted,{...shot,characterLooks:{}},{manualEnvironment:true,manualAppearance:true});
+      if(Array.isArray(submitted.interactions))submitted={...submitted,interactions:submitted.interactions.map((relation:any)=>({...relation,visualFacts:markManualInteractionFactEdits(relation.visualFacts,shot.visualSpec?.interactions.find(old=>old.actorCharacterId===relation.actorCharacterId&&old.visualFacts?.object.instanceId===relation.visualFacts?.object.instanceId)?.visualFacts)}))};
+      const spec=normalizeShotSpec(submitted,{...shot,characterLooks:{}},{manualEnvironment:true,manualAppearance:true,interactionSource:'preserve'});
       const validation=validateVisualIds(spec,data.characters,data.assets);if(!validation.valid)return NextResponse.json({error:"规格引用无效资产",validation},{status:422});
       return NextResponse.json({ok:updateShotVisualSpec(shot.id,spec,dependencyHash({manual:spec})),spec,validation,translationMeta});
     }
     if(body.action==="confirm-chapter")return NextResponse.json({ok:confirmChapterVisualPlan(episodeId)});
-    if(body.action==="confirm-shot")return NextResponse.json({ok:confirmShotVisualSpec(Number(body.shotId))});
-    if(body.action==="confirm-all-shots")return NextResponse.json({ok:true,confirmed:confirmAllShotVisualSpecs(episodeId)});
+    if(body.action==="confirm-shot"||body.action==="confirm-all-shots"){
+      const shots=data.episode.pages.flatMap(p=>p.shots).filter(s=>body.action==='confirm-all-shots'||s.id===Number(body.shotId));
+      if(!shots.length)return NextResponse.json({error:'分格不存在'},{status:404});
+      for(const shot of shots)if(shot.visualSpec){const validation=validateVisualIds(shot.visualSpec,data.characters,data.assets);if(!validation.valid)return NextResponse.json({error:`第${shot.position}格规格校验失败`,validation},{status:422});}
+      return body.action==='confirm-shot'?NextResponse.json({ok:confirmShotVisualSpec(Number(body.shotId))}):NextResponse.json({ok:true,confirmed:confirmAllShotVisualSpecs(episodeId)});
+    }
     return NextResponse.json({error:"未知操作"},{status:400});
   } catch(error) {
     recordVisualPlanningFailure(episodeId,Number.isInteger(Number(body.shotId))?Number(body.shotId):null,String(body.action||"unknown"),error);

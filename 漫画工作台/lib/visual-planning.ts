@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import type { Asset, ChapterVisualPlan, Character, Shot, ShotVisualSpec, VisualValidationResult } from "./types";
 import { rankInteractionPropCandidates } from "./interaction-prop";
 import { resolveActionDescription } from "./action-description";
+import { normalizeInteractionFacts } from "./interaction-facts";
+import {actionStageState} from '../scripts/action-stage-policy.mjs';
 export { rankInteractionPropCandidates };
 
 export const VISUAL_SCHEMA_VERSION = "1.0" as const;
@@ -66,7 +68,7 @@ export function normalizeChapterPlan(raw: any): ChapterVisualPlan {
   };
 }
 
-export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnvironment?: boolean; manualAppearance?: boolean } = {}): ShotVisualSpec {
+export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnvironment?: boolean; manualAppearance?: boolean; interactionSource?: 'manual' | 'model' | 'preserve'; requireInteractionFacts?: boolean } = {}): ShotVisualSpec {
   const useSceneFallback = shot.characterIds.length <= 1;
   const rawCharacters = array(raw?.characters);
   const normalizedCharacters = shot.characterIds.map((characterId, index) => {
@@ -94,8 +96,9 @@ export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnviron
       appearanceState:{...appearance,fallbackValues:appearanceFallbacks,missingArrays,accessories:array(item?.appearanceState?.accessories).map((x)=>text(x)).filter(meaningful),condition:array(item?.appearanceState?.condition).map((x)=>text(x)).filter(meaningful)} };
   });
   const normalizeInteraction = (item: any) => ({
+    visualFacts: normalizeInteractionFacts(item?.visualFacts, options.interactionSource || (options.manualAppearance ? 'manual' : 'preserve')),
     type: text(item?.type), actorCharacterId: text(item?.actorCharacterId, ""), targetCharacterId: text(item?.targetCharacterId, ""),
-    propId: text(item?.propId, ""), action: text(item?.action, "perform the described interaction"), phase: text(item?.phase, "in progress"),
+    propId: text(item?.propId, text(item?.visualFacts?.object?.instanceId, "")), action: text(item?.action, "perform the described interaction"), phase: text(item?.phase, "in progress"),
     contactPoints: array(item?.contactPoints || (item?.contactPoint ? [item.contactPoint] : [])).map((x) => text(x)).filter(meaningful),
     gazeTarget: text(item?.gazeTarget, ""), ownershipBefore: typeof item?.ownershipBefore === "string" ? item.ownershipBefore : null,
     ownershipAfter: typeof item?.ownershipAfter === "string" ? item.ownershipAfter : null,
@@ -139,6 +142,7 @@ export function normalizeShotSpec(raw: any, shot: Shot, options: { manualEnviron
     }));
   });
   const interactions = suppliedInteractions.length ? suppliedInteractions : inferredInteractions;
+  if(options.requireInteractionFacts && interactions.some(item=>item.propId&&(!('visualFacts' in item)||!item.visualFacts)))throw new Error('新视觉规划必须提供完整visualFacts，不能退回文本数量推断');
   const defaults = { location: resolved(shot.sceneEn,"specific story location"), timeOfDay: englishTime(shot.timeOfDay), weather: inferredWeather(shot), lighting: resolved(shot.lightingEn,"motivated soft key light with readable ambient fill") };
   const fallbackValues: NonNullable<ShotVisualSpec["scene"]["fallbackValues"]> = {};
   const environment = { ...defaults };
@@ -264,12 +268,30 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
       if (!character.action?.trim() || !character.actionTarget?.trim() || !character.hands?.trim()) failures.push({ code: "interaction_failed", severity: "P0", message: `角色 ${character.characterId} 缺少动作、动作目标或手部说明。` });
       if (!character.gazeTarget?.trim()) failures.push({ code: "gaze_failed", severity: "P0", message: `角色 ${character.characterId} 缺少视线目标。` });
     }
+    const validStructured:typeof value.interactions=[];
     for (const relation of value.interactions || []) {
+      if(relation.visualFacts) {
+        try { normalizeInteractionFacts(relation.visualFacts);validStructured.push(relation); }
+        catch(error) { failures.push({code:'interaction_failed',severity:'P0',message:error instanceof Error?error.message:'交互事实无效'});continue; }
+        if(relation.visualFacts.gaze.kind==='character'&&!ids.includes(relation.visualFacts.gaze.targetId)) failures.push({code:'gaze_failed',severity:'P0',message:'结构化视线目标不在当前镜头中'});
+        const facts=relation.visualFacts,state=actionStageState(facts.actionId,facts.phase);
+        if(state.contactState!==facts.contact.state||['on_support','held'].includes(state.objectState)&&facts.support.state!=='unspecified'&&state.objectState!==facts.support.state)failures.push({code:'interaction_failed',severity:'P0',message:'结构化动作阶段、接触或支持状态冲突'});
+      } else warnings.push(`交互 ${relation.actorCharacterId}/${relation.propId} 使用旧文本推断，数量和目标未经结构化明确`);
       if (!relation.actorCharacterId || (!relation.targetCharacterId && !relation.propId) || !relation.action?.trim() || !relation.phase?.trim() || !relation.contactPoints?.length) failures.push({ code: "interaction_failed", severity: "P0", message: "交互关系缺少参与者、目标、动作阶段或接触点。" });
       if (!relation.gazeTarget?.trim()) failures.push({ code: "gaze_failed", severity: "P0", message: "交互关系缺少必要视线目标。" });
       if (relation.actorCharacterId && !characterIds.has(relation.actorCharacterId)) failures.push({ code: "interaction_failed", severity: "P0", message: `交互指向未知角色：${relation.actorCharacterId}` });
       if (relation.targetCharacterId && !characterIds.has(relation.targetCharacterId)) failures.push({ code: "interaction_failed", severity: "P0", message: `交互目标指向未知角色：${relation.targetCharacterId}` });
+      if(relation.actorCharacterId&&!ids.includes(relation.actorCharacterId)||relation.targetCharacterId&&!ids.includes(relation.targetCharacterId)) failures.push({code:'interaction_failed',severity:'P0',message:'交互参与者必须属于当前镜头'});
     }
+    const groups=new Map<string,typeof value.interactions>();
+    for(const relation of validStructured){const key=relation.visualFacts!.object.instanceId;groups.set(key,[...(groups.get(key)||[]),relation]);}
+    for(const [id,relations] of groups){
+      if(relations.some(r=>r.visualFacts!.object.count!==relations[0].visualFacts!.object.count||r.visualFacts!.object.label!==relations[0].visualFacts!.object.label))failures.push({code:'interaction_failed',severity:'P0',message:`共享实例 ${id} 的对象或数量冲突`});
+      const supports=relations.map(r=>r.visualFacts!.support).filter(s=>s.state!=='unspecified');
+      if(new Set(supports.map(s=>JSON.stringify(s))).size>1)failures.push({code:'interaction_failed',severity:'P0',message:`共享实例 ${id} 的支持状态冲突`});
+    }
+    for(const relation of validStructured)if(relation.visualFacts?.gaze.kind==='object'&&!groups.has(relation.visualFacts.gaze.targetId))failures.push({code:'gaze_failed',severity:'P0',message:'结构化视线目标物体未在当前镜头中声明'});
+    for(const id of ids){const targets=validStructured.filter(r=>r.actorCharacterId===id).map(r=>{const g=r.visualFacts!.gaze;return JSON.stringify([g.kind,g.targetId,g.surface,g.kind==='independent'?g.description:'']);});if(new Set(targets).size>1)failures.push({code:'gaze_failed',severity:'P0',message:`角色 ${id} 在同一镜头中具有互相矛盾的结构化视线目标`});}
   }
   if (errors.length) failures.push(...errors.map((message) => ({ code: message.includes("角色") ? "identity_failed" as const : "interaction_failed" as const, severity: "P0" as const, message })));
   const blocked = failures.some((failure) => failure.severity === "P0");

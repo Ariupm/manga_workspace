@@ -1,5 +1,5 @@
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
-import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
+import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
 import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
 import {synchronizeBasicPosePromptV3} from "./pose-v3/prompt-consistency";
 import type {PoseControlV3} from "./pose-v3/schema";
@@ -8,12 +8,15 @@ import {extraTemplateFromText} from "./pose-v3/action-catalog";
 import { englishTime } from "./story-time";
 import { isGenericLocation, resolveStoryLocation } from "./story-location";
 import { storyGazeFallback } from "./story-gaze";
+import { normalizeInteractionFacts } from "./interaction-facts";
+import {actionStageState,actionStageVerb} from "../scripts/action-stage-policy.mjs";
 import type {
   Asset,
   Character,
   CharacterLook,
   EnvironmentConfig,
   Shot,
+  InteractionVisualFacts,
 } from "./types";
 import {
   buildPoseControlV2,
@@ -89,6 +92,8 @@ const explicitlyAllowsCameraGaze=(value:string)=> {
 };
 
 export type InteractionContract = {
+  factSource?: 'structured_visual_facts' | 'legacy_text_inference_or_default';
+  visualFacts?: InteractionVisualFacts;
   actionPlan?:StoryActionContract;
   actionRelationAudit?:import("./pose-v3/action-relations").ActionRelationAudit;
   relationId: string;
@@ -307,6 +312,7 @@ const gazeTargetForInteraction = ({ kind, objectCenter, objectInstanceId, target
 };
 
 const moveGazeTargetWithObject = (gazeTarget: PoseGazeTarget, previousCenter: PosePointV2, nextCenter: PosePointV2, objectInstanceId: string): PoseGazeTarget => {
+  if(gazeTarget.source==='structured.external_object')return gazeTarget;
   if (gazeTarget.kind === "independent") return gazeTarget;
   const deltaX = nextCenter.x - previousCenter.x;
   const deltaY = nextCenter.y - previousCenter.y;
@@ -345,7 +351,8 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     planned?.gazeTarget||"", planned?.hands||"", ...(useSceneFallback ? [shot.actionEn, shot.description] : []),
     ...(useSceneFallback && shot.visualSpecConfirmed?shot.visualSpec?.visibleFacts||[]:[]),
   ].filter(value => !isNarrativeActionInstruction(value))).join("; ");
-  const structuredProp = plannedInteraction?.propId || "";
+  const structuredFacts = plannedInteraction && 'visualFacts' in plannedInteraction ? normalizeInteractionFacts(plannedInteraction.visualFacts) : undefined;
+  const structuredProp = structuredFacts?.object.label || plannedInteraction?.propId || "";
   const relationContactText = plannedInteraction ? [
     "contactPoints" in plannedInteraction ? plannedInteraction.contactPoints.join(" ") : "",
     "contactPoint" in plannedInteraction ? plannedInteraction.contactPoint : "",
@@ -372,7 +379,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     if (resolvedProp) {
       const objectCenter = { x: positionCenter, y: .58 };
       const geometry = interactionGeometry({characterId:characterId||"",propId:resolvedProp,object:resolvedProp,orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
-      return attachStoryActionContract({relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]},relationActionText,plannedInteraction?.phase||"",Boolean(plannedInteraction));
+      return attachStoryActionContract({relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]},relationActionText,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
     }
     const objectCenter = { x: positionCenter, y: .58 };
     const geometry = interactionGeometry({characterId:characterId||"",propId:"",object:"story-object",orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
@@ -452,14 +459,37 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     negative:[`missing ${storyObject}`,`hidden ${storyObject}`,visualObject.expectedCount===1?`duplicate ${storyObject}`:`incorrect ${storyObject} count`,`extra ${storyObject} outside the story instance`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
   };
   const stagedAction = intent === "pick" && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(relationActionText) ? relationActionText : localActionClause;
-  return attachStoryActionContract(contract,stagedAction,plannedInteraction?.phase||"",Boolean(plannedInteraction));
+  return attachStoryActionContract(contract,stagedAction,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
 }
 
-function attachStoryActionContract(contract:InteractionContract,action:string,phaseText:string,confirmed:boolean):InteractionContract {
-  const actionPlan=inferStoryActionContract(contract,action,phaseText,confirmed);
+function attachStoryActionContract(contract:InteractionContract,action:string,phaseText:string,confirmed:boolean,facts?:InteractionVisualFacts,shot?:Shot):InteractionContract {
+  contract={...contract,factSource:facts?'structured_visual_facts':'legacy_text_inference_or_default'};
+  if(facts){
+    const handMode=facts.contact.hand==='both'?'two':'one';
+    const targetCharacterId=facts.gaze.kind==='character'?facts.gaze.targetId:contract.targetCharacterId;
+    const targetIndex=shot?.characterIds.indexOf(targetCharacterId||'')??-1;
+    const targetRegion=shot?.visualSpec?.characters.find(p=>p.characterId===targetCharacterId)?.region || (targetIndex>=0?{xStart:targetIndex/shot!.characterIds.length,xEnd:(targetIndex+1)/shot!.characterIds.length}:undefined);
+    const contactAnchors=(facts.contact.hand==='both'?['left','right']:[facts.contact.hand]).map(hand=>{
+      const anchor=contract.contactAnchors.find(a=>a.hand===hand)||contract.contactAnchors[0];
+      return {...anchor,hand:hand as 'left'|'right',x:contract.objectCenter.x+(hand==='left'?.025:-.025),role:hand==='right'&&facts.contact.hand==='both'?'support' as const:'active' as const};
+    });
+    contract={...contract,visualFacts:facts,object:facts.object.label,expectedCount:facts.object.count,objectInstanceId:facts.object.instanceId,
+      supportLabel:facts.support.label,handMode,activeHand:facts.contact.hand,
+      contactAnchors,
+      gaze:facts.gaze.kind==='object'?`eyes focused on the ${facts.object.label}${facts.gaze.surface?` ${facts.gaze.surface}`:''}`:facts.gaze.description,gazeMode:facts.gaze.kind==='character'?'target':facts.gaze.kind,
+      gazeTarget:gazeTargetForInteraction({kind:facts.gaze.kind==='character'?'target':facts.gaze.kind,objectCenter:contract.objectCenter,objectInstanceId:facts.object.instanceId,targetCharacterId,targetRegion,surfaceNormal:contract.surfacePlan.normal}),
+      negative:contract.negative.filter(t=>!/duplicate |incorrect .* count/.test(t)&&!(facts.contact.state!=='contact'&&/empty hands|folded hands|hands unrelated/.test(t))).concat(facts.object.count===1?`duplicate ${facts.object.label}`:`incorrect ${facts.object.label} count`)};
+    phaseText=facts.phase;
+  }
+  const actionPlan=inferStoryActionContract(contract,action,phaseText,confirmed,facts?.actionId);
   if(!actionPlan)return contract;
+  if(facts){
+    const state=actionStageState(actionPlan.actionId,actionPlan.phase);
+    if(state.contactState!==facts.contact.state)throw new Error('结构化接触状态与动作阶段冲突');
+    if(['on_support','held'].includes(state.objectState)&&facts.support.state!=='unspecified'&&state.objectState!==facts.support.state)throw new Error('结构化支持状态与动作阶段冲突');
+  }
   contract={...contract,purpose:actionPlan.actionId==='pick'?'pick':actionPlan.actionId==='place'?'place':contract.purpose};
-  const explicitMode=explicitHandMode(action);
+  const explicitMode=facts?null:explicitHandMode(action);
   if(explicitMode==='one'){
     const hand=/left hand|左手/i.test(action)?'left':/right hand|右手/i.test(action)?'right':contract.activeHand==='left'?'left':'right';
     contract={...contract,handMode:'one',activeHand:hand,contactAnchors:contract.contactAnchors.filter(a=>a.hand===hand)};
@@ -602,12 +632,13 @@ export function deriveInteractionContracts(shot: Shot, characterId?: string): In
   const planned = allPlanned.filter((item) => item.actorCharacterId === id);
   if (!planned.length) return [deriveInteractionContract(shot, characterId)];
   const instanceKey = (relation: (typeof allPlanned)[number], globalIndex: number) => {
+    if(relation.visualFacts)return relation.visualFacts.object.instanceId;
     const shared = relation.type === "object_transfer" || relation.type === "shared_prop";
     return shared ? `prop:${slug(relation.propId || relation.targetCharacterId || "story-object")}:shared` : `prop:${slug(relation.propId || relation.targetCharacterId || "story-object")}:${relation.actorCharacterId}:${globalIndex + 1}`;
   };
-  return planned.map((relation, index) => {
+  const contracts=planned.map<InteractionContract>((relation, index) => {
     const contract = deriveInteractionContract({ ...shot, visualSpec: { ...shot.visualSpec!, interactions: [relation], interaction: null } }, id);
-    const sharedObject = relation.propId || relation.targetCharacterId || "story-object";
+    const sharedObject = relation.visualFacts?.object.label || relation.propId || relation.targetCharacterId || "story-object";
     const globalIndex = allPlanned.indexOf(relation);
     const objectInstanceId = instanceKey(relation, globalIndex);
     const objectInstanceRelations = allPlanned.filter((item, itemIndex) => instanceKey(item, itemIndex) === objectInstanceId);
@@ -625,6 +656,14 @@ export function deriveInteractionContracts(shot: Shot, characterId?: string): In
     const activeHand = contactAnchors.find((anchor) => anchor.role === "active")?.hand || (contract.handMode === "two" ? "both" : "right");
     const ownershipActors = [...new Set(objectInstanceRelations.flatMap((item) => [item.actorCharacterId, item.targetCharacterId].filter(Boolean)))];
     return { ...contract, relationId: `${relation.actorCharacterId}:${sharedObject}:${index + 1}`, targetCharacterId: relation.targetCharacterId || undefined, relationType: relation.type || undefined, objectCenter, gazeTarget, contactAnchors, activeHand, objectInstanceId, ownership: { actorCharacterIds: ownershipActors, ownerBefore: relation.ownershipBefore || null, ownerAfter: relation.ownershipAfter || null }, executor: /umbrella/i.test(sharedObject) && relation.type === "object_transfer" ? "umbrella_handoff" as const : "generic_prop" as const };
+  });
+  return contracts.map(contract=>{
+    const facts=contract.visualFacts;
+    if(!facts||facts.gaze.kind!=='object'||facts.gaze.targetId===contract.objectInstanceId)return contract;
+    const targetRelation=allPlanned.find(r=>r.visualFacts?.object.instanceId===facts.gaze.targetId);
+    if(!targetRelation)throw new Error('结构化视线目标物体未在当前镜头中声明');
+    const target=deriveInteractionContract({...shot,visualSpec:{...shot.visualSpec!,interactions:[targetRelation],interaction:null}},targetRelation.actorCharacterId);
+    return {...contract,gaze:`eyes focused on the ${target.object}${facts.gaze.surface?` ${facts.gaze.surface}`:''}`,gazeTarget:{kind:'object' as const,targetId:facts.gaze.targetId,point:{...target.objectCenter},source:'structured.external_object'}};
   });
 }
 
@@ -1580,7 +1619,7 @@ export function buildRegionalPrompt(
   const hasObjectTransfer = plannedInteractions.some((item)=>item.type === "object_transfer") || umbrellaStory(shot);
   const hasUmbrellaHandover = hasObjectTransfer && (!plannedInteractions.some((item)=>item.propId) || plannedInteractions.some((item)=>/umbrella|伞/i.test(item.propId)));
   const sharedInteraction = usePlannedInteraction
-    ? plannedInteractions.map((item)=>item.action).join("; ")
+    ? plannedInteractions.filter(item=>!('visualFacts' in item && item.visualFacts)).map((item)=>item.action).join("; ")
     : hasUmbrellaHandover
     ? "umbrella handover between the two people"
     : "";
@@ -1644,11 +1683,15 @@ export function buildRegionalPrompt(
       /wide shot|full shot/.test(resolvedCamera) ? resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) : "",
       state?.bag,state?.accessories.join(", "),state?.glasses,state?.outerwearState,
       ].filter(Boolean).join(", "),source:outfit?`selected_asset:${outfit.id}`:"character_profile"},
-      {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:sourceFor("actionEn")},
-      {id:`${id}.hands`,group:"hands",text:englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:sourceFor("handsEn")},
+      {id:`${id}.action`,group:"action",text:englishVisual(interactions.map(interaction=>interaction.visualFacts?`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'} as Record<string,string>)[interaction.visualFacts.actionId]||actionStageVerb(interaction.visualFacts.actionId,interaction.visualFacts.phase)} the ${interaction.object}`:canonicalActionForInteraction(look.actionEn,interaction)).join(", ")),source:interactions.some(r=>r.visualFacts)?'structured_interaction_action':sourceFor("actionEn")},
+      {id:`${id}.hands`,group:"hands",text:interactions.some(r=>r.visualFacts)?promptTerms(look.handsEn).filter(term=>{
+        if(/hold|grip|touch|contact|reach|operat|described action/i.test(term))return false;
+        const hand=/left hand/i.test(term)?'left':/right hand/i.test(term)?'right':null;
+        return hand&&!interactions.some(r=>r.visualFacts&&(r.activeHand==='both'||r.activeHand===hand));
+      }).join(', '):englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:interactions.some(r=>r.visualFacts)?'structured_contact+independent_free_hand':sourceFor("handsEn")},
       ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i),source:"interaction_contract"})),
       {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
-      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:sourceFor("gazeEn")},
+      {id:`${id}.gaze`,group:"gaze",text:`(${englishVisual(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ') || look.gazeEn, inferGazeFromAction(look.actionEn))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
       {id:`${id}.occlusion`,group:"occlusion",text:englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),source:"confirmed_visual_spec"},
     ];

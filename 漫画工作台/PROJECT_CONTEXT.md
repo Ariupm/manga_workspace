@@ -50,3 +50,5 @@ pnpm memory:sync
 
 
 2026-10-04续修：剧情动作增强既有交互契约story-action-1；已知机构/工具、搀扶与推拉支持链已实施，034/040/042/044为fixed_pending_review。提示词、V3及worker轮廓/接触/质量门同源；详见ACTION_TEMPLATE_REPAIR_2026-10-04.md当前结论。
+
+- 2026-10-05上游交互事实：ShotVisualSpec.interactions.visualFacts可保存interaction-facts-1的具体对象/数量/实例、动作阶段、接触/支持、视线绑定与分字段来源。新AI道具规划必须提供；UI可编辑；共享契约和有效Pose将其传入PromptPlan/recipe/基础与局部pass。旧规格保持兼容，不自动改写正式数据。

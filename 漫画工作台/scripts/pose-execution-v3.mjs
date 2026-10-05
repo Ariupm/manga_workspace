@@ -1,5 +1,5 @@
 import {mechanismPromptTerms} from "./action-mechanism.mjs";
-import {phaseInteractionTerms,synchronizedActionTerms} from "./action-stage-policy.mjs";
+import {phaseInteractionTerms,synchronizedActionTerms,relationActionState} from "./action-stage-policy.mjs";
 import {upperTorsoFramingFailures} from "./pose-framing-guard.mjs";
 import {overlayGeometryFailures} from "./pose-overlay-guard.mjs";
 // Keep the editable full-pose plan intact. All pixel consumers use this separate
@@ -58,7 +58,13 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     const audit=candidate?.actionRelationAudit||r.actionRelationAudit||(source.people?.find(p=>p.characterId===r.characterId)?.relationTargets?.length===1?source.people?.find(p=>p.characterId===r.characterId)?.actionRelationAudit:undefined);
     const authored=audit?candidate:undefined;
     const center=authored?.objectCenter||r.objectCenter,contacts=authored?.contactAnchors||r.contactAnchors;
-    const result={...r,objectCenter:point(center),region:region(r.region),gazeTarget:gaze(authored?.gazeTarget||r.gazeTarget),contactAnchors:anchors(contacts,r.characterId,audit),surfacePlan:surface(r.surfacePlan),actionRelationAudit:actionAudit(audit),actionPlan:r.actionPlan&&{...r.actionPlan,phase:audit?.phase||r.actionPlan.phase,geometry:actionGeometry(audit?.geometry||r.actionPlan.geometry)}};result.positive=[...new Set([...synchronizedActionTerms(result),...mechanismPromptTerms(result.actionRelationAudit?.geometry)])];return result;
+    const result={...r,objectCenter:point(center),region:region(r.region),gazeTarget:gaze(authored?.gazeTarget||r.gazeTarget),contactAnchors:anchors(contacts,r.characterId,audit),surfacePlan:surface(r.surfacePlan),actionRelationAudit:actionAudit(audit),actionPlan:r.actionPlan&&{...r.actionPlan,actionId:audit?.geometry?.actionId||r.actionPlan.actionId,phase:audit?.phase||r.actionPlan.phase,geometry:actionGeometry(audit?.geometry||r.actionPlan.geometry)}};
+    if(['pick','place'].includes(result.actionPlan?.actionId))result.purpose=result.actionPlan.actionId;
+    const state=relationActionState(result);
+    if(result.visualFacts&&state&&(state.phase!==result.visualFacts.phase||state.actionId!==result.visualFacts.actionId)){
+      result.visualFacts={...result.visualFacts,actionId:state.actionId,phase:state.phase,contact:{...result.visualFacts.contact,state:state.contactState},support:{...result.visualFacts.support,state:['held','on_support'].includes(state.objectState)?state.objectState:result.visualFacts.support.state},provenance:{...result.visualFacts.provenance,phase:{source:'manual',evidence:'effective Pose action/phase override'},contact:{source:'manual',evidence:'derived from effective Pose action/phase'},support:{source:'manual',evidence:'derived from effective Pose action/phase'}}};
+    }
+    result.positive=[...new Set([...synchronizedActionTerms(result),...mechanismPromptTerms(result.actionRelationAudit?.geometry)])];return result;
   };
   const scenePlan = { ...structuredClone(source), coordinateSpace: "projected_canvas",
     interactionTarget: point(source.interactionTarget),
