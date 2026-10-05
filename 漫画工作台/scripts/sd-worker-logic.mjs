@@ -20,15 +20,9 @@ export function expressionNegativeCue(value = "") {
   return "";
 }
 
+// Compatibility entry point: semantic detectors never decide result availability.
 export function automaticVisualGateDisposition(config = {}, result = {}, attempt = 1) {
-  if (!config.enabled) return "allow";
-  if (result.status === "passed") return "allow";
-  const requestedAttempts = Number(config.maxAttempts ?? 2);
-  const maxAttempts = Number.isFinite(requestedAttempts) ? Math.max(1, requestedAttempts) : 2;
-  // A new seed can address a detected semantic failure, not an unavailable
-  // detector, invalid configuration, missing response, or service exception.
-  if (result.status === "blocked" && Number.isFinite(attempt) && attempt < maxAttempts) return "retry";
-  return "block";
+  return "allow";
 }
 
 export function identityRefinementPlan(characterPrompt = "", phase = "draft") {

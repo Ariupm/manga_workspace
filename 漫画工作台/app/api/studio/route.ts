@@ -1060,9 +1060,9 @@ export async function POST(request: Request) {
             : "IP-Adapter 或 OpenPose ControlNet 模型不可用",
       },
       automaticVisualGate: {
-        enabled: requiredPropInteractions.length > 0,
-        method: "sd_webui_clip_interrogate",
-        maxAttempts: 2,
+        enabled: false,
+        method: "none",
+        policy: "user_decides_adoption",
         requiredPropInteractions,
       },
     };

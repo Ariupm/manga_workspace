@@ -98,24 +98,6 @@ async function collectInvocationImage({ resultPath, before, startedAt }) {
   return reported.at(-1) || discovered.at(-1) || null;
 }
 
-async function reviewVisualFiles({ files, payload, references, controlBoard, referenceManifest, jobId, logPath, suffix = "visual-review" }) {
-  const reviewPath=path.join(resultDir,`job-${jobId}-${suffix}.json`);
-  fs.rmSync(reviewPath,{force:true});
-  const reviewPrompt=[
-    "Act as a strict visual QA inspector for an anime comic production pipeline. Inspect candidate images first, then compare them against the exact hard requirements and declared character reference roles. Return JSON only using the supplied schema.",
-    `There are ${files.length} candidates, attached first in candidate order. Select the strongest candidate even if all fail.`,
-    `HARD REQUIREMENTS:\n${(payload.renderPlan?.hardRequirements||[]).map((item)=>`- ${item}`).join("\n")}`,
-    `REFERENCE MANIFEST (reference images are attached after candidates):\n${referenceManifest}`,
-    "Count, severe anatomy, camera framing, required held prop, hand-prop contact, gaze target, identity and outfit are independent checks. A valid PNG or attractive lighting is not evidence of semantic success.",
-    "Use decision=pass only when there is no hard failure. Use repair only for a localized defect that can be edited without changing framing or major pose. Use regenerate for framing, count, major anatomy or globally wrong pose. Repair instruction must name the exact region and what must remain unchanged."
-  ].join("\n\n");
-  const reviewImages=[...files,...references.map((reference)=>reference.absolutePath),...(controlBoard?[controlBoard]:[])];
-  const args=["exec","--json","--skip-git-repo-check","--output-schema",path.join(root,"scripts","codex-visual-review.schema.json"),"-o",reviewPath,"--sandbox","danger-full-access",...reviewImages.flatMap(file=>["-i",file]),"--",reviewPrompt];
-  const run=await runCodex(args,logPath);
-  if(run.code!==0)throw new Error(`Codex visual review exited with code ${run.code}`);
-  return JSON.parse(fs.readFileSync(reviewPath,"utf8"));
-}
-
 function runCodex(args,logPath,onEvent) {
   return new Promise((resolve,reject)=>{
     const log=fs.createWriteStream(logPath,{flags:"a"});
@@ -188,90 +170,21 @@ for(const jobId of jobIds) {
       generatedFiles.push(expected[index]);
     }
     if(!generatedFiles.length)continue;
-    update(jobId,"running_codex","",65,"正在由视觉评估器比较候选");
-    let review=await reviewVisualFiles({files:generatedFiles,payload,references,controlBoard,referenceManifest,jobId,logPath});
-    const reviewHistory=[{stage:"initial",review}];
-    const selectedIndex=Math.min(generatedFiles.length,Math.max(1,Number(review.selectedCandidateIndex||1)))-1;
-    let selectedFile=generatedFiles[selectedIndex];
-    if(review.decision==="repair"&&String(review.repairInstruction||"").trim()&&Number(payload.renderPlan?.maxRepairAttempts||1)>0) {
-      update(jobId,"running_codex","",78,"正在按视觉证据定向修复最佳候选");
-      const repairResultPath=path.join(resultDir,`job-${jobId}-repair-result.json`);
-      const repairedFile=path.join(outputDir,`codex-job-${jobId}-repaired.png`);
-      fs.rmSync(repairResultPath,{force:true});fs.rmSync(repairedFile,{force:true});
-      const before=new Set(listGeneratedPngs(codexGeneratedDir));
-      const startedAt=Date.now();
-      const repairPrompt=[
-        "$imagegen",
-        "Edit the first attached candidate image. Make one localized production repair based on the QA evidence. Preserve all already-correct pixels and relationships outside the repair region.",
-        `REPAIR: ${review.repairInstruction}`,
-        `HARD REQUIREMENTS: ${(payload.renderPlan?.hardRequirements||[]).join("; ")}`,
-        "The remaining attachments are identity/outfit references and the geometry board. Keep exact identity, selected clothing, camera crop, environment and unaffected anatomy unchanged.",
-        "Generate exactly one text-free repaired final image. Do not return instructions; use the image generation tool and return JSON matching the schema."
-      ].join("\n\n");
-      const repairImages=[selectedFile,...references.map((reference)=>reference.absolutePath),...(controlBoard?[controlBoard]:[])];
-      const repairArgs=["exec","--json","--skip-git-repo-check","--output-schema",path.join(root,"scripts","codex-result.schema.json"),"-o",repairResultPath,"--sandbox","danger-full-access",...repairImages.flatMap(file=>["-i",file]),"--",repairPrompt];
-      const repairRun=await runCodex(repairArgs,logPath);
-      if(repairRun.code===0) {
-        const source=await collectInvocationImage({resultPath:repairResultPath,before,startedAt});
-        if(source){
-          if(path.resolve(source)!==path.resolve(repairedFile))fs.copyFileSync(source,repairedFile);
-          if(isValidPng(repairedFile)) {
-            selectedFile=repairedFile;
-            update(jobId,"running_codex","",88,"正在复核定向修复结果");
-            review=await reviewVisualFiles({files:[repairedFile],payload,references,controlBoard,referenceManifest,jobId,logPath,suffix:"post-repair-review"});
-            reviewHistory.push({stage:"post_repair",review});
-          }
-        }
-      }
-    } else if(review.decision==="regenerate"&&Number(payload.renderPlan?.maxRepairAttempts||1)>0) {
-      update(jobId,"running_codex","",78,"候选存在全局硬失败，正在按证据重新生成");
-      const regenerateResultPath=path.join(resultDir,`job-${jobId}-regenerate-result.json`);
-      const regeneratedFile=path.join(outputDir,`codex-job-${jobId}-regenerated.png`);
-      fs.rmSync(regenerateResultPath,{force:true});fs.rmSync(regeneratedFile,{force:true});
-      const before=new Set(listGeneratedPngs(codexGeneratedDir));
-      const startedAt=Date.now();
-      const regeneratePrompt=[
-        "$imagegen",
-        "Generate one new polished text-free anime comic panel from scratch. The first candidate batch failed strict QA; do not reproduce its failure.",
-        `FAILURE EVIDENCE: ${(review.hardFailures||[]).map((item)=>`${item.type}: ${item.evidence}`).join("; ")}`,
-        `HARD REQUIREMENTS:\n${(payload.renderPlan?.hardRequirements||[]).map((item)=>`- ${item}`).join("\n")}`,
-        `VISUAL PROMPT: ${payload.prompt}`,
-        `NEGATIVE CONSTRAINTS: ${payload.negativePrompt}`,
-        "Use the attached role-specific references and geometry board. Generate character, acting hands and held prop as one coherent unit. Use the image generation tool and return JSON matching the schema."
-      ].join("\n\n");
-      const regenerateImages=[...references.map((reference)=>reference.absolutePath),...(controlBoard?[controlBoard]:[])];
-      const regenerateArgs=["exec","--json","--skip-git-repo-check","--output-schema",path.join(root,"scripts","codex-result.schema.json"),"-o",regenerateResultPath,"--sandbox","danger-full-access",...regenerateImages.flatMap(file=>["-i",file]),"--",regeneratePrompt];
-      const regenerateRun=await runCodex(regenerateArgs,logPath);
-      if(regenerateRun.code===0) {
-        const source=await collectInvocationImage({resultPath:regenerateResultPath,before,startedAt});
-        if(source){
-          if(path.resolve(source)!==path.resolve(regeneratedFile))fs.copyFileSync(source,regeneratedFile);
-          if(isValidPng(regeneratedFile)) {
-            selectedFile=regeneratedFile;
-            update(jobId,"running_codex","",88,"正在复核重新生成结果");
-            review=await reviewVisualFiles({files:[regeneratedFile],payload,references,controlBoard,referenceManifest,jobId,logPath,suffix:"post-regenerate-review"});
-            reviewHistory.push({stage:"post_regenerate",review});
-          }
-        }
-      }
-    }
-    const relativePath=path.relative(root,selectedFile).replaceAll("\\","/");
-    const imageSha256=createHash("sha256").update(fs.readFileSync(selectedFile)).digest("hex");
-    const qualityStatus=review.decision==="pass"?"passed":"blocked";
-    const qualityLabels=(review.hardFailures||[]).map((item)=>`${item.type}_failed`);
-    const qualityReport={version:"codex-visual-review-v1",review,reviewHistory,renderPlan:payload.renderPlan||null,generatedArtifacts:generatedFiles.map((file)=>path.relative(root,file).replaceAll("\\","/")),selectedIndex:selectedIndex+1,imageSha256};
-    const next=one("SELECT COALESCE(MAX(version),0)+1 v FROM candidates WHERE shot_id=?",row.shot_id).v;
+    const artifacts=generatedFiles.map(file=>({path:path.relative(root,file).replaceAll("\\","/"),sha256:createHash("sha256").update(fs.readFileSync(file)).digest("hex")}));
     db.exec("BEGIN IMMEDIATE");
     try {
-      if(qualityStatus==="passed") {
-        db.prepare("UPDATE candidates SET selected=0 WHERE shot_id=?").run(row.shot_id);
-        db.prepare("INSERT OR REPLACE INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,reviewed_at,source_job_id,image_sha256) VALUES(?,?,?,?,1,?,?,?,?,CURRENT_TIMESTAMP,?,?)")
-          .run(row.shot_id,relativePath,"Codex 自动质检成品",next,qualityStatus,JSON.stringify(qualityLabels),JSON.stringify(qualityReport),"codex_visual_qa",jobId,imageSha256);
+      for(const [index,artifact] of artifacts.entries()) {
+        if(one("SELECT id FROM candidates WHERE image_path=?",artifact.path))continue;
+        const next=one("SELECT COALESCE(MAX(version),0)+1 v FROM candidates WHERE shot_id=?",row.shot_id).v;
+        const selected=one("SELECT COUNT(*) v FROM candidates WHERE shot_id=?",row.shot_id).v===0?1:0;
+        const report={version:"user-decides-adoption-v1",sourceJobId:jobId,imageSha256:artifact.sha256,semanticReview:"not_performed"};
+        db.prepare("INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,source_job_id,image_sha256) VALUES(?,?,?,?,?,'unreviewed','[]',?,'',?,?)")
+          .run(row.shot_id,artifact.path,"Codex 生成结果",next,selected,JSON.stringify(report),index===0?jobId:null,artifact.sha256);
       }
-      payload.visualReview=review;payload.selectedImagePath=relativePath;payload.generatedArtifacts=qualityReport.generatedArtifacts;
-      db.prepare("UPDATE jobs SET status=?,payload=?,progress=100,error='',stage=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
-        .run(qualityStatus==="passed"?"completed":"completed_low_confidence",JSON.stringify(payload),qualityStatus==="passed"?"最佳候选已自动质检并展示":"自动质检未通过，已展示最佳运行结果但未进入正式候选",jobId);
-      if(qualityStatus==="passed") db.prepare("UPDATE shots SET status='review' WHERE id=?").run(row.shot_id);
+      payload.selectedImagePath=artifacts[0].path;payload.generatedArtifacts=artifacts.map(item=>item.path);
+      delete payload.visualReview;
+      db.prepare("UPDATE jobs SET status='completed',payload=?,progress=100,error='',stage='生成结果已展示，请自行选择采用',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(JSON.stringify(payload),jobId);
+      db.prepare("UPDATE shots SET status='review' WHERE id=?").run(row.shot_id);
       db.exec("COMMIT");
     } catch(error){db.exec("ROLLBACK");throw error;}
   } catch(error) {

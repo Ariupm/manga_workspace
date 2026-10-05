@@ -5,7 +5,7 @@ export type Candidate = {
   label: string;
   version: number;
   selected: boolean;
-  qualityStatus?: "manual_required" | "passed" | "approved" | "blocked";
+  qualityStatus?: "unreviewed" | "manual_required" | "passed" | "approved" | "blocked";
   qualityLabels?: string[];
   qualityReport?: Record<string, unknown>;
   sourceJobId?: number | null;

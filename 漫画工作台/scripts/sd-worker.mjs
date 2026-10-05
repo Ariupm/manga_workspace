@@ -18,8 +18,8 @@ import { supportControlPlan } from "./support-control.mjs";
 import { outfitMaskPlan } from "./outfit-mask-plan.mjs";
 import { propObjectMask } from "./prop-mask-plan.mjs";
 import { compositeMaskedOutput } from "./masked-composite.mjs";
-import { expressionCue, expressionNegativeCue, automaticVisualGateDisposition, gazeRefinementPrompt } from "./sd-worker-logic.mjs";
-import { faceSceneContext, identityRefinementPrompts, characterIdentityGazePolicy, controlExecutionCoverage, deferRequiredPropsFromBasePrompt, evaluateCaptionForRequiredProps, faceRefinementPassPlan, gazeMaskGeometry, generationProfilePlan, handDepthDetectionUsable, handPoseDetectionUsable, identityReferenceForCharacter, identityReferenceMaskPlan, outfitGarmentZones, propBodySizePlan, selectControlUnitsForProfile, semanticReviewContractForStage, shouldUseOutfitVisualReference, structuredGazeExecutionPlan, umbrellaGeometry, upperBodyVisiblePrompt } from "./sd-worker-logic.mjs";
+import { expressionCue, expressionNegativeCue, gazeRefinementPrompt } from "./sd-worker-logic.mjs";
+import { faceSceneContext, identityRefinementPrompts, characterIdentityGazePolicy, controlExecutionCoverage, deferRequiredPropsFromBasePrompt, faceRefinementPassPlan, gazeMaskGeometry, generationProfilePlan, handDepthDetectionUsable, handPoseDetectionUsable, identityReferenceForCharacter, identityReferenceMaskPlan, outfitGarmentZones, propBodySizePlan, selectControlUnitsForProfile, semanticReviewContractForStage, shouldUseOutfitVisualReference, structuredGazeExecutionPlan, umbrellaGeometry, upperBodyVisiblePrompt } from "./sd-worker-logic.mjs";
 
 const root = process.cwd();
 const jobId = Number(process.argv[2]);
@@ -1667,47 +1667,10 @@ try {
     process.exit(0);
   }
   if (status() === "cancelled") process.exit(0);
-  const visualGateConfig = recipe.automaticVisualGate || {};
-  let automaticVisualGate = { status: "not_required", method: visualGateConfig.method || "none", caption: "", checks: [], missing: [] };
-  if (visualGateConfig.enabled && Array.isArray(visualGateConfig.requiredPropInteractions) && visualGateConfig.requiredPropInteractions.length) {
-    try {
-      const interrogation = await postJson(recipe.endpoint.replace(/\/sdapi\/v1\/(?:txt2img|img2img)$/, "/sdapi/v1/interrogate"), {
-        image: finalImage.toString("base64"),
-        model: "clip",
-      });
-      if (interrogation.status < 200 || interrogation.status >= 300)
-        throw new Error(`CLIP interrogate returned ${interrogation.status}`);
-      const caption = String(JSON.parse(interrogation.body)?.caption || "");
-      const evaluated = evaluateCaptionForRequiredProps(caption, visualGateConfig.requiredPropInteractions);
-      automaticVisualGate = { status: evaluated.missing.length ? "blocked" : "passed", method: "sd_webui_clip_interrogate", ...evaluated };
-    } catch (error) {
-      automaticVisualGate = { status: "unverified", method: "sd_webui_clip_interrogate", caption: "", checks: [], missing: [], error: error instanceof Error ? error.message : String(error) };
-    }
-  } else if (visualGateConfig.enabled) {
-    automaticVisualGate = { status: "unverified", method: visualGateConfig.method || "none", caption: "", checks: [], missing: [], reason: "enabled_gate_has_no_required_prop_contracts" };
-  }
+  // Product policy: the user decides whether to adopt a generated image.
+  // Ignore even historical enabled gate configs; never interrogate, retry or reject it.
+  const automaticVisualGate = {status: "disabled_by_user_policy", method: "none", checks: [], missing: []};
   payload.recipe.automaticVisualGateResult = automaticVisualGate;
-  const currentAttempt = Number(one("SELECT attempt FROM jobs WHERE id=?", jobId)?.attempt || 1);
-  const visualGateDisposition = automaticVisualGateDisposition(visualGateConfig, automaticVisualGate, currentAttempt);
-  if (visualGateDisposition === "retry") {
-    payload.recipe.seed = Number.isFinite(Number(actualSeed)) ? Number(actualSeed) + 7919 : Number(recipe.seed || -1) + 7919;
-    payload.recipe.automaticVisualGateRetries = [
-      ...(Array.isArray(recipe.automaticVisualGateRetries) ? recipe.automaticVisualGateRetries : []),
-      { attempt: currentAttempt, seed: actualSeed, result: automaticVisualGate, retriedAt: new Date().toISOString() },
-    ];
-    db.prepare("UPDATE jobs SET status='final_queued',payload=?,progress=0,error='',stage='关键道具未检出，正在自动换 Seed 重试',worker_id='',lease_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?")
-      .run(JSON.stringify(payload), jobId);
-    const retryWorker = spawn(process.execPath, [path.join(root, "scripts", "sd-worker.mjs"), String(jobId)], { cwd: root, detached: true, stdio: "ignore" });
-    retryWorker.unref();
-    process.exit(0);
-  }
-  if (visualGateDisposition === "block") {
-    payload.recipe.automaticVisualGateResult = automaticVisualGate;
-    db.prepare("UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(JSON.stringify(payload), jobId);
-    db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
-    update("failed", 100, `自动质量门未通过：${automaticVisualGate.error || automaticVisualGate.reason || (automaticVisualGate.missing || []).map(item => item.object || item.relationId || String(item)).join("、") || "已启用的检测未返回通过结果，请检查检测配置与服务"}`, "成品自动质检失败，未写入候选");
-    process.exit(0);
-  }
   const finalImageSha256 = createHash("sha256").update(finalImage).digest("hex");
   payload.recipe.finalReview = {
     status: "automatically_added_to_candidates",
@@ -1741,7 +1704,7 @@ try {
         approval: payload.recipe.finalApproval,
         semanticContractSnapshot: semanticQa.items || [],
       };
-      db.prepare("INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,reviewed_at,source_job_id,image_sha256) VALUES(?,?,?,?,?,'passed',?,?,?,CURRENT_TIMESTAMP,?,?)")
+      db.prepare("INSERT INTO candidates(shot_id,image_path,label,version,selected,quality_status,quality_labels_json,quality_report_json,reviewed_by,reviewed_at,source_job_id,image_sha256) VALUES(?,?,?,?,?,'unreviewed',?,?,?,CURRENT_TIMESTAMP,?,?)")
         .run(row.shot_id, payload.finalReviewImagePath, "SD WebUI 成品（草稿确认后自动加入）", version, selected, JSON.stringify(semanticQa.labels || []), JSON.stringify(qualityReport), "automatic_after_draft_confirmation", jobId, finalImageSha256);
     }
     db.prepare("UPDATE jobs SET status='completed',payload=?,progress=100,error='',stage='成品已自动加入候选图',updated_at=CURRENT_TIMESTAMP WHERE id=?")

@@ -2265,9 +2265,9 @@ function PanelEditor({
                       ? "构图草稿 · 等待确认"
                       : "成品生成完成 · 正在加入候选图"
                     : lowConfidencePreview
-                    ? `自动质检未通过 · 未进入正式候选 · ${lowConfidencePreview.summary}`
+                    ? "历史生成结果 · 是否采用由你决定"
                     : selected?.qualityStatus === "manual_required"
-                      ? "自动检查低置信 · 已展示最佳结果"
+                      ? "生成结果 · 是否采用由你决定"
                       : "无文字原始画面"}
                 </span>
                 {!sdPreview && !lowConfidencePreview && selected && (

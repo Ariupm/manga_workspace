@@ -4,16 +4,16 @@ import { baseInteractionGazePrompt } from "./sd-worker-logic.mjs";
 import { gazeRefinementPrompt } from "./sd-worker-logic.mjs";
 import { automaticVisualGateDisposition } from "./sd-worker-logic.mjs";
 
-test("enabled visual gates cannot admit unverified, skipped, failed or absent results", () => {
-  for (const status of ["unverified", "not_required", "failed", "pending", undefined]) {
+test("semantic quality results cannot block or retry generated images", () => {
+  for (const status of ["blocked", "unverified", "not_required", "failed", "pending", undefined]) {
     for (const reason of ["cpu_memory_guard_skipped_clip_interrogate", "service_error", "invalid_configuration"]) {
-      assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status, reason }, 1), "block");
+      assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status, reason }, 1), "allow");
     }
   }
   assert.equal(automaticVisualGateDisposition({ enabled: true }, { status: "passed" }), "allow");
   assert.equal(automaticVisualGateDisposition({ enabled: false }, { status: "not_required" }), "allow");
-  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 1), "retry");
-  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 2), "block");
+  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 1), "allow");
+  assert.equal(automaticVisualGateDisposition({ enabled: true, maxAttempts: 2 }, { status: "blocked" }, 2), "allow");
 });
 
 test("local gaze prompts keep visual direction while implementation coordinates and ids stay outside text", () => {
