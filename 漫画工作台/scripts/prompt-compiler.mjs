@@ -4,6 +4,7 @@ import {PROMPT_CONSISTENCY_VERSION, factSetConsistencyErrors, promptConsistencyE
 import {assertControlPolicyRequest} from './generation-control-policy.mjs';
 
 export const PROMPT_COMPILER_VERSION = 'comic-facts-1';
+export const ACTION_PRESENTATION_VERSION = 'action-presentation-1';
 export const ART_STYLE = 'anime illustration, clean line art, soft cel shading';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 // Browser/API/worker share this deterministic audit fingerprint (not security).
@@ -108,6 +109,71 @@ export function relationVisualText(relation, stage = 'prop', explicitPhase = fal
   ].filter(Boolean).join(', ');
 }
 
+/** A visible instant, expressed from the same state machine as geometry/passes.
+ * No inferred camera turn, open fingers, support object or transfer completion.
+ * Keep an actor's other operations in separate sentences, never merge by noun.
+ */
+export function relationEventText(relation, stage = 'prop') {
+  const original = relationVisualText(relation, stage, true);
+  if (!original) return '';
+  const parts = promptTerms(original);
+  const facts = relation.visualFacts;
+  if (facts && stage !== 'hand') {
+    const state = relationActionState(relation);
+    const supportState = ['held', 'on_support'].includes(state?.objectState) ? state.objectState : facts.support.state;
+    const label = parts[0]; // Preserves exact count and irregular object labels.
+    const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
+    const support = supportState === 'on_support' && facts.support.label
+      ? `resting on the ${facts.support.label}`
+      : supportState === 'held' && state?.contactState === 'contact' ? `held in ${hands}` : '';
+    if (support) {
+      parts[0] = `${label} ${support}`;
+      const oldSupport = `${relation.object} resting on the ${facts.support.label}`;
+      for (let i = parts.length - 1; i > 0; i--) if (parts[i] === oldSupport) parts.splice(i, 1);
+    }
+  }
+  return parts.map(part => part.replace(/\.+$/, '')).filter(Boolean).join('. ');
+}
+
+function eventPresentationWarnings(relations) {
+  return relations.filter(r=>r.required&&r.visualFacts?.support.state==='held'&&relationActionState(r)?.contactState==='approach').map(r=>({
+    factId:`${r.characterId}.interaction.${r.relationId}`,source:'interaction_contract',reason:'held_support_with_approach_requires_contact_model_review',
+    requested:'held support with approaching hand',applied:'existing contact policy retained; no additional hand-holding assertion',
+  }));
+}
+
+function orderedEventRelations(relations, characterId) {
+  const owned=relations.filter(r=>r.required&&r.characterId===characterId);
+  const carryRank=r=>['carry','hold'].includes(relationActionState(r)?.actionId||r.purpose)&&!r.visualFacts?.workTarget?1:0;
+  const roots=owned.filter(r=>!owned.some(other=>other!==r&&other.visualFacts?.workTarget?.instanceId===r.objectInstanceId));
+  const ordered=[],seen=new Set();
+  const visit=r=>{
+    if(seen.has(r))return;
+    seen.add(r);ordered.push(r);
+    if(r.visualFacts?.workTarget)owned.filter(target=>target.objectInstanceId===r.visualFacts.workTarget.instanceId).forEach(visit);
+  };
+  [...roots].sort((a,b)=>carryRank(a)-carryRank(b)).forEach(visit);
+  owned.forEach(visit); // Stable fallback for cycles, never silently omit facts.
+  return ordered;
+}
+
+/** Only an explicit new snapshot opts in. Old frozen recipes keep their text. */
+export function composeGenerationPrompt(plan, {commonPrompt = plan.commonPrompt, characterPrompts = plan.characterPrompts} = {}) {
+  if (plan.facts.presentationVersion !== ACTION_PRESENTATION_VERSION || characterPrompts.length !== 1)
+    return [commonPrompt, ...characterPrompts].filter(Boolean).join(' BREAK ');
+  // Keep camera/count/style short and adjacent to the actor; retain all scene
+  // and editorial terms after the complete event. Regional multi-person syntax
+  // is deliberately unchanged, including shared scene conditioning.
+  const framing = compilePromptFields(plan.facts.common.filter(f => ['camera', 'count', 'style'].includes(f.group))).prompt;
+  const framingKeys = new Set(promptTerms(framing).map(key));
+  const commonTerms = promptTerms(commonPrompt);
+  return uniquePrompt([
+    commonTerms.filter(t => framingKeys.has(key(t))).join(', '),
+    characterPrompts[0],
+    commonTerms.filter(t => !framingKeys.has(key(t))).join(', '),
+  ].filter(Boolean).join(', '));
+}
+
 // Only known semantic rewrites are allowed. Unknown negation is surfaced, never
 // mechanically deleted (e.g. a hand approaching is not a gripping hand).
 export function compilePromptFields(fields = [], negative = '') {
@@ -187,20 +253,28 @@ export function compilePromptFields(fields = [], negative = '') {
   return { prompt: accepted.join(', '), negativePrompt: uniquePrompt(negatives.filter(Boolean).join(', ')), audit, errors, statistics: { characters: accepted.join(', ').length, terms: accepted.length } };
 }
 
-export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE }) {
-  const priority=['position','identity','pose','action','interaction','hands','clothing','body','expression','gaze','occlusion','condition'];
-  characters=characters.map(person=>({...person,fields:person.fields.map(f=>f.group==='gaze'?{...f,text:gazeInstruction(f.text)}:f).sort((a,b)=>{
+export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE, presentationVersion }) {
+  const narrative = presentationVersion === ACTION_PRESENTATION_VERSION;
+  const priority=narrative ? ['position','pose','action','interaction','hands','gaze','occlusion','identity','clothing','body','expression','condition'] : ['position','identity','pose','action','interaction','hands','clothing','body','expression','gaze','occlusion','condition'];
+  characters=characters.map(person=>{
+    const relationOrder=orderedEventRelations(relations,person.characterId);
+    return {...person,fields:person.fields.map(f=>{
+    if(f.group==='gaze')return {...f,text:gazeInstruction(f.text)};
+    const relation=narrative&&f.group==='interaction'&&relations.find(r=>r.characterId===person.characterId&&(f.relationId===r.relationId||f.id===`${person.characterId}.interaction.${r.relationId}`));
+    return relation ? {...f,relationId:relation.relationId,text:relationEventText(relation)} : {...f};
+  }).sort((a,b)=>{
     const rank=f=>priority.includes(f.group)?priority.indexOf(f.group):priority.length;
-    return rank(a)-rank(b);
-  })}));
+    const eventRank=f=>{const index=relationOrder.findIndex(r=>r.relationId===f.relationId);return index<0?relationOrder.length:index;};
+    return rank(a)-rank(b) || (narrative && a.group==='interaction' && b.group==='interaction' ? eventRank(a)-eventRank(b) : 0);
+  })};});
   const shared = compilePromptFields(common);
   const people = characters.map(person => ({ ...person, compiled: compilePromptFields(person.fields, person.negative || '') }));
   const commonNegatives = people.length === 1 ? people[0].compiled.negativePrompt : promptTerms(people[0]?.compiled.negativePrompt).filter(term => people.every(p => promptTerms(p.compiled.negativePrompt).includes(term))).join(', ');
   const negative = uniquePrompt([...Object.values(negativeBlocks), shared.negativePrompt, commonNegatives].filter(Boolean).join(', '));
-  const snapshot = { consistencyVersion:PROMPT_CONSISTENCY_VERSION, common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
+  const snapshot = { consistencyVersion:PROMPT_CONSISTENCY_VERSION, ...(presentationVersion ? {presentationVersion} : {}), common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
   const relationErrors=relations.filter(r=>!Number.isInteger(r.expectedCount??1)||(r.expectedCount??1)<1||(r.expectedCount??1)>16).map(r=>`${r.relationId}: prop count must be an integer from 1 to 16`);
   const consistencyErrors=[...factSetConsistencyErrors(snapshot),...people.flatMap(p=>promptConsistencyErrors({prompt:p.compiled.prompt,negative:[negative,p.compiled.negativePrompt].join(', '),person:p,relations})),...promptConsistencyErrors({prompt:shared.prompt,negative})];
-  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit)], errors: [...new Set([...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors,...consistencyErrors])] };
+  return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit),...(narrative?eventPresentationWarnings(relations):[])], errors: [...new Set([...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors,...consistencyErrors])] };
 }
 
 /** Recompile owned relation fields after Pose changes; never append a second state. */
@@ -284,6 +358,7 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   if (!person) throw new Error(`Missing prompt facts for character ${characterId}`);
   if (relationId && (!relation || relation.characterId !== characterId)) throw new Error('Prompt relation does not belong to character');
   const consistent=plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION;
+  const narrative=plan.facts.presentationVersion===ACTION_PRESENTATION_VERSION;
   const suppliedDetails=details;
   // Gaze is owned by the effective person facts, not a second worker sentence.
   if(consistent&&stage==='gaze')details='';
@@ -302,18 +377,20 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const selected = fields.filter(f => !(stage === 'outfit' && details && f.group === 'clothing') && !(stage === 'gaze' && details && f.group === 'gaze'));
   if(consistent&&['prop','hand','outfit','handoff'].includes(stage))selected.push(...person.fields.filter(f=>['pose','occlusion'].includes(f.group)&&!selected.includes(f)));
   const linked=consistent&&relation ? plan.facts.relations.filter(r=>r.characterId===characterId&&r.required&&r.relationId!==relationId&&(r.objectInstanceId===relation.visualFacts?.workTarget?.instanceId||r.visualFacts?.workTarget?.instanceId===relation.objectInstanceId)) : [];
-  const relationText = relation && stage !== 'gaze' ? uniquePrompt([relation,...linked].map(r=>relationVisualText(r,stage,consistent)).join(', ')) : '';
+  const relationText = relation && stage !== 'gaze' ? uniquePrompt([relation,...linked].map(r=>narrative?relationEventText(r,stage):relationVisualText(r,stage,consistent)).join(', ')) : '';
   const scene = plan.facts.common.filter(f => (consistent?['lighting','style','cameraAngle']:['lighting', 'style']).includes(f.group));
   const exclusions = { identity: 'blurry face, malformed eyes, wrong identity', outfit: 'wrong garment category, wrong garment color, missing clothing layer', prop: 'duplicated prop, unrelated object, malformed hands', hand: 'extra hand, fused fingers, broken wrist, detached hand', gaze: 'crossed eyes, mismatched pupils', handoff: 'fused hands, disconnected umbrella handle' }[stage];
   const personExclusions = promptTerms(person.negative).filter(term => ['identity','gaze'].includes(stage)
     ? !/garment|clothing|coat|skirt|dress|bag|shoe|full body|legs/i.test(term)
     : stage === 'outfit' ? !/eye contact|looking at|gaze|pupils/i.test(term) : false).join(', ');
   const localNegative = [personExclusions, relation?.negative?.join(', '), relation?.expectedCount>1 ? exclusions.replace('duplicated prop','incorrect prop count') : exclusions, negative].filter(Boolean).join(', ');
-  const result=compilePromptFields([...selected, { id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' }, { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
+  const relationField={ id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' };
+  const result=compilePromptFields([...(narrative?[relationField,...selected]:[...selected,relationField]), { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
   if(consistent){
     result.errors.push(...promptConsistencyErrors({prompt:result.prompt,negative:result.negativePrompt,person,relations:plan.facts.relations}));
     if(suppliedDetails!==details)result.audit.push({factId:`${stage}.details`,source:'stage_context',requested:suppliedDetails,applied:details,reason:'effective_facts_own_action_and_gaze'});
   }
+  if(narrative)result.audit.push(...eventPresentationWarnings(relation?[relation,...linked]:[]));
   return result;
 }
 
@@ -360,7 +437,10 @@ export function prepareGenerationPromptRequest(recipe, payload, context) {
     const blocks = basePrompt.split(/\s+BREAK\s+/).map((text,i)=>compilePromptFields([{id:`base.${i}`,text,source:'compiled_base_execution'}]));
     const errors = blocks.flatMap(p=>p.errors);
     if(plan.facts.consistencyVersion===PROMPT_CONSISTENCY_VERSION){
-      blocks.forEach((p,i)=>errors.push(...promptConsistencyErrors({prompt:p.prompt,negative:[payload.negative_prompt,plan.negativePrompt,plan.facts.characters[i-1]?.negative].join(', '),person:plan.facts.characters[i-1],relations:plan.facts.relations})));
+      blocks.forEach((p,i)=>{
+        const person=plan.facts.presentationVersion===ACTION_PRESENTATION_VERSION&&blocks.length===1&&plan.facts.characters.length===1 ? plan.facts.characters[0] : plan.facts.characters[i-1];
+        errors.push(...promptConsistencyErrors({prompt:p.prompt,negative:[payload.negative_prompt,plan.negativePrompt,person?.negative].join(', '),person,relations:plan.facts.relations}));
+      });
     }
     if(errors.length)throw new Error(errors.join('; '));
     compiled = { prompt:blocks.map(p=>p.prompt).join(' BREAK '),negativePrompt:uniquePrompt([payload.negative_prompt,plan.negativePrompt,...blocks.map(p=>p.negativePrompt)].join(', ')),audit:blocks.flatMap(p=>p.audit) };

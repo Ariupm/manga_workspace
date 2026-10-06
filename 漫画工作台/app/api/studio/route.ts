@@ -2,7 +2,7 @@ import {generationEditorialInput} from "../../../scripts/generation-editorial-po
 import {poseUsagePlan,referenceImageUsagePlan} from '../../../scripts/generation-control-policy.mjs';
 import {cpuGenerationPolicy} from '../../../scripts/cpu-generation-policy.mjs';
 import {appearanceControlCoverage} from '@/scripts/sd-worker-logic.mjs';
-import { compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
+import { composeGenerationPrompt, compilePromptFields, createPromptPlan, finalizePromptPlan, validatePromptEditorial } from "../../../scripts/prompt-compiler.mjs";
 import {poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
 import { NextRequest, NextResponse } from "next/server";
 import { isGenericLocation } from "@/lib/story-location";
@@ -791,7 +791,7 @@ export async function POST(request: Request) {
     const characterCompilations = regionalCharacterPrompts.map((text,index)=>compilePromptFields([{id:`character.${index}.override`,text,source:"regional_editorial+pose"}]));
     regionalCommonPrompt = commonCompilation.prompt;
     regionalCharacterPrompts = characterCompilations.map(p=>p.prompt);
-    const regionalCombinedPrompt = [regionalCommonPrompt, ...regionalCharacterPrompts].join(" BREAK ");
+    const regionalCombinedPrompt = composeGenerationPrompt(effectivePromptFacts,{commonPrompt:regionalCommonPrompt,characterPrompts:regionalCharacterPrompts});
     const regionalContractErrors = readContracts.flatMap((contract) =>
       validateFinalPrompt(regionalCombinedPrompt, contract).errors,
     );

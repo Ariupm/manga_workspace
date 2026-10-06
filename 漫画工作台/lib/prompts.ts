@@ -1,7 +1,7 @@
 import {gazeInstruction,viewCompatibleVisibility} from "../scripts/gaze-expression.mjs";
 import {bindWorkInteractions} from './coupled-interactions';
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
-import { ART_STYLE, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
+import { ART_STYLE, ACTION_PRESENTATION_VERSION, composeGenerationPrompt, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
 import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
 import {synchronizeBasicPosePromptV3} from "./pose-v3/prompt-consistency";
 import type {PoseControlV3} from "./pose-v3/schema";
@@ -1695,21 +1695,21 @@ export function buildRegionalPrompt(
       "one person",
       englishVisual(character.profile?.agePresentationEn),
       englishVisual(stripTraits(character.appearanceEn)).split(",").filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term) && !clean(stateHair || look.hairStyleEn).toLowerCase().includes(clean(term).toLowerCase())).join(", "),
-      englishVisual(character.profile?.faceShapeEn) ? `(${englishVisual(character.profile?.faceShapeEn)}:1.22)` : "",
-      englishVisual(character.profile?.skinToneEn) ? `(${englishVisual(character.profile?.skinToneEn)}:1.15)` : "",
-      englishVisual(character.profile?.distinguishingFeaturesEn) ? `(${englishVisual(character.profile?.distinguishingFeaturesEn)}:1.18)` : "",
+      englishVisual(character.profile?.faceShapeEn),
+      englishVisual(character.profile?.skinToneEn),
+      englishVisual(character.profile?.distinguishingFeaturesEn),
       character.invariantsEn?.filter(term=>! /hair|eyes?|wearing|outfit|shirt|dress|coat|skirt|shoes/i.test(term)).map(term=>englishVisual(term)).join(", ") || "",
-      `(${englishVisual(stateHair || clean(`${look.hairStyleEn} ${look.hairColorEn}`))}:1.45)`,
-      englishVisual(look.eyeColorEn) ? `(${englishVisual(look.eyeColorEn)}:1.25)` : "",
+      englishVisual(stateHair || clean(`${look.hairStyleEn} ${look.hairColorEn}`)),
+      englishVisual(look.eyeColorEn),
     ]).join(", ");
     const fields: PromptField[] = [
       {id:`${id}.position`,group:"position",text:englishVisual(look.positionEn),source:sourceFor("positionEn")},
       {id:`${id}.bodyPose`,group:"pose",text:shot.visualSpecConfirmed?[shot.visualSpec?.characters.find(p=>p.characterId===id)?.bodyPose,shot.visualSpec?.characters.find(p=>p.characterId===id)?.bodySupport?`supported by ${shot.visualSpec.characters.find(p=>p.characterId===id)?.bodySupport}`:''].filter(Boolean).join(', '):'',source:"confirmed_body_pose"},
       {id:`${id}.identity`,group:"identity",text:identity,source:stateHair?"confirmed_hair_state+character_profile":"character_profile+effective_traits"},
-      {id:`${id}.body`,group:"body",text:englishVisual(character.profile?.bodyTypeEn) ? `(${englishVisual(character.profile?.bodyTypeEn)}:1.1)` : "",source:"character_profile"},
+      {id:`${id}.body`,group:"body",text:englishVisual(character.profile?.bodyTypeEn),source:"character_profile"},
       {id:`${id}.clothing`,group:"clothing",text:[
       visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)
-        ? `(wearing ${visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)}:1.5)`
+        ? `wearing ${visibleClothingText(resolveCharacterAssetDescription(outfit, character.profile?.baseOutfitEn),resolvedCamera)}`
         : "",
       /wide shot|full shot/.test(resolvedCamera) ? resolveCharacterAssetDescription(shoes, character.profile?.baseShoesEn) : "",
       state?.bag,state?.accessories.join(", "),state?.glasses,outfit?state?.outerwearState?.replace(/^(no outerwear); just .+$/i,'$1'):state?.outerwearState,
@@ -1721,8 +1721,8 @@ export function buildRegionalPrompt(
         return hand&&!interactions.some(r=>r.visualFacts&&(r.activeHand==='both'||r.activeHand===hand));
       }).join(', '):englishVisual(reconcileHandsWithFraming(look.handsEn,look.actionEn,camera)),source:interactions.some(r=>r.visualFacts)?'structured_contact+independent_free_hand':sourceFor("handsEn")},
       ...interactions.map(i=>({id:`${id}.interaction.${i.relationId}`,group:"interaction",text:relationVisualText(i,'prop',true),source:"interaction_contract"})),
-      {id:`${id}.expression`,group:"expression",text:englishVisual(expressionPrompt(look.expressionEn)),source:sourceFor("expressionEn")},
-      {id:`${id}.gaze`,group:"gaze",text:`(${gazeInstruction(englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn)))}:1.3)`,source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
+      {id:`${id}.expression`,group:"expression",text:englishVisual(look.expressionEn),source:sourceFor("expressionEn")},
+      {id:`${id}.gaze`,group:"gaze",text:gazeInstruction(englishVisual(uniquePrompt(interactions.filter(r=>r.visualFacts).map(r=>r.gaze).join(', ')) || look.gazeEn, inferGazeFromAction(look.actionEn))),source:interactions.some(r=>r.visualFacts)?"structured_interaction_gaze":sourceFor("gazeEn")},
       {id:`${id}.condition`,group:"condition",text:englishVisual(state?.condition.join(", ")),source:"confirmed_appearance_state"},
       {id:`${id}.occlusion`,group:"occlusion",text:viewCompatibleVisibility(englishVisual(shot.visualSpecConfirmed?shot.visualSpec?.characters.find(p=>p.characterId===id)?.occlusion:""),look.positionEn,look.gazeEn),source:"confirmed_visual_spec"},
     ];
@@ -1772,7 +1772,7 @@ export function buildRegionalPrompt(
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
   // Outfit exclusions are scoped to their owner, not broadcast to other people.
   negativeBlocks.identity = negativeBlocks.identity.replace(outfitNegatives, "");
-  const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks});
+  const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks,presentationVersion:ACTION_PRESENTATION_VERSION});
   const negativePrompt = promptPlan.negativePrompt;
   characterRegions.forEach((region,index)=>{region.prompt=promptPlan.characterPrompts[index];});
   const regionPrompts = promptPlan.characterPrompts;
@@ -1790,7 +1790,7 @@ export function buildRegionalPrompt(
     commonPrompt: basePrompt,
     basePrompt,
     regionPrompts,
-    prompt: [basePrompt, ...regionPrompts].join(" BREAK "),
+    prompt: composeGenerationPrompt(promptPlan),
     characterRegions,
     negativeBlocks,
     negativePrompt,

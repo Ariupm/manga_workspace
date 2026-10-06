@@ -160,7 +160,8 @@ test('reported two-book cover scene compiles concrete count, one phase, visible 
  assert.equal(relation.object,'book');assert.equal(relation.expectedCount,2);assert.equal(relation.actionPlan.phase,'follow_through');
  assert.equal(relation.actionPlan.geometry.outline.filter((p:any)=>p.role==='body').length,2);
  assert.match(regional.prompt,/home interior/);assert.match(regional.prompt,/two books/);assert.match(regional.prompt,/book covers/);
- assert.match(regional.prompt,/held above/);assert.match(regional.prompt,/cream-yellow top/);assert.match(regional.prompt,/relaxed brows/);
+ assert.match(regional.prompt,/held above/);assert.match(regional.prompt,/cream-yellow top/);assert.match(regional.prompt,/satisfied/);
+ assert.doesNotMatch(regional.prompt,/relaxed brows/,'plain authored emotion is no longer expanded into display cues');
  assert.doesNotMatch(regional.prompt,/one book|book or document|toward the page|approach|resting on|naturally positioned|contextual orientation|visible surface follows|object position consistent|action in progress|midi skirt|motivated directional|environment bounce/);
  assert.doesNotMatch(regional.negativePrompt,/duplicate book|duplicated prop/);
  const projected=compilePoseExecutionV3(regional.poseControl as any,regional.repairPasses,{advisory:true});

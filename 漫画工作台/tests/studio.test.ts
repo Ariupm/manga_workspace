@@ -123,7 +123,8 @@ test("近景动作骨骼不再强制生成全身且遵守左右位置", () => {
   const result = buildRegionalPrompt(shot as any, data.assets, data.characters);
   assert.ok(result.poseControl);
   assert.ok(result.poseControl!.people[0][10].y > 1);
-  assert.match(result.prompt, /warm open smile/);
+  assert.match(result.prompt, /\bhappy\b/);
+  assert.doesNotMatch(result.prompt, /warm open smile|bright engaged eyes/);
   assert.match(result.negativePrompt, /pointed ears/);
 });
 
@@ -1714,7 +1715,7 @@ test("Codex 每格只附带绑定人物、当前服装和当前鞋履", () => {
   assert.equal(payload.candidateCount, 2);
 });
 
-test("场景先于人物且夜晚保留时段并服从场景光源", () => {
+test("动作人物先于背景且夜晚保留时段并服从场景光源", () => {
   const data = getStudioData(1);
   const source = data.episode.pages[0].shots[0];
   const shot = {
@@ -1733,7 +1734,7 @@ test("场景先于人物且夜晚保留时段并服从场景光源", () => {
   };
   const result = buildGenerationPrompt(shot, data.assets, data.characters);
   assert.ok(
-    result.prompt.indexOf("rainy city street") <
+    result.prompt.indexOf("rainy city street") >
       result.prompt.indexOf("soft pink"),
   );
   assert.match(result.prompt, /night/);

@@ -1,6 +1,7 @@
 "use client";
 
 import { draftHasHardFailure } from "../scripts/draft-approval-policy.mjs";
+import { composeGenerationPrompt } from "../scripts/prompt-compiler.mjs";
 import {pairTemplateIdsV3} from "@/lib/pose-v3/action-catalog";
 import { relationPreviewPoints, fullPoseLayout, undoFullPoseLayout, fullPosePreviewSvg } from "@/lib/pose-v3/preview-layout";
 
@@ -1800,7 +1801,7 @@ function PanelEditor({
   const executionPromptPreview=(()=>{
     try {
       const plan=buildEffectivePromptPlan(regionalCompiled,effectivePoseControl?.posePlanVersion==='3.0'?effectivePoseControl as PoseControlV3:null,{useGeometry:shot.poseControlEnabled!==false});
-      return {prompt:[plan.commonPrompt,...plan.characterPrompts].join(' BREAK '),errors:plan.errors};
+      return {prompt:composeGenerationPrompt(plan),errors:plan.errors};
     } catch(error){return {prompt:'',errors:[error instanceof Error?error.message:String(error)]};}
   })();
   const fullPreviewSvg = effectivePoseControl?.posePlanVersion === "3.0" ? fullPosePreviewSvg(effectivePoseControl.fullPeople, effectivePoseControl.scenePlan.projection, effectivePoseControl.width, effectivePoseControl.height, effectivePoseControl.scenePlan.relations) : null;
