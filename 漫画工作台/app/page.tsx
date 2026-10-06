@@ -4,6 +4,7 @@ import { draftHasHardFailure } from "../scripts/draft-approval-policy.mjs";
 import { composeGenerationPrompt } from "../scripts/prompt-compiler.mjs";
 import {pairTemplateIdsV3} from "@/lib/pose-v3/action-catalog";
 import { relationPreviewPoints, fullPoseLayout, undoFullPoseLayout, fullPosePreviewSvg } from "@/lib/pose-v3/preview-layout";
+import { movePoseProps, type PropPosition } from "@/lib/pose-v3/prop-edit";
 
 import {overlayFailureTextV3,poseOverlayBindingFailuresV3} from "@/lib/pose-v3/overlays";
 
@@ -1755,6 +1756,9 @@ function PanelEditor({
   const [posePreviewMode, setPosePreviewMode] = useState<"full"|"control">("full");
   const [poseEditorLayout, setPoseEditorLayout] = useState<ReturnType<typeof fullPoseLayout>|null>(null);
   const [poseEditorSaving, setPoseEditorSaving] = useState(false);
+  const [poseEditMode, setPoseEditMode] = useState<'bones'|'props'>('bones');
+  const [editablePropPositions, setEditablePropPositions] = useState<PropPosition[]>([]);
+  const propDrag = useRef<{pointerId:number; objectInstanceId:string; start:PosePoint; center:PosePoint}|null>(null);
   const [draggingPosePoint, setDraggingPosePoint] = useState<{
     personIndex: number;
     pointIndex: number;
@@ -1773,6 +1777,11 @@ function PanelEditor({
     : automaticPoseControlV2 && poseControlOverride
       ? applyPoseControlOverride(automaticPoseControlV2, poseControlOverride)
       : regionalCompiled.poseControl;
+  const editorRelations = poseEditorOpen && effectivePoseControl?.posePlanVersion === '3.0'
+    ? movePoseProps(effectivePoseControl.scenePlan, editablePropPositions.filter(p=>effectivePoseControl.scenePlan.relations.some(r=>r.objectInstanceId===p.objectInstanceId))).relations : [];
+  const editorProps = editorRelations.filter((r,i,all)=>r.object && all.findIndex(p=>p.objectInstanceId===r.objectInstanceId)===i);
+  const editorPoint = (point: PosePoint) => poseEditorLayout
+    ? {x:(point.x-poseEditorLayout.cx)*poseEditorLayout.scale+.5,y:(point.y-poseEditorLayout.cy)*poseEditorLayout.scale+.5} : point;
   useEffect(() => {
     setEditablePositive(positive);
     setEditableNegative(
@@ -1785,6 +1794,8 @@ function PanelEditor({
     setPoseImageOverride("");
     setPoseControlOverride(null);
     setPoseEditorOpen(false);
+    setEditablePropPositions([]);
+    propDrag.current = null;
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   }, [shot.id, positive, negativePrompt, regionalCompiled.prompt, regionalCompiled.negativePrompt, shot.characterIds.length]);
   const effectivePositive =
@@ -1841,11 +1852,15 @@ function PanelEditor({
   const restoreAutomaticPose = () => {
     setPoseImageOverride("");
     setPoseControlOverride(null);
+    setEditablePropPositions([]);
+    propDrag.current = null;
     setEditablePosePeople(clonePosePeople(regionalCompiled.poseControl?.people));
   };
   const restoreSelectedTemplate = () => {
-    if ((!automaticPoseControlV2 && !automaticPoseControlV3) || !poseControlOverride) return restoreAutomaticPose();
-    const next = { ...poseControlOverride, people: undefined, editMode: "parameter_edit" as const };
+    if (!automaticPoseControlV2 && !automaticPoseControlV3) return restoreAutomaticPose();
+    const next: PoseControlOverrideV1 = { schemaVersion: 'pose-override-v1', ...poseControlOverride, people: undefined, propPositions: undefined, editMode: "parameter_edit" };
+    setEditablePropPositions([]);
+    propDrag.current = null;
     const rebuilt = automaticPoseControlV3 ? applyPoseControlOverrideV3(automaticPoseControlV3, next) : applyPoseControlOverride(automaticPoseControlV2!, next);
     setPoseControlOverride(next);
     setPoseImageOverride("");
@@ -1889,10 +1904,17 @@ function PanelEditor({
     }
   };
   const movePosePoint = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (!draggingPosePoint && !propDrag.current) return;
+    const point = posePointerPoint(event.currentTarget, event.clientX, event.clientY);
+    if (!point) return;
+    const {x,y} = point;
+    if (propDrag.current && propDrag.current.pointerId === event.pointerId && poseEditorLayout) {
+      const drag=propDrag.current;
+      const center={x:drag.center.x+(x-drag.start.x)/poseEditorLayout.scale,y:drag.center.y+(y-drag.start.y)/poseEditorLayout.scale};
+      setEditablePropPositions(current=>[...current.filter(p=>p.objectInstanceId!==drag.objectInstanceId),{objectInstanceId:drag.objectInstanceId,center}]);
+      return;
+    }
     if (!draggingPosePoint) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
-    const y = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
     setEditablePosePeople((current) =>
       current.map((person, personIndex) =>
         personIndex !== draggingPosePoint.personIndex
@@ -1903,6 +1925,12 @@ function PanelEditor({
       ),
     );
   };
+  function posePointerPoint(svg: SVGSVGElement, clientX: number, clientY: number): PosePoint | null {
+    const matrix=svg.getScreenCTM();
+    if (!matrix) return null;
+    const point=new DOMPoint(clientX,clientY).matrixTransform(matrix.inverse());
+    return {x:Math.max(0,Math.min(1,point.x/svg.viewBox.baseVal.width)),y:Math.max(0,Math.min(1,point.y/svg.viewBox.baseVal.height))};
+  }
   const openCurrentPoseEditor = () => {
     const layout=effectivePoseControl?.posePlanVersion === "3.0" ? fullPoseLayout(effectivePoseControl.fullPeople,effectivePoseControl.scenePlan.projection,relationPreviewPoints(effectivePoseControl.scenePlan.relations)) : null;
     setPoseEditorLayout(layout);
@@ -1912,6 +1940,9 @@ function PanelEditor({
       return;
     }
     setDraggingPosePoint(null);
+    propDrag.current=null;
+    setPoseEditMode('bones');
+    setEditablePropPositions([]);
     setEditablePosePeople(people);
     setPoseEditorOpen(true);
   };
@@ -1923,6 +1954,7 @@ function PanelEditor({
       setPoseControlOverride({
         schemaVersion: "pose-override-v1",
         ...(poseControlOverride || {}),
+        propPositions: [...(poseControlOverride?.propPositions || []).filter(p=>!editablePropPositions.some(e=>e.objectInstanceId===p.objectInstanceId)),...editablePropPositions],
         people: poseEditorLayout ? undoFullPoseLayout(editablePosePeople,poseEditorLayout) : clonePosePeople(editablePosePeople),
         editMode: "joint_edit",
         coordinateSpace: poseEditorLayout ? "full_pose" : "projected_canvas",
@@ -2645,26 +2677,58 @@ function PanelEditor({
                       <div className="pose-editor-backdrop" role="presentation" onPointerDown={(event) => {
                         if (event.target === event.currentTarget) setPoseEditorOpen(false);
                       }}>
-                        <section className="pose-editor-dialog" role="dialog" aria-modal="true" aria-label="OpenPose 骨骼编辑器">
+                        <section className={`pose-editor-dialog${editorProps.length?' has-props':''}`} role="dialog" aria-modal="true" aria-label="OpenPose 骨骼与道具编辑器">
                           <header>
                             <div>
                               <b>编辑当前{editablePosePeople.length>1?"多人":"单人"}骨骼</b>
-                              <span>{poseEditorLayout?"完整骨架编辑：虚线为实际取景框，应用后保持镜头不变。":"拖动彩色关节点，连线会实时跟随；应用后只覆盖本格姿态。"}</span>
+                              <span>{poseEditorLayout?"虚线为取景框。切换道具模式可拖动轮廓或中心；骨骼独立调整，应用后保持镜头不变。":"拖动彩色关节点，连线会实时跟随；应用后只覆盖本格姿态。"}</span>
                             </div>
                             <button type="button" onClick={() => setPoseEditorOpen(false)}>关闭</button>
                           </header>
+                          {editorProps.length>0 && <div className="pose-editor-tools">
+                            <button type="button" aria-pressed={poseEditMode==='bones'} onClick={()=>{setPoseEditMode('bones');propDrag.current=null;}}>调整骨骼</button>
+                            <button type="button" aria-pressed={poseEditMode==='props'} onClick={()=>{setPoseEditMode('props');setDraggingPosePoint(null);}}>移动道具</button>
+                            <span>{poseEditMode==='props'?'拖动道具中心或轮廓；手腕和肘部不会自动移动。':'拖动彩色关节；白色圆环为道具接触点。'}</span>
+                          </div>}
                           <svg
                             className="pose-editor-canvas"
                             style={{aspectRatio:`${effectivePoseControl.width} / ${effectivePoseControl.height}`}}
                             viewBox={`0 0 ${effectivePoseControl.width} ${effectivePoseControl.height}`}
                             onPointerMove={movePosePoint}
-                            onPointerUp={() => setDraggingPosePoint(null)}
-                            onPointerCancel={() => setDraggingPosePoint(null)}
+                            onPointerUp={() => {setDraggingPosePoint(null);propDrag.current=null;}}
+                            onPointerCancel={() => {setDraggingPosePoint(null);propDrag.current=null;}}
+                            onLostPointerCapture={() => {setDraggingPosePoint(null);propDrag.current=null;}}
                           >
                             <rect width={effectivePoseControl.width} height={effectivePoseControl.height} fill="#000" />
                             {poseEditorLayout?.frame && <rect x={poseEditorLayout.frame.x*effectivePoseControl.width} y={poseEditorLayout.frame.y*effectivePoseControl.height} width={poseEditorLayout.frame.width*effectivePoseControl.width} height={poseEditorLayout.frame.height*effectivePoseControl.height} fill="none" stroke="#fff" strokeDasharray="8 6" pointerEvents="none" />}
+                            {editorProps.map((prop,index)=>{
+                              const center=editorPoint(prop.objectCenter),w=effectivePoseControl.width,h=effectivePoseControl.height;
+                              const outlines=prop.actionRelationAudit?.geometry?.outline||prop.actionPlan?.geometry?.outline||[];
+                              return <g key={prop.objectInstanceId} style={{cursor:poseEditMode==='props'?'grab':'default'}} pointerEvents={poseEditMode==='props'?'auto':'none'}
+                                onPointerDown={event=>{
+                                  if(poseEditMode!=='props')return;
+                                  const svg=event.currentTarget.ownerSVGElement;
+                                  if(!svg)return;
+                                  const start=posePointerPoint(svg,event.clientX,event.clientY);
+                                  if(!start)return;
+                                  event.preventDefault();event.stopPropagation();svg.setPointerCapture(event.pointerId);
+                                  propDrag.current={pointerId:event.pointerId,objectInstanceId:prop.objectInstanceId,start,center:prop.objectCenter};
+                                }}>
+                                <title>{`${index+1}. ${prop.object}（拖动位置）`}</title>
+                                {outlines.map((o,i)=>{
+                                  const points=o.points.map(p=>{const q=editorPoint(p);return `${q.x*w},${q.y*h}`;}).join(' ');
+                                  return <g key={i}><polyline points={points} fill="none" stroke="transparent" strokeWidth="18" pointerEvents="stroke"/><polyline points={points} fill="none" stroke="#94a3b8" strokeWidth="2" pointerEvents="none"/></g>;
+                                })}
+                                <circle cx={center.x*w} cy={center.y*h} r="14" fill={poseEditMode==='props'?'#38bdf833':'transparent'} stroke="#38bdf8" strokeWidth="2"/>
+                                <path d={`M ${center.x*w-6} ${center.y*h} h 12 M ${center.x*w} ${center.y*h-6} v 12`} stroke="#38bdf8" pointerEvents="none"/>
+                                <text x={center.x*w+18} y={center.y*h-12} fill="#e2e8f0" fontSize="12" pointerEvents="none">{`${index+1}. ${prop.object}`}</text>
+                              </g>;
+                            })}
+                            {editorRelations.flatMap(r=>(r.contactAnchors||[]).map((a,i)=>{
+                              const q=editorPoint(a);return <circle key={`${r.relationId}:${i}`} cx={q.x*effectivePoseControl.width} cy={q.y*effectivePoseControl.height} r="5" fill="none" stroke="#fff" strokeWidth="2" pointerEvents="none"/>;
+                            }))}
                             {editablePosePeople.map((person, personIndex) => (
-                              <g key={`person-${personIndex}`}>
+                              <g key={`person-${personIndex}`} pointerEvents={poseEditMode==='props'?'none':'auto'}>
                                 {poseEditorLimbs.filter(([start,end]) => [person[start], person[end]].every((point) => point && point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)).map(([start, end], limbIndex) => (
                                   <line
                                     key={`limb-${personIndex}-${start}-${end}`}

@@ -57,9 +57,9 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     if(!r)return r;
     const candidate=source.relations?.find(x=>x.relationId===r.relationId);
     const audit=candidate?.actionRelationAudit||r.actionRelationAudit||(source.people?.find(p=>p.characterId===r.characterId)?.relationTargets?.length===1?source.people?.find(p=>p.characterId===r.characterId)?.actionRelationAudit:undefined);
-    const authored=audit?candidate:undefined;
+    const authored=audit||candidate?.geometrySource==='manual_prop_position'?candidate:undefined;
     const center=authored?.objectCenter||r.objectCenter,contacts=authored?.contactAnchors||r.contactAnchors;
-    const result={...r,objectCenter:point(center),region:region(r.region),gazeTarget:gaze(authored?.gazeTarget||r.gazeTarget),contactAnchors:anchors(contacts,r.characterId,audit),surfacePlan:surface(r.surfacePlan),actionRelationAudit:actionAudit(audit),actionPlan:r.actionPlan&&{...r.actionPlan,actionId:audit?.geometry?.actionId||r.actionPlan.actionId,phase:audit?.phase||r.actionPlan.phase,geometry:actionGeometry(audit?.geometry||r.actionPlan.geometry)}};
+    const result={...r,...(authored?.geometrySource?{geometrySource:authored.geometrySource}:{}),objectCenter:point(center),region:region(r.region),gazeTarget:gaze(authored?.gazeTarget||r.gazeTarget),contactAnchors:anchors(contacts,r.characterId,audit||authored?.geometrySource==='manual_prop_position'),surfacePlan:surface(r.surfacePlan),actionRelationAudit:actionAudit(audit),actionPlan:r.actionPlan&&{...r.actionPlan,actionId:audit?.geometry?.actionId||r.actionPlan.actionId,phase:audit?.phase||r.actionPlan.phase,geometry:actionGeometry(audit?.geometry||authored?.actionPlan?.geometry||r.actionPlan.geometry)}};
     if(['pick','place'].includes(result.actionPlan?.actionId))result.purpose=result.actionPlan.actionId;
     const state=relationActionState(result);
     if(result.visualFacts&&state&&(state.phase!==result.visualFacts.phase||state.actionId!==result.visualFacts.actionId)){
@@ -81,7 +81,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
       basicGeometry:person.basicGeometry && {...person.basicGeometry,contacts:person.basicGeometry.contacts.map(c=>({...c,point:point(c.point),surfaceOffset:c.surfaceOffset*scale}))},
       headDirection: person.headDirection && { ...person.headDirection, target: point(person.headDirection.target), dx: person.headDirection.dx * scale, dy: person.headDirection.dy * scale },
       relationTargets: person.relationTargets.map(r => ({ ...r, target: point(r.target), gazeTarget: gaze(r.gazeTarget),
-        contactAnchors: anchors(r.contactAnchors, person.characterId,r.actionRelationAudit),actionRelationAudit:actionAudit(r.actionRelationAudit),actionPlan:r.actionPlan&&{...r.actionPlan,geometry:actionGeometry(r.actionRelationAudit?.geometry||r.actionPlan.geometry)},
+        contactAnchors: anchors(r.contactAnchors, person.characterId,r.actionRelationAudit||source.relations?.some(s=>s.relationId===r.relationId&&s.geometrySource==='manual_prop_position')),actionRelationAudit:actionAudit(r.actionRelationAudit),actionPlan:r.actionPlan&&{...r.actionPlan,geometry:actionGeometry(r.actionRelationAudit?.geometry||r.actionPlan.geometry)},
         wristAssignments: r.wristAssignments?.map(a => ({ ...a, ...wrist(person.characterId, a.hand) })),
       })),
     })),

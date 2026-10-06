@@ -2136,6 +2136,11 @@ button:disabled {
   justify-content: space-between;
   gap: 10px;
 }
+.pose-editor-dialog.has-props { grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.pose-editor-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pose-editor-tools span { color: #bbb2bb; font-size: 11px; }
+.pose-editor-tools button[aria-pressed="true"] { border-color: #38bdf8; color: #7dd3fc; }
+.pose-editor-dialog.has-props .pose-editor-canvas { height: min(62vh, 660px); }
 .pose-editor-dialog header > div {
   display: grid;
   gap: 5px;

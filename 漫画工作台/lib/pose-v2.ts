@@ -190,6 +190,8 @@ export type PoseControlOverrideV1 = {
   swapRoles?: boolean;
   confirmPoseContract?: boolean;
   people?: PosePoint[][];
+  /** Absolute object centers in full-pose space, keyed by physical instance. */
+  propPositions?: Array<{ objectInstanceId: string; center: PosePoint }>;
   editMode?: "preset" | "parameter_edit" | "joint_edit";
   coordinateSpace?: "projected_canvas" | "full_pose";
   projectionIntent?: "lock_current" | "recompute";
@@ -1173,11 +1175,18 @@ const isHandedness = (value: unknown): value is PoseHandedness => ["left", "righ
 export function parsePoseControlOverride(value: unknown): PoseControlOverrideV1 | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
+  if (raw.propPositions !== undefined && (!Array.isArray(raw.propPositions) || raw.propPositions.some((p: any) =>
+    !p || typeof p.objectInstanceId !== "string" || !p.objectInstanceId.trim() ||
+    !Number.isFinite(p.center?.x) || !Number.isFinite(p.center?.y)) ||
+    new Set(raw.propPositions.map((p: any) => p.objectInstanceId)).size !== raw.propPositions.length)) {
+    throw new Error("道具位置无效：需要唯一的道具实例和有限坐标。");
+  }
   const people = Array.isArray(raw.people)
     ? raw.people.map((person) => Array.isArray(person) ? person.map((point) => ({ x: Number((point as PosePoint)?.x), y: Number((point as PosePoint)?.y) })) : [])
     : undefined;
   const parsed: PoseControlOverrideV1 = {
     schemaVersion: "pose-override-v1",
+    ...(Array.isArray(raw.propPositions) ? { propPositions: raw.propPositions.map((p: any) => ({ objectInstanceId: p.objectInstanceId, center: { x: p.center.x, y: p.center.y } })) } : {}),
     ...(typeof raw.templateId === "string" ? { templateId: raw.templateId } : {}),
     ...(raw.actionGeometry && typeof raw.actionGeometry==="object"?{actionGeometry:raw.actionGeometry as PoseControlOverrideV1["actionGeometry"]}:{}),
     ...(raw.conditioning && typeof raw.conditioning==="object"?{conditioning:{...raw.conditioning as PoseControlOverrideV1["conditioning"]}}:{}),
@@ -1208,6 +1217,7 @@ export function applyPoseControlOverride(base: PoseControlV2 | PoseControlV3, va
   if (base.posePlanVersion !== "2.0") return base;
   const override = parsePoseControlOverride(value);
   if (!override) return base;
+  if (override.propPositions?.length) throw new Error("道具位置编辑需要 V3 姿态，请重新打开当前姿态编辑器。");
   const plan: PoseScenePlanV2 = JSON.parse(JSON.stringify(base.scenePlan));
   const previousBasePoses = plan.people.map((person) => person.basePose);
   if (override.templateId) {

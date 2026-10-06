@@ -1,6 +1,7 @@
 import {resolveActionMechanism,relocateActionGeometry} from "../../scripts/action-mechanism.mjs";
 import {inferStoryActionContract} from "../story-action-contract";
 import {prepareActionRelationsV3} from "./action-relations";
+import {movePoseProps} from "./prop-edit";
 import {poseConditioningPolicy} from "../../scripts/pose-conditioning-policy.mjs";
 import {actionGeometryV3} from "./action-geometry";
 import {extraActionsV3,pairTemplateV3,pairTemplateIdsV3} from "./action-catalog";
@@ -33,6 +34,18 @@ export function buildPoseControlV3(shot:Shot,interactions:PoseInteractionInput[]
 const v2TemplateForV3:Record<string,string>={...Object.fromEntries(pairTemplateIdsV3.map(id=>[id,`double_${id}_v2`])),...Object.fromEntries(Object.entries(extraActionsV3).map(([id,a])=>[id,`single_${a.family}_v2`])),lie_prone:"single_lie_v2",stand:"single_stand_v2",sit:"single_sit_rise_v2",crouch:"single_crouch_kneel_v2",kneel_single:"single_crouch_kneel_v2",kneel_double:"single_crouch_kneel_v2",recline:"single_recline_v2",lie_supine:"single_lie_v2",lie_side:"single_lie_v2",walk:"single_walk_v2",run:"single_run_v2",hold_one:"single_hold_carry_v2",hold_two:"single_hold_carry_v2",phone_one:"single_read_phone_v2",phone_two:"single_read_phone_v2",pick:"single_pick_place_v2",place:"single_pick_place_v2",push:"single_push_pull_v2",pull:"single_push_pull_v2",handover:"double_handover_v2",handshake:"double_handshake_highfive_v2",highfive:"double_handshake_highfive_v2",embrace:"double_embrace_support_v2",support_walk:"double_embrace_support_v2"};
 
 export function applyPoseControlOverrideV3(base:PoseControlV3,value:unknown):PoseControlV3{
+ const propInput=parsePoseControlOverride(value&&typeof value==='object'?{...value,people:undefined}:value);
+ if(propInput?.propPositions?.length){
+  const original=value as PoseControlOverrideV1;
+  const {propPositions,...rest}=original;
+  const edited=applyPoseControlOverrideV3(base,rest);
+  const scenePlan=movePoseProps(edited.scenePlan,propInput.propPositions);
+  const result=applyPoseControlOverrideV3({...edited,scenePlan},{schemaVersion:'pose-override-v1',people:edited.fullPeople,editMode:'joint_edit',coordinateSpace:'full_pose',projectionIntent:'lock_current'});
+  result.scenePlan.templateHash=stableHash({previous:result.scenePlan.templateHash,relations:scenePlan.relations});
+  result.audit.templateHash=result.scenePlan.templateHash;
+  result.override={...edited.override,...propInput,people:result.fullPeople,editMode:'joint_edit',coordinateSpace:'full_pose',projectionIntent:'lock_current'};
+  return result;
+ }
  const input=value&&typeof value==="object"?value as PoseControlOverrideV1:null;const raw=input?{...parsePoseControlOverride({...input,people:undefined})!,...(Array.isArray(input.people)?{people:input.people}:{})}:null;if(!raw)return base;if(raw.conditioning && Object.keys(raw).every(k=>["schemaVersion","conditioning"].includes(k))){const profile=poseConditioningPolicy(base.controlProfile,base.scenePlan.people,raw.conditioning);return {...base,controlProfile:profile,scenePlan:{...base.scenePlan,controlProfile:profile},override:{...base.override,...raw,coordinateSpace:base.override?.coordinateSpace||"full_pose",projectionIntent:base.override?.projectionIntent||"recompute"}};}if(raw.editMode==="joint_edit"&&raw.coordinateSpace==="full_pose"&&["templateId","bodyTemplateId","armTemplateId","mirror","bodyView","kneeSpacing","phase","intensity","handedness","targetDirection","spacing","swapRoles"].some(k=>(raw as any)[k]!==undefined)){base=applyPoseControlOverrideV3(base,{...raw,people:undefined,editMode:"parameter_edit",projectionIntent:"recompute"});}const requestedV3=raw.templateId||base.scenePlan.people[0]?.templateId;const projection=base.scenePlan.projection;
  if(raw.editMode==="joint_edit"&&raw.people&&projection){
   const canvasPeople=raw.coordinateSpace==="full_pose"?transformPeopleV3(raw.people,projection.scale,projection.translate):raw.people.map((person,pi)=>person.map((point,ji)=>point.x<0||point.y<0?base.people[pi]?.[ji]||point:{x:point.x,y:point.y}));

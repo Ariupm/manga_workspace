@@ -5,6 +5,7 @@ export type PoseExecutionV3 = {
   coordinateSpace: "projected_canvas";
   framingMode: "upper_body" | "full_body";
   projectionHash: string | null;
+  warnings: string[];
   sourceRepairPasses: RepairPasses;
   scenePlan: PoseScenePlanV3 & { coordinateSpace: "projected_canvas" };
   repairPasses: RepairPasses;

@@ -282,7 +282,7 @@ try {
     const initialCharacterIndex = (recipe.generationSpec?.characterRegions || []).findIndex((item) => item.characterId === initialPropInteraction.characterId);
     const initialGeometry = propInteractionGeometry(initialPropInteraction, recipe.poseControl?.people || [], initialCharacterIndex >= 0 ? initialCharacterIndex : 0, recipe.width, recipe.height, executionScenePlan?.people || []);
     const sharedUmbrella = initialPropInteraction.executor === "umbrella_handoff"
-      ? umbrellaGeometry({ width: recipe.width, height: recipe.height, target: initialPropInteraction.ownership?.actorCharacterIds?.length > 1 ? (executionScenePlan?.interactionTarget || initialPropInteraction.objectCenter || { x: .5, y: .48 }) : (initialPropInteraction.objectCenter || executionScenePlan?.interactionTarget || { x: .5, y: .48 }), anchors: executionScenePlan?.people?.map((person) => person.anchor) || [] })
+      ? umbrellaGeometry({ width: recipe.width, height: recipe.height, target: initialPropInteraction.geometrySource === 'manual_prop_position' ? initialPropInteraction.objectCenter : initialPropInteraction.ownership?.actorCharacterIds?.length > 1 ? (executionScenePlan?.interactionTarget || initialPropInteraction.objectCenter || { x: .5, y: .48 }) : (initialPropInteraction.objectCenter || executionScenePlan?.interactionTarget || { x: .5, y: .48 }), anchors: executionScenePlan?.people?.map((person) => person.anchor) || [] })
       : null;
     const guideGeometry = sharedUmbrella
       ? { ...initialGeometry, center: { x: sharedUmbrella.center.x / recipe.width, y: sharedUmbrella.center.y / recipe.height }, bounds: { x: sharedUmbrella.bounds.x / recipe.width, y: sharedUmbrella.bounds.y / recipe.height, width: sharedUmbrella.bounds.width / recipe.width, height: sharedUmbrella.bounds.height / recipe.height }, sharedGeometryKey: initialPropInteraction.objectInstanceId || "umbrella-shared" }
@@ -1285,7 +1285,7 @@ try {
     const giverSide = giverLeft ? "left-side giver" : "right-side giver";
     const receiverSide = giverLeft ? "right-side receiver" : "left-side receiver";
     const sharedUmbrella = (handoffContract?.ownership?.actorCharacterIds?.length || 0) > 1;
-    const umbrella = umbrellaGeometry({ width, height, target: sharedUmbrella ? (scenePlan?.interactionTarget || handoffContract?.objectCenter || { x: .5, y: .48 }) : (handoffContract?.objectCenter || scenePlan?.interactionTarget || { x: .5, y: .48 }), anchors: scenePlan?.people?.map((person) => person.anchor) || [] });
+    const umbrella = umbrellaGeometry({ width, height, target: handoffContract?.geometrySource === 'manual_prop_position' ? handoffContract.objectCenter : sharedUmbrella ? (scenePlan?.interactionTarget || handoffContract?.objectCenter || { x: .5, y: .48 }) : (handoffContract?.objectCenter || scenePlan?.interactionTarget || { x: .5, y: .48 }), anchors: scenePlan?.people?.map((person) => person.anchor) || [] });
     const maskX = Math.round(umbrella.bounds.x);
     const maskY = Math.round(umbrella.bounds.y);
     const maskWidth = Math.round(umbrella.bounds.width);

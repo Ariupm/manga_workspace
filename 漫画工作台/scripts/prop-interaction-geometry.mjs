@@ -12,7 +12,7 @@ export function propInteractionGeometry(interaction, posePeople = [], characterI
       ? [{ hand: "left", x: center.x + .055, y: center.y, role: "support" }, { hand: "right", x: center.x - .055, y: center.y, role: "active" }]
       : [{ hand: "right", x: center.x, y: center.y, role: "active" }];
   const poseContacts = anchors.map((anchor) => {
-    if(interaction.actionRelationAudit||actionGeometry?.source==='coupled_work_layout')return {...anchor,source:"authored_action_contact"};
+    if(interaction.actionRelationAudit||interaction.geometrySource==='manual_prop_position'||actionGeometry?.source==='coupled_work_layout')return {...anchor,source:"authored_action_contact"};
     if (plannedRelation) {
       const assignment = plannedRelation.wristAssignments?.find((item) => item.hand === anchor.hand)
         || plannedRelation.contactAnchors?.find((item) => item.hand === anchor.hand);
