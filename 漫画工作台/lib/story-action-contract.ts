@@ -51,9 +51,9 @@ export function inferStoryActionContract(input:{object:string;expectedCount?:num
  const resolved=resolveActionMechanism(geometry,phase);
  return{version:'story-action-1',actionId:id,phase,geometry:resolved,source:confirmed?'confirmed_interaction':'story',evidence:action,assumptions:geometry.assumptions||[]};
 }
-export function storyActionTerms(plan:StoryActionContract){
+export function storyActionTerms(plan:StoryActionContract,supportState?:string){
  const g=plan.geometry;
- const state=actionStageState(plan.actionId,plan.phase);
+ const state=actionStageState(plan.actionId,plan.phase,supportState);
  const action=actionStageVerb(plan.actionId,plan.phase);
  const mechanism=g.mechanism==='hinge'?'panel rotating about its vertical hinge':g.mechanism==='slide'?'object sliding along its track':g.mechanism==='rotate'?'turning the declared knob around its axis':g.mechanism==='press'?'pressing the fixed button':g.mechanism==='work'?'working tip contacting the declared work surface':g.mechanism==='force'?'hand contact and planted feet aligned with the force direction':'object and support consistent with the action stage';
  return [action,...actionStageObjectTerms(plan.actionId,plan.phase),...(g.modelVersion==='action-mechanism-1'?mechanismPromptTerms(g):[mechanism]),state.contactState==='approach'?'hand approaching without contact':state.contactState==='released'?'object on support, hands released with visible separation':'acting hand at the declared contact',`action stage ${plan.phase}`];

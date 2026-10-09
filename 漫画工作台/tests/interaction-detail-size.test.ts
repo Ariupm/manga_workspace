@@ -7,8 +7,26 @@ import {compileStagePrompt,relationVisualText} from '../scripts/prompt-compiler.
 import {compilePoseExecutionV3,preparePoseExecutionV3} from '../scripts/pose-execution-v3.mjs';
 import {propInteractionGeometry} from '../scripts/prop-interaction-geometry.mjs';
 import {propBodySizePlan} from '../scripts/sd-worker-logic.mjs';
+import {normalizeInteractionFacts} from '../lib/interaction-facts';
+import {contactPassAllowed} from '../scripts/action-stage-policy.mjs';
 
 const data=getStudioData(),base=data.episode.pages[0].shots[0];
+test('held preparation passes input validation and reaches effective Pose without separating the hand',()=>{
+ for(const hand of ['left','right'])for(const actionId of ['place','tool'] as const){
+  const shot=fixture(actionId==='tool'?'hammer':'book',hand,'medium shot');
+  const interaction=shot.visualSpec.interactions[0];
+  interaction.action=actionId==='place'?'preparing to place the book on the desk':'preparing to use the hammer';
+  interaction.phase='anticipation';
+  const f=interaction.visualFacts!;f.actionId=actionId;f.phase='anticipation';f.support.state='held';f.contact.state='contact';f.contact.part='handle';
+  assert.doesNotThrow(()=>normalizeInteractionFacts(f));
+  assert.throws(()=>normalizeInteractionFacts({...f,contact:{...f.contact,state:'approach'}}));
+  const regional=buildRegionalPrompt(shot,data.assets,data.characters,{posePlannerVersion:'3.0'});
+  const execution:any=compilePoseExecutionV3(regional.poseControl as any,regional.repairPasses,{advisory:true});
+  const r=execution.repairPasses.propInteractions[0];assert.equal(contactPassAllowed(r),true);
+  assert.equal(r.actionRelationAudit.contactState,'contact');
+  const prompt=relationVisualText(r,'hand');assert.doesNotMatch(prompt,/hand approaching/);
+ }
+});
 function fixture(object='open book',hand='right',camera='medium shot',ids=[base.characterIds[0]]){
   const shot={...base,characterIds:ids,characterLooks:{},camera:camera,cameraEn:camera,actionEn:'pointing',description:'pointing at a visible mark'};
   const action=`pointing at a marked section of the ${object} with ${hand} index finger`;

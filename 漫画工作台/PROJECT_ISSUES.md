@@ -4020,14 +4020,14 @@
 ## ISSUE-MASK-002 手部表面接触遮罩被道具核心保护全部擦除仍记为成功
 
 - 优先级：P1
-- 状态：open
+- 状态：fixed_pending_review
 - 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
 - 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
-- 解决 Agent 修改：待解决 Agent 实施。
-- 解决 Agent 测试：待修复后程序逻辑验收，不启动SD。
+- 解决 Agent 修改：2026-10-09：新增共享contact-mask用于接触补全和后续手部细修，在核心保护后恢复有界声明接触窗口，另一手和关联物体仍优先保护。栅格化后核对有效像素及接触点，失败先于请求/检测，记录未应用、保留原图，不设置contactSucceeded、不触发CPU草稿延期。
+- 解决 Agent 测试：286/286内存数据库项目测试，59/59执行层/遮罩/状态/台账测试，TypeScript及worker语法检查通过。遮罩覆盖大小道具、双手/左右手、两个手部阶段、全黑/画外/关联对象保护；动作覆盖结构化输入、拿放三阶段、held工具、Pose投影执行与重放。证据workspace/contact-fix-tests.log、workspace/contact-fix-worker.log。完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→质量策略/草稿整体确认→正式候选回写已核对。声明尺寸宽松策略和人工位置不变；不同人物/左右手/近中全景共用状态与mask函数，关系仍按实例隔离。身份、服装、视线、环境、遮挡和控制强度未覆盖；无效mask保留最近图片且不得触发成功延期，不新增语义验收门或逐项人工审批。草稿整体确认和正式候选事务未改变。发现准备阶段输入校验及首次Pose缺持有状态冲突，已在本根因内修复。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
-- 诊断 Agent 复核结论：已通过程序复现确认，登记open。
-- 后续处理：进入解决队列，修复后交诊断复核。
+- 诊断 Agent 复核结论：原程序缺陷已实施修复，待独立复核；解决Agent不标记verified。
+- 后续处理：新任务使用修复逻辑，交诊断Agent复核；已生成图片不改写。
 - 已确认事实：job559 generic_prop和contact_completion_right输出SHA256完全相同。按冻结坐标与当前worker SVG算法重建：保护前2958个非零像素，保护后0；接触点255→0。trace仍requestStatus=succeeded，contactSucceeded=true使CPU草稿手部细修延期。
 - 高概率原因：sd-worker先画白色手/腕桥，再无条件用黑色对象核心矩形覆盖；手指位于书页/面板表面的接触被保护区消掉。发送和合成前均未检查有效mask，HTTP成功被当作接触补全可用。
 - 反证或冲突：尺寸软化可减少覆盖范围，但没有改变遮罩相减算法，也不能保证表面接触点可编辑；这不是中文翻译或具体动作提示词丢失。不得因画面无变化单独判断失败，本条有全黑mask确定证据。
@@ -4042,14 +4042,14 @@
 ## ISSUE-CONTACT-001 准备放置已持物体被统一解释为手物未接触
 
 - 优先级：P1
-- 状态：open
+- 状态：fixed_pending_review
 - 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
 - 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
-- 解决 Agent 修改：待解决 Agent 实施。
-- 解决 Agent 测试：待修复后程序逻辑验收，不启动SD。
+- 解决 Agent 修改：2026-10-09：actionStageState区分手物接触与动作目标接触：place准备保持contact，pick准备仍approach，place完成released；held工具准备保持握柄且工作端分离。英文规划指令、normalizeInteractionFacts、视觉校验、storyActionTerms、关系契约、Pose supportState与首次/覆盖规划、worker资格同源。手腕仅在真实approach/released时偏移；旧冻结audit继续按记录重放，不重写历史任务。
+- 解决 Agent 测试：286/286内存数据库项目测试，59/59执行层/遮罩/状态/台账测试，TypeScript及worker语法检查通过。遮罩覆盖大小道具、双手/左右手、两个手部阶段、全黑/画外/关联对象保护；动作覆盖结构化输入、拿放三阶段、held工具、Pose投影执行与重放。证据workspace/contact-fix-tests.log、workspace/contact-fix-worker.log。完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→质量策略/草稿整体确认→正式候选回写已核对。声明尺寸宽松策略和人工位置不变；不同人物/左右手/近中全景共用状态与mask函数，关系仍按实例隔离。身份、服装、视线、环境、遮挡和控制强度未覆盖；无效mask保留最近图片且不得触发成功延期，不新增语义验收门或逐项人工审批。草稿整体确认和正式候选事务未改变。发现准备阶段输入校验及首次Pose缺持有状态冲突，已在本根因内修复。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
-- 诊断 Agent 复核结论：已通过程序复现确认，登记open。
-- 后续处理：进入解决队列，修复后交诊断复核。
+- 诊断 Agent 复核结论：原程序缺陷已实施修复，待独立复核；解决Agent不标记verified。
+- 后续处理：新任务使用修复逻辑，交诊断Agent复核；已生成图片不改写。
 - 已确认事实：actionStageState(place,anticipation)返回objectState=held与contactState=approach/contactRequired=false；relationVisualText输出right hand approaching the open book with a visible gap，contactPassAllowed=false。prepareActionRelationsV3还把准备阶段手目标向肩偏移.04。
 - 高概率原因：所有anticipation共用手靠近物体状态，没有区分手-工具/持物接触与物体-支持面/工作目标接触。actionPlan优先覆盖显式visualFacts接触。
 - 反证或冲突：pick准备阶段可合法未接触；place准备时已拿着物体应保留手物接触。此分支不适用于job559 inspect/contact，不能据此解释该图；来源ISSUE-PROMPT-015已记录风险，本轮确认并独立建项。

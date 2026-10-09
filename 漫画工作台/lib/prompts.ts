@@ -507,7 +507,7 @@ function attachStoryActionContract(contract:InteractionContract,action:string,ph
   const actionPlan=inferStoryActionContract(contract,action,phaseText,confirmed,facts?.actionId);
   if(!actionPlan)return contract;
   if(facts){
-    const state=actionStageState(actionPlan.actionId,actionPlan.phase);
+    const state=actionStageState(actionPlan.actionId,actionPlan.phase,facts.support.state);
     if(state.contactState!==facts.contact.state)throw new Error('结构化接触状态与动作阶段冲突');
     if(['on_support','held'].includes(state.objectState)&&facts.support.state!=='unspecified'&&state.objectState!==facts.support.state)throw new Error('结构化支持状态与动作阶段冲突');
   }
@@ -525,7 +525,7 @@ function attachStoryActionContract(contract:InteractionContract,action:string,ph
   const target=actionPlan.geometry.objectCenter||contract.objectCenter,grip=actionPlan.geometry.gripPoint;
   return {...contract,actionPlan,objectCenter:target,gazeTarget:contract.gazeTarget.kind==='independent'?contract.gazeTarget:{...contract.gazeTarget,point:actionPlan.geometry.workPoint||target},
     contactAnchors:grip?contract.contactAnchors.map(a=>({...a,x:grip.x+(contract.handMode==='two'?(a.hand==='left'?.025:-.025):0),y:grip.y})):contract.contactAnchors,
-    positive:[...contract.positive.filter(t=>!/hand.*(?:contact|wrist)|interaction purpose/i.test(t)),...storyActionTerms(actionPlan)],
+    positive:[...contract.positive.filter(t=>!/hand.*(?:contact|wrist)|interaction purpose/i.test(t)),...storyActionTerms(actionPlan,facts?.support.state)],
     negative:actionPlan.phase==='anticipation'||(actionPlan.actionId==='place'&&actionPlan.phase==='follow_through')?contract.negative.filter(t=>!/empty hands|hands unrelated|folded hands/.test(t)):contract.negative};
 }
 const unique = (values: string[]) => [
@@ -1527,6 +1527,7 @@ function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContrac
 }
 
 const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
+  supportState:interaction.visualFacts?.support.state,
   propSizeHint:interaction.propSizeHint,
   actionPlan:interaction.actionPlan,
   expectedCount:interaction.expectedCount,

@@ -77,12 +77,11 @@ test('transfer phases, arbitrary object names, hand sides and counts stay consis
     assert.match(prompt,/ceramic bowl resting on the workbench/);
     if(phase==='follow_through')assert.match(prompt,/right hand separated from the ceramic bowl/);
   }
-  // The pre-existing place/anticipation model reports a held object but an
-  // approaching hand. Presentation cannot silently repair that geometry policy.
+  // Preparation keeps the object held; only the object/support contact is pending.
   const placing=relation('ceramic bowl','place','anticipation'),pending=planFor([placing]);
-  assert.match(composeGenerationPrompt(pending),/approaching the ceramic bowl/);
-  assert.doesNotMatch(composeGenerationPrompt(pending),/held in right hand/);
-  assert.ok(pending.audit.some(a=>a.reason==='held_support_with_approach_requires_contact_model_review'));
+  assert.doesNotMatch(composeGenerationPrompt(pending),/approaching the ceramic bowl/);
+  assert.match(composeGenerationPrompt(pending),/held in right hand/);
+  assert.ok(!pending.audit.some(a=>a.reason==='held_support_with_approach_requires_contact_model_review'));
   assert.equal(pending.facts.relations[0].visualFacts.support.state,'held');
 });
 

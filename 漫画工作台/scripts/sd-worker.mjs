@@ -1,3 +1,4 @@
+import {contactMask,assertContactMasks} from './contact-mask.mjs';
 import {activeReferenceImages,usesReferenceImages,usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
 import {deferDraftHandDetail} from './cpu-generation-policy.mjs';
 import {propInteractionGeometry} from './prop-interaction-geometry.mjs';
@@ -989,22 +990,13 @@ try {
     }
     if (response.images?.[0] && contactPassAllowed(propInteraction) && geometry.contacts.length > 0 && poseImageBase64 && poseControl?.model) {
       const contactStroke = Math.max(18, Math.round(Math.min(width, height) * .045));
-      const contactMasks = await Promise.all(geometry.contacts.map(async (anchor) => {
-        const elbowIndex = anchor.hand === "left" ? 6 : 3;
-        const elbow = posePerson[elbowIndex] || anchor;
-        // Repaint only the hand/wrist and a short proximal bridge.  Masking the
-        // complete elbow-to-wrist chain at full-frame resolution makes the
-        // contact pass invent replacement forearms or mechanical braces.
-        const bridge = { x: anchor.x + (elbow.x - anchor.x) * .24, y: anchor.y + (elbow.y - anchor.y) * .24 };
-        const coreInsetX = Math.max(4, objectHalfWidth * .28);
-        const coreInsetY = Math.max(4, objectHalfHeight * .18);
-        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${contactStroke}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${contactStroke * .72}"/></g><rect x="${centerX - objectHalfWidth + coreInsetX}" y="${centerY - objectHalfHeight + coreInsetY}" width="${Math.max(1, objectHalfWidth * 2 - coreInsetX * 2)}" height="${Math.max(1, objectHalfHeight * 2 - coreInsetY * 2)}" rx="${Math.max(4, Math.min(objectHalfWidth, objectHalfHeight) * .12)}" fill="black"/>${peerCoreMarkup}</svg>`);
-        return { anchor, mask: (await sharp(svg).png().toBuffer()).toString("base64") };
-      }));
+      const contactMasks = await Promise.all(geometry.contacts.map(anchor => contactMask({width,height,anchor,elbow:posePerson[anchor.hand==='left'?6:3]||anchor,contacts:geometry.contacts,objectBounds:{x:centerX-objectHalfWidth,y:centerY-objectHalfHeight,width:objectWidth,height:objectHeight},peerMarkup:peerCoreMarkup,radius:contactStroke*.72,stroke:contactStroke})));
       const contactTrace = { stage: "contact_completion", relationId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", mode: "sequential_per_hand_local_inpaint", contactAnchors: geometry.contacts, outputs: [], output: null };
       recipe.passTraces.push(contactTrace);
       update(phase === "draft" ? "draft_running" : "final_running", 96, "", `正在补全 ${geometry.contacts.length} 个手物接触点：${propInteraction.object}`);
       try {
+        contactTrace.maskEvidence=contactMasks.map(({anchor,activePixels,contactPixel,usable})=>({hand:anchor.hand,activePixels,contactPixel,usable}));
+        assertContactMasks(contactMasks);
         for (const [contactIndex, contact] of contactMasks.entries()) {
           const contactControls = [
             { enabled: true, module: poseControl.module || "none", model: poseControl.model, weight: Math.min(.62,poseUnitParameters(poseControl).weight), image: poseImageBase64, effective_region_mask: contact.mask, resize_mode: "Just Resize", low_vram: true, processor_res: 512, guidance_start: 0, guidance_end: Math.min(.7,poseUnitParameters(poseControl).guidance_end), control_mode: poseUnitParameters(poseControl).control_mode, pixel_perfect: false },
@@ -1032,6 +1024,7 @@ try {
       } catch (error) {
         relationFailed = true;
         contactTrace.requestStatus = "failed";
+        contactTrace.semanticStatus = "not_applied";
         const warning = `手物接触补全未应用，已保留道具阶段图片：${error instanceof Error ? error.message : String(error)}`;
         contactTrace.error = warning;
         postprocessWarnings.push(warning);
@@ -1046,18 +1039,13 @@ try {
     if (handDetailAvailable && !handDetailDeferred) {
       const contactSpanPx = geometry.contacts.length > 1 ? Math.max(...geometry.contacts.map((anchor) => anchor.x * width)) - Math.min(...geometry.contacts.map((anchor) => anchor.x * width)) : Infinity;
       const handRadius = Math.max(22, Math.min(34, Math.round(Math.min(width, height) * .06), Number.isFinite(contactSpanPx) ? Math.floor(contactSpanPx * .44) : 34));
-      const handMasks = await Promise.all(geometry.contacts.map(async (anchor) => {
-        const elbowIndex = anchor.hand === "left" ? 6 : 3;
-        const elbow = posePerson[elbowIndex] || anchor;
-        const bridge = { x: anchor.x + (elbow.x - anchor.x) * .2, y: anchor.y + (elbow.y - anchor.y) * .2 };
-        const coreInsetX = Math.max(3, objectHalfWidth * .24), coreInsetY = Math.max(3, objectHalfHeight * .14);
-        const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="black"/><g fill="white" stroke="white" stroke-width="${Math.max(12, handRadius * .68)}" stroke-linecap="round"><path d="M ${bridge.x * width} ${bridge.y * height} L ${anchor.x * width} ${anchor.y * height}"/><circle cx="${anchor.x * width}" cy="${anchor.y * height}" r="${handRadius}"/></g><rect x="${centerX-objectHalfWidth+coreInsetX}" y="${centerY-objectHalfHeight+coreInsetY}" width="${Math.max(1,objectWidth-coreInsetX*2)}" height="${Math.max(1,objectHeight-coreInsetY*2)}" rx="${Math.max(3,objectHalfWidth*.12)}" fill="black"/>${peerCoreMarkup}</svg>`);
-        return { anchor, mask: (await sharp(svg).png().toBuffer()).toString("base64") };
-      }));
+      const handMasks = await Promise.all(geometry.contacts.map(anchor => contactMask({width,height,anchor,elbow:posePerson[anchor.hand==='left'?6:3]||anchor,contacts:geometry.contacts,objectBounds:{x:centerX-objectHalfWidth,y:centerY-objectHalfHeight,width:objectWidth,height:objectHeight},peerMarkup:peerCoreMarkup,radius:handRadius,stroke:Math.max(12,handRadius*.68),bridgeRatio:.2})));
       const handTrace = { stage: "hand_refinement", relationId, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "detecting", detector: recipe.handRefinement.module, model: recipe.handRefinement.model, weight: recipe.handRefinement.weight, mode: "sequential_per_hand_protected_prop_core", contactAnchors: geometry.contacts, maskRadiusPx: handRadius, masksOverlapPreventedByContactSpan: geometry.contacts.length < 2 || handRadius * 2 <= contactSpanPx, depthOutput: null, outputs: [], output: null, detectionVariance: null };
       recipe.passTraces.push(handTrace);
       update(phase === "draft" ? "draft_running" : "final_running", 96, "", `正在检测并修复手部：${propInteraction.object}`);
       try {
+        handTrace.maskEvidence=handMasks.map(({anchor,activePixels,contactPixel,usable})=>({hand:anchor.hand,activePixels,contactPixel,usable}));
+        assertContactMasks(handMasks);
         const contactXs = geometry.contacts.map((anchor) => anchor.x * width);
         const contactYs = geometry.contacts.map((anchor) => anchor.y * height);
         const cropCenterX = (Math.min(...contactXs) + Math.max(...contactXs)) / 2;

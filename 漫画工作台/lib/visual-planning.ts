@@ -286,7 +286,7 @@ export function validateVisualIds(value: ChapterVisualPlan | ShotVisualSpec, cha
         try { normalizeInteractionFacts(relation.visualFacts);validStructured.push(relation); }
         catch(error) { failures.push({code:'interaction_failed',severity:'P0',message:error instanceof Error?error.message:'交互事实无效'});continue; }
         if(relation.visualFacts.gaze.kind==='character'&&!ids.includes(relation.visualFacts.gaze.targetId)) failures.push({code:'gaze_failed',severity:'P0',message:'结构化视线目标不在当前镜头中'});
-        const facts=relation.visualFacts,state=actionStageState(facts.actionId,facts.phase);
+        const facts=relation.visualFacts,state=actionStageState(facts.actionId,facts.phase,facts.support.state);
         if(state.contactState!==facts.contact.state||['on_support','held'].includes(state.objectState)&&facts.support.state!=='unspecified'&&state.objectState!==facts.support.state)failures.push({code:'interaction_failed',severity:'P0',message:'结构化动作阶段、接触或支持状态冲突'});
       } else warnings.push(`交互 ${relation.actorCharacterId}/${relation.propId} 使用旧文本推断，数量和目标未经结构化明确`);
       if (!relation.actorCharacterId || (!relation.targetCharacterId && !relation.propId) || !relation.action?.trim() || !relation.phase?.trim() || !relation.contactPoints?.length) failures.push({ code: "interaction_failed", severity: "P0", message: "交互关系缺少参与者、目标、动作阶段或接触点。" });

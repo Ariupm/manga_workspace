@@ -20,7 +20,7 @@ test('pre-contact aliases resolve before contact and control contact-pass eligib
  for(const action of ['reaching for a package','picking up a book','placing a cup'])for(const phase of ['pre-contact','pre contact','pre_contact','before contact','anticipation']){
    assert.equal(storyActionPhase(phase),'anticipation');
    const plan=inferStoryActionContract({object:'book',purpose:'pick',objectCenter:{x:.4,y:.5},region:{xStart:0,xEnd:1}},action,phase,true)!;
-   assert.equal(plan.phase,'anticipation');assert.equal(contactPassAllowed({actionPlan:plan}),false);
+   assert.equal(plan.phase,'anticipation');assert.equal(contactPassAllowed({actionPlan:plan}),plan.actionId==="place");
  }
  assert.equal(storyActionPhase('contact'),'contact');assert.equal(storyActionPhase('follow_through'),'follow_through');
 });

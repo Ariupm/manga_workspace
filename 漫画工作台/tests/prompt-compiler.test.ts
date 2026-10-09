@@ -302,7 +302,7 @@ test('generic objects and mechanism stages retain the same relation through ever
         const result=compileStagePrompt(plan,{stage,characterId:'actor',relationId:stage==='identity'?undefined:relation.relationId});
         assert.deepEqual(result.errors,[],`${action}/${phase}/${stage}: ${result.errors}`);
         assert.doesNotMatch(result.prompt,/\bno\b|\bnot\b|\bwithout\b|story instance|exclusion regions|\{/);
-        if(phase==='anticipation' && ['prop','hand'].includes(stage))assert.match(result.prompt,/gap|separation/);
+        if(phase==='anticipation' && relation.actionPlan?.actionId!=='place' && ['prop','hand'].includes(stage))assert.match(result.prompt,/gap|separation/);
       }
     }
   }

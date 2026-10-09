@@ -75,6 +75,7 @@ export type PoseInteractionKindV2 =
   | "confrontation";
 
 export type PoseInteractionInput = {
+  supportState?: string;
   propSizeHint?: {version:'prop-size-1';coordinateSpace:'full_pose'|'projected_canvas';width?:number;height?:number};
   expectedCount?: number;
   actionPlan?:import("./story-action-contract").StoryActionContract;

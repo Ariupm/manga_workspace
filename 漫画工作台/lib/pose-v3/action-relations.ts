@@ -45,9 +45,9 @@ export function prepareActionRelationsV3(people:PosePoint[][],plans:PosePersonSe
   if(mechanism==='work'&&g?.workPoint&&g.toolEnd&&Math.hypot(g.workPoint.x-g.toolEnd.x,g.workPoint.y-g.toolEnd.y)>.025&&phase==='contact')errors.push('工具作用端没有接触工作面。');
   if(mechanism==='transfer'&&id==='pick'&&phase==='follow_through'&&g?.supportY!=null&&actionTargets.some(r=>r.target.y>=g.supportY!-.03))errors.push('拿取完成时物体尚未离开支持面，请调整物体目标位置。');
   if(mechanism==='transfer'&&g?.supportY!=null&&phase==='contact'&&id==='place'&&actionTargets.some(r=>Math.abs(r.target.y-g.supportY!)>.12))errors.push('放置目标没有到达声明支持面。');
-  const audit:ActionRelationAudit={version:'action-relations-1',phase,status:errors.length?'pending':'planned',contactState:actionStageState(id,phase).contactState,mechanism:mechanism||'unknown',errors,stateBefore:g?.stateBefore||(id==='pick'?'on_support':id==='place'?'held':null),stateAfter:g?.stateAfter||(id==='pick'?'held':id==='place'?'on_support':null),handTargets:[],geometry:g};
+  const audit:ActionRelationAudit={version:'action-relations-1',phase,status:errors.length?'pending':'planned',contactState:actionStageState(id,phase,relations.find(r=>r.relationId===actionTargets[0]?.relationId)?.supportState).contactState,mechanism:mechanism||'unknown',errors,stateBefore:g?.stateBefore||(id==='pick'?'on_support':id==='place'?'held':null),stateAfter:g?.stateAfter||(id==='pick'?'held':id==='place'?'on_support':null),handTargets:[],geometry:g};
   for(const relation of actionTargets){for(const a of relation.contactAnchors||[]){const s=people[i][a.hand==='left'?5:2];let target={...a};
-   if(phase==='anticipation'||audit.contactState==='released'){const dx=s.x-a.x,dy=s.y-a.y,n=Math.hypot(dx,dy)||1;target={...a,x:a.x+dx/n*.04,y:a.y+dy/n*.04};}
+   if(audit.contactState!=='contact'){const dx=s.x-a.x,dy=s.y-a.y,n=Math.hypot(dx,dy)||1;target={...a,x:a.x+dx/n*.04,y:a.y+dy/n*.04};}
    audit.handTargets.push(target);
   }
   relation.actionRelationAudit=audit;if(relation.actionPlan)relation.actionPlan={...relation.actionPlan,actionId:id,phase,geometry:g||{}};const scene=relations.find(r=>r.relationId===relation.relationId);if(scene){scene.actionRelationAudit=audit;if(scene.actionPlan)scene.actionPlan={...scene.actionPlan,actionId:id,phase,geometry:g||{}};scene.stateBefore=audit.stateBefore;scene.stateAfter=audit.stateAfter;}}

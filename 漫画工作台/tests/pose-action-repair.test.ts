@@ -37,11 +37,11 @@ test('place stages separate hand and object; execution and replay preserve the o
  for(const phase of ['anticipation','contact','follow_through'] as const){
  const p=applyPoseControlOverrideV3(base,{schemaVersion:'pose-override-v1',templateId:'place',phase,actionGeometry:{supportY:.6}});
  assert.equal(p.safety.valid,true,p.safety.errors.join(';'));
- const audit=p.scenePlan.people[0].actionRelationAudit!;assert.equal(audit.stateBefore,'held');assert.equal(audit.stateAfter,'on_support');assert.equal(contactPassAllowed({actionRelationAudit:audit}),phase==='contact');
+ const audit=p.scenePlan.people[0].actionRelationAudit!;assert.equal(audit.stateBefore,'held');assert.equal(audit.stateAfter,'on_support');assert.equal(contactPassAllowed({actionRelationAudit:audit}),phase!=='follow_through');
  const recipe:any={poseControl:p,generationSpec:{repairPasses:{propInteractions:[relation()]}}};preparePoseExecutionV3(recipe);const pass=recipe.poseExecution.repairPasses.propInteractions[0];
  const wrist=recipe.poseControl.people[0][4];const anchor=pass.contactAnchors[0];const distance=Math.hypot(wrist.x-anchor.x,wrist.y-anchor.y);
- assert.ok(phase==='contact'?distance<1e-8:distance>.01);assert.equal(pass.actionRelationAudit.contactState,audit.contactState);
- if(phase!=='contact')assert.ok(!phaseInteractionTerms(pass).some((s:string)=>/^holding/.test(s)));
+ assert.ok(phase!=='follow_through'?distance<1e-8:distance>.01);assert.equal(pass.actionRelationAudit.contactState,audit.contactState);
+ if(phase==='follow_through')assert.ok(!phaseInteractionTerms(pass).some((s:string)=>/^holding/.test(s)));
  const first=JSON.stringify(recipe.poseExecution);preparePoseExecutionV3(recipe);assert.equal(JSON.stringify(recipe.poseExecution),first);
  }
 });
