@@ -101,3 +101,8 @@ pnpm memory:sync
 - 2026-10-05 PROMPT-011否定分流续修：独立no名词排除进入原范围negative，not occluded/no significant occlusion改为正向可见性并保留重叠关系。普通环境描述不能误称动作冲突；复杂动作否定和比较仍不可盲目删除。235项程序回归通过，未生图。
 
 - 2026-10-05 CPU提速：新CPU配方冻结cpu-generation-1；草稿当前关系的道具与全部接触补全成功后，第二轮手部检测/细节重绘延后到成品。基础/身份/服装/道具/接触/视线参数不变；旧配方不升级、骨架关闭本来无此pass。请求记录阶段耗时并在任务详情显示。ISSUE-PERF-001待独立复核，程序验收未生图。
+
+## 2026-10-09：视觉JSON中文自动本地翻译（ISSUE-LANGUAGE-001）
+
+- DeepSeek仍要求全英文；结果含中文描述时使用本地Python Argos 1.11.0 zh→en模型，纯英文直通，不二次调用DeepSeek翻译。覆盖细化/章节/候选编译/中文编辑，保留结构、ID、数值和已有英文及原文审计。
+- 安装及环境说明见TRANSLATION_SETUP.md；默认workspace/translation-venv，可用STUDIO_TRANSLATION_PYTHON覆盖。281项程序测试、类型检查及原shot1260报错句子本地实译通过，待独立复核；未生图。

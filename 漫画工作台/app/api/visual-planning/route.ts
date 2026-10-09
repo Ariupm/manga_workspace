@@ -4,7 +4,7 @@ import { confirmAllShotVisualSpecs, confirmChapterVisualPlan, confirmShotVisualS
 import { assertVisualShape, characterContinuityMemory, dependencyHash, inheritShotContinuity, normalizeShotSpec, shotSystemPrompt, validateVisualIds, VISUAL_SCHEMA_VERSION } from "@/lib/visual-planning";
 import { planChapterInBatches } from "@/lib/chapter-planning";
 import {interactionFactsShape,interactionFactsInstruction,markManualInteractionFactEdits,assertInteractionFactTranslation} from '@/lib/interaction-facts';
-import {requestEnglishVisualJson,VisualLanguageCompilationError,compileVisualJsonToEnglish} from '@/lib/visual-json-language';
+import {requestEnglishVisualJson,VisualLanguageCompilationError,compileVisualJsonWithPython} from '@/lib/visual-json-language';
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -70,13 +70,13 @@ export async function POST(request:Request) {
     if(body.action==='compile-shot-candidate'){
       const shots=data.episode.pages.flatMap(p=>p.shots),index=shots.findIndex(s=>s.id===Number(body.shotId)),shot=shots[index];
       if(!shot||!body.candidate?.data)return NextResponse.json({error:'缺少分格或待编译规格'},{status:400});
-      const compiled=compileVisualJsonToEnglish(body.candidate.data,Object.fromEntries(data.characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice('character_'.length).replace(/_/g,' '):`character ${c.id}`])));
+      const compiled=await compileVisualJsonWithPython(body.candidate.data,Object.fromEntries(data.characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice('character_'.length).replace(/_/g,' '):`character ${c.id}`])));
       assertVisualShape('shot',compiled.data);
       const previous=shots[index-1]?.visualSpecConfirmed?shots[index-1].visualSpec:null;
       const spec=inheritShotContinuity(normalizeShotSpec(compiled.data,shot,{interactionSource:'model',requireInteractionFacts:true}),previous,data.episode.visualPlanConfirmed?data.episode.visualPlan:null,characterContinuityMemory(shots,index).map(x=>x.character));
       const validation=validateVisualIds(spec,data.characters,data.assets);
       if(!validation.valid)return NextResponse.json({error:'本地编译后规格校验失败，未保存',validation},{status:422});
-      const hash=dependencyHash({compiledCandidate:body.candidate.data,shotId:shot.id}),meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:body.candidate.model,usage:body.candidate.usage,generatedAt:new Date().toISOString(),inputHash:hash,languageCompilation:{mode:'local_visual_compiler',audit:compiled.audit},validation};
+      const hash=dependencyHash({compiledCandidate:body.candidate.data,shotId:shot.id}),meta={schemaVersion:VISUAL_SCHEMA_VERSION,model:body.candidate.model,usage:body.candidate.usage,generatedAt:new Date().toISOString(),inputHash:hash,languageCompilation:{mode:compiled.mode,audit:compiled.audit},validation};
       if(!saveShotVisualSpec(shot.id,spec,'deepseek_local_compile',hash,meta))throw new Error('本地编译规格保存失败');
       return NextResponse.json({ok:true,shotId:shot.id,spec,meta,validation});
     }
@@ -95,12 +95,17 @@ export async function POST(request:Request) {
       assertVisualShape("shot",body.spec);
       let submitted=body.spec,translationMeta:Record<string,unknown>|null=null;
       const serialized=JSON.stringify(submitted);
-      if(/[\u3400-\u9fff]/.test(serialized)||/\bunknown\b/i.test(serialized)) {
+      if(/\p{Script=Han}/u.test(serialized)) {
+        const compiled=await compileVisualJsonWithPython(submitted,Object.fromEntries(data.characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice('character_'.length).replace(/_/g,' '):`character ${c.id}`])));
+        assertInteractionFactTranslation(submitted,compiled.data);submitted=compiled.data;
+        translationMeta={mode:compiled.mode,audit:compiled.audit,translatedAt:new Date().toISOString()};
+      }
+      if(/\bunknown\b/i.test(JSON.stringify(submitted))) {
         const converted=await invoke(
           `${shotSystemPrompt} Translate and repair the supplied existing specification. Preserve its exact story meaning, character IDs, asset IDs, manual camera choice and explicit visual decisions. Replace every Chinese descriptive value and every "unknown" placeholder with concise production-ready English. Return the complete shot specification JSON shape, not a patch.`,
-          `Existing specification:\n${serialized}\nAllowed character IDs: ${JSON.stringify(shot.characterIds)}\nAllowed assets: ${JSON.stringify(data.assets.filter((asset)=>shot.characterIds.includes(asset.characterId)).map((asset)=>({id:asset.id,type:asset.type,characterId:asset.characterId})))}`,
+          `Existing specification:\n${JSON.stringify(submitted)}\nAllowed character IDs: ${JSON.stringify(shot.characterIds)}\nAllowed assets: ${JSON.stringify(data.assets.filter((asset)=>shot.characterIds.includes(asset.characterId)).map((asset)=>({id:asset.id,type:asset.type,characterId:asset.characterId})))}`,
         );
-        assertVisualShape("shot",converted.data);assertInteractionFactTranslation(submitted,converted.data);submitted=converted.data;translationMeta={model:converted.model,usage:converted.usage,translatedAt:new Date().toISOString()};
+        assertVisualShape("shot",converted.data);assertInteractionFactTranslation(submitted,converted.data);submitted=converted.data;translationMeta={...translationMeta,model:converted.model,usage:converted.usage,languageCompilation:converted.languageCompilation,translatedAt:new Date().toISOString()};
       }
       if(Array.isArray(submitted.interactions))submitted={...submitted,interactions:submitted.interactions.map((relation:any)=>({...relation,visualFacts:markManualInteractionFactEdits(relation.visualFacts,shot.visualSpec?.interactions.find(old=>old.actorCharacterId===relation.actorCharacterId&&old.visualFacts?.object.instanceId===relation.visualFacts?.object.instanceId)?.visualFacts)}))};
       const spec=normalizeShotSpec(submitted,{...shot,characterLooks:{}},{manualEnvironment:true,manualAppearance:true,interactionSource:'preserve'});
@@ -117,6 +122,6 @@ export async function POST(request:Request) {
     return NextResponse.json({error:"未知操作"},{status:400});
   } catch(error) {
     recordVisualPlanningFailure(episodeId,Number.isInteger(Number(body.shotId))?Number(body.shotId):null,String(body.action||"unknown"),error);
-    return NextResponse.json({error:error instanceof Error?error.message:"视觉规划失败",mode:error instanceof VisualLanguageCompilationError?'local_english_compilation_failed':getDeepSeekConfig().enabled?"deepseek_failed":"rules",compilationCandidate:error instanceof VisualLanguageCompilationError?error.candidate:undefined},{status:502});
+    return NextResponse.json({error:error instanceof Error?error.message:"视觉规划失败",mode:error instanceof VisualLanguageCompilationError?'python_english_translation_failed':getDeepSeekConfig().enabled?"deepseek_failed":"rules",compilationCandidate:error instanceof VisualLanguageCompilationError?error.candidate:undefined},{status:502});
   }
 }

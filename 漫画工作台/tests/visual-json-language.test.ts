@@ -10,17 +10,33 @@ test('English visual validation covers evidence and nested arrays while preservi
   const tool=compileVisualJsonToEnglish({evidence:'用剪刀小心地拆开'});assert.match((tool.data as any).evidence,/carefully opening.*with scissors/);
 });
 
-test('DeepSeek is called once; Chinese prose is compiled locally without changing numeric facts',async()=>{
-  const calls:Array<{system:string,user:string}>=[];
-  const result=await requestEnglishVisualJson(async(system,user)=>{calls.push({system,user});return {data:{scene:{location:'书桌'},count:2}};},'plan a scene','story input',data=>{if(data.count!==2)throw new Error('count must preserve two objects');});
-  assert.equal(result.data.count,2);assert.equal(calls.length,1);assert.equal(result.data.scene.location,'desk');
-  assert.match(calls[0].system,/provenance evidence/);assert.equal(result.languageCompilation.mode,'local_visual_compiler');assert.equal(result.languageCompilation.audit[0].original,'书桌');
+test('Chinese output uses Python once after one DeepSeek call; English fields and facts stay identical',async()=>{
+  let calls=0,pythonCalls=0;
+  const source={actorCharacterId:'小粉',count:2,phase:'contact',enabled:true,nullable:null,evidence:'小粉从包裹里拿出两本书，轻轻抚摸封面，眼中充满期待。',action:'holding two books',warnings:['手在画外'],nested:{region:[0,.5]}};
+  const result=await requestEnglishVisualJson(async()=>{calls++;return {data:source};},'plan','story',data=>assert.equal(data.count,2),{},async texts=>{
+    pythonCalls++;assert.deepEqual(texts,[source.evidence,'手在画外']);return ['Xiao Fen takes two books out of the package, gently touches the covers, and looks expectant.','The hand is outside the frame.'];
+  });
+  assert.equal(calls,1);assert.equal(pythonCalls,1);assert.equal(result.languageCompilation.mode,'python_argos_translation');
+  assert.deepEqual(result.data,{...source,evidence:result.languageCompilation.audit[0].compiled,warnings:['The hand is outside the frame.']});
+  assert.equal(source.warnings[0],'手在画外');
 });
 
-test('unrecognized Chinese or invalid structure fails without an extra API call or fake success',async()=>{
-  let count=0;
-  await assert.rejects(requestEnglishVisualJson(async()=>{count++;return{data:{action:'无法明确识别的复杂场景'}};},'system','input'),/本地英文编译/);
-  assert.equal(count,1);
-  const source={actorCharacterId:'小粉',count:2,phase:'contact',evidence:'两本书'};
-  const compiled=compileVisualJsonToEnglish(source);assert.equal((compiled.data as any).actorCharacterId,'小粉');assert.equal((compiled.data as any).count,2);assert.match((compiled.data as any).evidence,/two.*book/);
+test('pure English skips Python including Chinese opaque identifiers',async()=>{
+  const source={characterId:'小粉',scene:{location:'desk'},count:2};
+  const result=await requestEnglishVisualJson(async()=>({data:source}),'plan','story',undefined,{},async()=>{throw new Error('must not run');});
+  assert.equal(result.data,source);assert.equal(result.languageCompilation.mode,'direct_english');
+});
+
+test('translation failures retain candidate and never trigger a second DeepSeek call',async()=>{
+  for(const translate of [async()=>['还有中文'],async()=>[],async()=>[''],async()=>{throw new Error('offline model unavailable');}]){
+    let calls=0,validated=false;
+    await assert.rejects(requestEnglishVisualJson(async()=>{calls++;return {data:{evidence:'无法明确识别的复杂场景'}};},'system','input',()=>{validated=true;},{},translate),error=>{
+      assert.match((error as Error).message,/Python自动英文翻译失败/);assert.ok((error as any).candidate);return true;
+    });
+    assert.equal(calls,1);assert.equal(validated,false);
+  }
+});
+
+test('successful translation still runs structural validation',async()=>{
+  await assert.rejects(requestEnglishVisualJson(async()=>({data:{evidence:'原文',count:0}}),'system','input',()=>{throw new Error('invalid count');},{},async()=>['source text']),/invalid count/);
 });

@@ -1,6 +1,6 @@
 import { assertVisualShape, chapterSystemPrompt, normalizeChapterPlan, validateVisualIds } from "./visual-planning";
 import type { Asset, Character, ChapterVisualPlan, Shot } from "./types";
-import {compileVisualJsonToEnglish,VisualLanguageCompilationError} from './visual-json-language';
+import {compileVisualJsonWithPython,VisualLanguageCompilationError} from './visual-json-language';
 
 type PlanningShot = Pick<Shot, "id" | "title" | "description" | "scene" | "timeOfDay" | "characterIds"> & Partial<Pick<Shot, "characterLooks" | "outfitId" | "shoeId">> & { confirmedVisualSpec?: Shot["visualSpec"] };
 export type ChapterPlanningInput = {
@@ -19,14 +19,15 @@ export async function planChapterInBatches(input: ChapterPlanningInput, invoke: 
   const characters = input.characters.filter(character => usedCharacters.has(character.id));
   const assets = input.assets.filter(asset => usedCharacters.has(asset.characterId));
   const source = { ...input, characters, assets };
-  const calls: Array<{ stage: string; model: string; usage: unknown; latencyMs?: number }> = [];
+  const calls: Array<{ stage: string; model: string; usage: unknown; latencyMs?: number; languageCompilation?: {mode:string;audit:Array<{path:string;original:string;compiled:string}>} }> = [];
   async function request(stage: string, task: string, data: unknown, validate: (data: any) => void) {
     let failure = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await invoke(`${chapterSystemPrompt} ${task} Be concise.`, `${JSON.stringify(data)}${failure ? `\nPrevious response was invalid: ${failure}. Return the complete corrected JSON.` : ""}`, { timeoutMs: 90_000, maxTokens: 4_500, thinking: "disabled" });
         calls.push({ stage, model: result.model, usage: result.usage, latencyMs: result.latencyMs });
-        const compiled=compileVisualJsonToEnglish(result.data);
+        const compiled=await compileVisualJsonWithPython(result.data,Object.fromEntries(characters.map(c=>[c.name,c.id.startsWith('character_')?c.id.slice(10).replace(/_/g,' '):c.id])));
+        calls[calls.length-1].languageCompilation={mode:compiled.mode,audit:compiled.audit};
         validate(compiled.data);
         return compiled.data as any;
       } catch (error) { failure = error instanceof Error ? error.message : String(error);if(error instanceof VisualLanguageCompilationError)throw new Error(`${stage}失败：${failure}`); }

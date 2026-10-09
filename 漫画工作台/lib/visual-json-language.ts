@@ -1,5 +1,6 @@
+import {translateChineseFields} from './python-translation';
 import {resolveStoryLocation} from './story-location';
-const cjk = /[\u3400-\u9fff\uf900-\ufaff]/;
+const cjk = /\p{Script=Han}/u;
 const idKeys = new Set(['id','characterId','actorCharacterId','targetCharacterId','outfitId','shoeId','propId','instanceId','targetId','sceneId','ownerCharacterId','ownershipBefore','ownershipAfter']);
 
 /** IDs are opaque references. All prose, including evidence and warnings, is English. */
@@ -52,11 +53,38 @@ export function compileVisualJsonToEnglish(value:unknown,glossary:Record<string,
   const data=visit(value,'$');assertEnglishVisualJson(data);return {data,audit};
 }
 
-export async function requestEnglishVisualJson<T extends {data:unknown}>(invoke:(system:string,user:string)=>Promise<T>,system:string,user:string,validate:(data:any)=>void=()=>{},glossary:Record<string,string>={}):Promise<T & {languageCompilation:{mode:string;audit:Array<{path:string;original:string;compiled:string}>}}>{
+/** Only Chinese prose leaves are sent to Python; structure and IDs remain in JS. */
+export async function compileVisualJsonWithPython(value:unknown,glossary:Record<string,string>={},translate:typeof translateChineseFields=translateChineseFields){
+  const fields:Array<{path:string;original:string}>=[];
+  const collect=(item:unknown,path:string,key='')=>{
+    if(typeof item==='string'){if(cjk.test(item)&&!idKeys.has(key))fields.push({path,original:item});return;}
+    if(Array.isArray(item)){item.forEach((v,i)=>collect(v,`${path}[${i}]`,key));return;}
+    if(item&&typeof item==='object')for(const [k,v] of Object.entries(item))collect(v,`${path}.${k}`,k);
+  };
+  collect(value,'$');
+  if(!fields.length)return {data:value,audit:[],mode:'direct_english'};
+  let translations:string[];
+  try{
+    translations=await translate(fields.map(f=>f.original),glossary);
+    if(!Array.isArray(translations)||translations.length!==fields.length||translations.some(t=>typeof t!=='string'||!t.trim()||cjk.test(t)))throw new Error('翻译字段缺失、为空或仍含中文');
+  }catch(error){throw new VisualLanguageCompilationError(`Python自动英文翻译失败，未保存：${error instanceof Error?error.message:String(error)}`);}
+  const audit=fields.map((f,i)=>({...f,compiled:translations[i].trim()}));
+  let index=0;
+  const replace=(item:unknown,key=''):unknown=>{
+    if(typeof item==='string')return cjk.test(item)&&!idKeys.has(key)?audit[index++].compiled:item;
+    if(Array.isArray(item))return item.map(v=>replace(v,key));
+    if(item&&typeof item==='object')return Object.fromEntries(Object.entries(item).map(([k,v])=>[k,replace(v,k)]));
+    return item;
+  };
+  const data=replace(value);assertEnglishVisualJson(data);
+  return {data,audit,mode:'python_argos_translation'};
+}
+
+export async function requestEnglishVisualJson<T extends {data:unknown}>(invoke:(system:string,user:string)=>Promise<T>,system:string,user:string,validate:(data:any)=>void=()=>{},glossary:Record<string,string>={},translate:typeof translateChineseFields=translateChineseFields):Promise<T & {languageCompilation:{mode:string;audit:Array<{path:string;original:string;compiled:string}>}}>{
   const language='Output JSON only. Every descriptive value, including provenance evidence, warnings, notes and scene names, must be English even when the input story is Chinese. Translate scene.location and named homes into English too: scene labels are NOT immutable IDs. Keep supplied IDs unchanged. Do not copy Chinese source phrases into evidence; translate their meaning faithfully.';
   const result=await invoke(`${system}\n${language}`,user);
-  let compiled:ReturnType<typeof compileVisualJsonToEnglish>;
-  try{compiled=compileVisualJsonToEnglish(result.data,glossary);}catch(error){if(error instanceof VisualLanguageCompilationError)error.candidate=result;throw error;}
+  let compiled:Awaited<ReturnType<typeof compileVisualJsonWithPython>>;
+  try{compiled=await compileVisualJsonWithPython(result.data,glossary,translate);}catch(error){if(error instanceof VisualLanguageCompilationError)error.candidate=result;throw error;}
   validate(compiled.data);
-  return {...result,data:compiled.data,languageCompilation:{mode:compiled.audit.length?'local_visual_compiler':'direct_english',audit:compiled.audit}};
+  return {...result,data:compiled.data,languageCompilation:{mode:compiled.mode,audit:compiled.audit}};
 }
