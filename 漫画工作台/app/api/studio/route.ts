@@ -922,6 +922,7 @@ export async function POST(request: Request) {
     const recipe = {
       provider: "sd-webui",
       poseUsage,
+      gazeRepair: { version: "local-gaze-1", detector: "openpose_face", policy: "optional_keep_original" },
       referenceImageUsage,
       posePreflightPolicy: "advisory",
       posePreflightWarnings: [...new Set(posePreflightWarnings)],

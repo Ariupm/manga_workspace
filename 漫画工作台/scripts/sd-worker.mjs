@@ -1,3 +1,4 @@
+import {runLocalGaze} from './local-gaze.mjs';
 import {contactMask,assertContactMasks} from './contact-mask.mjs';
 import {activeReferenceImages,usesReferenceImages,usesPoseGeometry,assertControlPolicyRequest,referenceRegionPlan} from './generation-control-policy.mjs';
 import {deferDraftHandDetail} from './cpu-generation-policy.mjs';
@@ -37,7 +38,7 @@ const update = (next, progress = 0, error = "", stage = "") => {
   ).run(next, progress, error, stage, workerId, jobId);
 };
 
-function postJson(url, payload) {
+function postJson(url, payload, timeoutMs = 4 * 60 * 60 * 1000) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const body = JSON.stringify(payload);
@@ -63,7 +64,7 @@ function postJson(url, payload) {
         );
       },
     );
-    request.setTimeout(4 * 60 * 60 * 1000, () =>
+    request.setTimeout(timeoutMs, () =>
       request.destroy(new Error("SD生成超过4小时")),
     );
     request.on("error", reject);
@@ -126,6 +127,7 @@ try {
   assertPromptPlanRecipe(recipe);
   let promptCompilationFailure = null;
   const geometryEnabled = usesPoseGeometry(recipe);
+  const localGazeAttempted = new Set();
   const sendGeneration = async (context, url, request) => {
     let compiledRequest;
     try { assertControlPolicyRequest(recipe,request,context); compiledRequest = prepareGenerationPromptRequest(recipe,request,context); }
@@ -134,6 +136,34 @@ try {
     const requestStarted = performance.now();
     if (trace) Object.assign(trace, { phase: recipe.phase || payload.phase || "final", startedAt: new Date().toISOString(), steps: compiledRequest.steps, width: compiledRequest.width, height: compiledRequest.height });
     try {
+      if(context.stage==='gaze'&&recipe.gazeRepair?.version==='local-gaze-1'){
+        const index=(recipe.generationSpec?.characterRegions||[]).findIndex(r=>r.characterId===context.characterId);
+        const region=recipe.generationSpec?.characterRegions?.[index]?.region;
+        const poseIndex=recipe.poseControl?.scenePlan?.people?.findIndex(p=>p.characterId===context.characterId)??-1;
+        const nose=recipe.poseControl?.people?.[poseIndex]?.[0];
+        const pass=recipe.passTraces?.at(-1);
+        const outcome=await runLocalGaze({request:compiledRequest,region,nose,target:pass?.targetCenter,
+          detect:async image=>{
+            if(index<0||localGazeAttempted.has(context.characterId))throw new Error('No unique character region or gaze already attempted');
+            localGazeAttempted.add(context.characterId);
+            const detected=await postJson(new URL('/controlnet/detect',recipe.endpoint).toString(),{controlnet_module:'openpose_face',controlnet_input_images:[image],controlnet_processor_res:512},45000);
+            if(detected.status!==200)throw new Error('Face detector unavailable');return JSON.parse(detected.body);
+          },generate:async localRequest=>{
+            assertControlPolicyRequest(recipe,localRequest,context);
+            if(trace)Object.assign(trace,{width:localRequest.width,height:localRequest.height,localInpaint:true});
+            return postJson(url,localRequest);
+          }});
+        recipe.localGazeExecution=recipe.localGazeExecution||[];
+        recipe.localGazeExecution.push({characterId:context.characterId,relationId:context.relationId||null,...outcome.audit});
+        if(trace)Object.assign(trace,{requestStatus:outcome.audit.status==='applied'?'succeeded':'skipped',localGaze:outcome.audit});
+        for(const item of [pass,recipe.faceRefinementPasses?.at(-1),recipe.debugMasks?.at(-1)])if(item){
+          item.localGaze=outcome.audit;item.modelSeesTarget=outcome.audit.modelSeesTarget;item.modelCropBounds=outcome.audit.crop||null;
+          item.controlUnits=outcome.audit.controls||[];item.identityControlApplied=Boolean(outcome.audit.controls?.some(c=>c.role==='identity'));item.poseControlApplied=Boolean(outcome.audit.controls?.some(c=>c.role==='head_direction_pose'));
+          item.identityControl=null;item.faceMaskBounds=outcome.audit.faceMaskBounds||null;
+          if(outcome.audit.face){item.centerX=outcome.audit.face.cx;item.centerY=outcome.audit.face.cy;item.sourceX='detected_face';item.sourceY='detected_face';item.denoisingStrength=outcome.audit.denoisingStrength;}
+        }
+        return {status:200,body:JSON.stringify({images:[outcome.image]}),localGaze:outcome.audit};
+      }
       const result = await postJson(url,compiledRequest);
       if(trace)trace.requestStatus = result.status >= 200 && result.status < 300 ? "succeeded" : "failed";
       return result;
@@ -1241,9 +1271,10 @@ try {
       recipe.passTraces.push(gazePassTrace);
       try {
         const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,targetDescription:relationGazeDescription(propInteraction,propInteractions),gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
+        if(gazeResult.localGaze?.status==='skipped'){gazePassTrace.requestStatus='skipped';gazePassTrace.semanticStatus='not_applied';gazeTrace.requestStatus='skipped';updateRelationTrace(relationId,'semantic_pending','optional gaze not applied; retained image');continue;}
         if(gazeResult.status<200||gazeResult.status>=300)throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0,180)}`);
         const gazeResponse=JSON.parse(gazeResult.body);if(!gazeResponse.images?.[0])throw new Error("没有返回图片");
-        response={...response,images:[await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)]};
+        response={...response,images:[gazeResult.localGaze ? gazeResponse.images[0] : await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)]};
         gazePassTrace.output = persistStageOutput("gaze", relationId, response.images[0]);
         recipe.stageOutputs.push({ stage: "gaze", relationId, objectInstanceId: propInteraction.objectInstanceId || null, output: gazePassTrace.output });
         gazePassTrace.requestStatus = "succeeded";
@@ -1555,10 +1586,11 @@ try {
       };
       try {
         const gazeResult = await sendGeneration({stage:"gaze",characterId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeCandidate.gazeTargetKind,targetDescription,gazeText,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), gazePayload);
+        if(gazeResult.localGaze?.status==='skipped'){gazePassTrace.requestStatus='skipped';gazePassTrace.semanticStatus='not_applied';faceTrace.requestStatus='skipped';continue;}
         if (gazeResult.status < 200 || gazeResult.status >= 300) throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0, 180)}`);
         const gazeResponse = JSON.parse(gazeResult.body);
         if (!gazeResponse.images?.[0]) throw new Error("没有返回图片");
-        response = { ...response, images: [await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)] };
+        response = { ...response, images: [gazeResult.localGaze ? gazeResponse.images[0] : await compositeMaskedOutput(response.images[0], gazeResponse.images[0], gazeMask)] };
         gazePassTrace.output = persistStageOutput("structured_gaze", passKey, response.images[0]);
         recipe.stageOutputs.push({ stage: "structured_gaze", relationId: null, characterId, output: gazePassTrace.output });
         gazePassTrace.requestStatus = "succeeded";
@@ -1582,7 +1614,7 @@ try {
       ? (succeeded ? "partially_failed_not_applied_for_failed_passes" : "failed_not_applied")
       : succeeded
         ? "request_succeeded_semantic_pending"
-        : "not_required_or_relation_covered";
+        : recipe.structuredGazeExecution.passes.some(item=>item.requestStatus==='skipped') ? "skipped_not_applied" : "not_required_or_relation_covered";
   }
   if (phase === "final" && recipe.framingPostCrop?.status === "applied" && response.images?.[0]) {
     const sourceBuffer = Buffer.from(response.images[0], "base64");
