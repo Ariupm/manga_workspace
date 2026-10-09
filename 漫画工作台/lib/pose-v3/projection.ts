@@ -2,7 +2,7 @@ import {upperTorsoFramingFailures} from "../../scripts/pose-framing-guard.mjs";
 import type { PosePoint } from "../pose-v2";
 import type { ActionEvidenceV3, CompositionKindV3, CompositionPolicyV3, ProjectionPlanV3, VisibilityV3 } from "./schema";
 import { propBodySizePlan } from "../../scripts/sd-worker-logic.mjs";
-const propEnvelope = (e: ActionEvidenceV3, scale: number) => e.propFootprint ? propBodySizePlan({ ...e.propFootprint, contactSpan: e.propFootprint.contactSpan * scale, regionWidth: e.propFootprint.regionWidth * scale }).envelope : null;
+const propEnvelope = (e: ActionEvidenceV3, scale: number) => e.propFootprint ? propBodySizePlan({ ...e.propFootprint, propSizeHint:e.propFootprint.propSizeHint&&{...e.propFootprint.propSizeHint,width:e.propFootprint.propSizeHint.width==null?undefined:e.propFootprint.propSizeHint.width*scale,height:e.propFootprint.propSizeHint.height==null?undefined:e.propFootprint.propSizeHint.height*scale,coordinateSpace:'projected_canvas'}, contactSpan: e.propFootprint.contactSpan * scale, regionWidth: e.propFootprint.regionWidth * scale }).envelope : null;
 const kinds: CompositionKindV3[] = ["head_shoulders", "chest_action", "waist_up", "knee_up", "full_body", "environment_full"];
 export const isUpperCompositionV3 = (kind: CompositionKindV3) => kinds.indexOf(kind) <= 2;
 const visible=(p:PosePoint)=>p.x>=.02&&p.x<=.98&&p.y>=.02&&p.y<=.98;

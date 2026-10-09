@@ -74,15 +74,22 @@ export function relationVisualText(relation, stage = 'prop', explicitPhase = fal
   const hands = relation.handMode === 'two' ? 'both hands' : `${relation.activeHand || 'acting'} hand`;
   if(relation.visualFacts){
     const f=relation.visualFacts,object=relation.object;
+    const detail=relation.actionDetail;
+    // Concrete prose is frozen with its action/phase/hand. A later Pose edit
+    // must not bring back the old action or the other hand's contact.
+    const detailMatches=detail?.version==='action-detail-1'&&detail.actionId===state?.actionId&&detail.phase===state?.phase&&detail.hand===f.contact.hand;
+    const compatibleDetail=text=>detailMatches&&!(f.contact.hand!=='both'&&new RegExp(`\\b${f.contact.hand==='left'?'right':'left'} (?:hand|(?:index |middle |ring |little )?finger|thumb|palm)\\b`,'i').test(text||''))?text||'':'';
+    const specificAction=compatibleDetail(detail?.action);
+    const specificContact=state?.contactState==='contact'?compatibleDetail(detail?.contact):'';
     const working=['tool','write'].includes(state?.actionId)&&f.workTarget&&relation.workTargetLabel;
     const actionObject=relation.expectedCount>1?propVisualLabel(relation).replace(/^\S+\s+/,''):object;
     const label=object==='scissors'&&relation.expectedCount===1?'one pair of scissors':propVisualLabel(relation);
     const contact=state?.contactState==='approach'?`${hands} approaching the ${object} with a visible gap`:state?.contactState==='released'?`${hands} separated from the ${object}`:working?`${hands} gripping the ${object} ${f.contact.part}`:`${hands} ${relation.actionPlan?.geometry?.mechanism==='support'?'stabilizing':'touching'} the ${f.contact.part} of the ${object}`;
     const operation=working&&state?.phase==='contact'?`${object} ${f.workTarget.operation} the ${f.workTarget.surface} on the ${relation.workTargetLabel}`:
-      state?.phase==='contact'&&relation.actionPlan?.geometry?.mechanism!=='support'?relation.actionPlan?.evidence||`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'})[f.actionId]||actionStageVerb(state?.actionId,state?.phase)} the ${actionObject}`:
+      state?.phase==='contact'&&relation.actionPlan?.geometry?.mechanism!=='support'?relation.actionPlan?.evidence||specificAction||`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'})[f.actionId]||actionStageVerb(state?.actionId,state?.phase)} the ${actionObject}`:
       state&&relation.actionPlan?.geometry?.mechanism!=='support'?`${actionStageVerb(state.actionId,state.phase)} the ${actionObject}`:'';
     const support=stage!=='hand'&&f.support.state==='on_support'?`${object} resting on the ${f.support.label}`:'';
-    return uniquePrompt([stage==='hand'?'':label,operation,contact,support].filter(Boolean).join(', '));
+    return uniquePrompt([stage==='hand'?'':label,operation,contact,!relation.actionPlan? specificContact:'',support].filter(Boolean).join(', '));
   }
 
   const label = propVisualLabel(relation), object = (relation.expectedCount||1)>1 ? label.replace(/^\S+\s+/,'') : relation.object;

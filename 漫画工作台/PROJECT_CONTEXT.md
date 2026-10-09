@@ -106,3 +106,7 @@ pnpm memory:sync
 
 - DeepSeek仍要求全英文；结果含中文描述时使用本地Python Argos 1.11.0 zh→en模型，纯英文直通，不二次调用DeepSeek翻译。覆盖细化/章节/候选编译/中文编辑，保留结构、ID、数值和已有英文及原文审计。
 - 安装及环境说明见TRANSLATION_SETUP.md；默认workspace/translation-venv，可用STUDIO_TRANSLATION_PYTHON覆盖。281项程序测试、类型检查及原shot1260报错句子本地实译通过，待独立复核；未生图。
+
+## 2026-10-09：job557动作与尺寸数据流修复
+
+- 新关系快照保存action-detail-1具体动作/手指目标，基础与局部pass共用；prop-size-1把可选尺寸作为规划参考贯通Pose投影/轮廓/mask，旧任务不升级。285项目及54执行层/台账测试、类型检查通过；未生图，待独立复核。

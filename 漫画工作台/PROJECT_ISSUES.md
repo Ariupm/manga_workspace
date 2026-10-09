@@ -3972,7 +3972,7 @@
 ## ISSUE-PROMPT-016 指向目标的食指动作在结构化局部提示词中退化为泛化接触
 
 - 优先级：P1
-- 状态：open
+- 状态：fixed_pending_review
 - 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
 - 已确认事实：job557/shot1261已确认action=pointing at a chapter title with right index finger、contactDescription=right index finger to book page；实际hand/prop prompt仅inspecting和right hand touching page surface。
 - 高概率原因：relationVisualText的visualFacts分支只使用actionId、contact.hand/part及actionPlan.evidence；当前inspect无actionPlan，contactDescription中的食指细节不消费，人物action又被standing替换。
@@ -3983,18 +3983,18 @@
 - 影响范围：单/多人普通人物道具交互，基础/道具/手部局部请求及控制几何。
 - 建议方案：在通用交互契约中保留具体动作、接触手指和目标表面，基础/道具/手部pass共用，不能仅依赖camera尾部补述。
 - 验收标准：指向书页、按钮、地图等动作及不同人物/左右手在所有相关pass保持具体动作与目标，不退化为touch；正常inspect不凭空加食指。 按程序逻辑验收，不生成测试图。
-- 解决 Agent 修改：本轮仅诊断，尚未修改。
-- 解决 Agent 测试：待解决Agent实施后记录程序验证。
-- 残余风险：模型随机性、真实像素定位和视觉执行率属于运行风险；胸像文本与带髋骨架冲突已在原任务preflight警告记录，现有advisory策略不据此恢复硬门禁；视线身份控制竞争仅为假设。
+- 解决 Agent 修改：新关系冻结action-detail-1，保存具体动作、接触描述及对应actionId/phase/hand；共享编译器在通用查看/触碰分支保留具体动作，基础/道具/手部请求一致。支持物机制/工具工作目标及已有actionPlan仍优先；阶段、动作或手侧改变时不沿用旧细节；未知道具也保存接触描述。
+- 解决 Agent 测试：专项覆盖书、地图、控制面板×左右手×近中全景；普通查看不凭空新增食指，多人关系隔离、阶段与手侧变更不恢复旧动作。当前1261规格只读程序回放的base/hand均包含pointing at a chapter title with right index finger，证据workspace/job557-fix-replay.json。285/285项目测试（内存DB）、54/54执行层/台账测试、类型检查通过。 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/视线局部pass→质量门/草稿整体确认→正式候选回写。单/多人、左右手、书/地图/控制面板及近/中/全景共用同一代码；输入人数/身份/服装/视线/遮挡/环境未更改，角色关系按ID隔离。模板动作/阶段改变后不重新注入旧动作；提示词和执行配方使用同一新关系快照，旧快照不升级。控制强度和局部pass次序、既有保护mask、草稿一次整体确认、技术失败阻断及正式自动候选事务未修改；不新增尺寸像素门禁、不伪记视觉成功。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：实际手指接触及向下视线仍由模型执行，未做视觉验收；OpenPose十八点不能单独强制某根手指。旧job557不自动重写，新建任务消费新快照。 既有胸像/低位手部构图警告继续如实保留；模型随机性和实际视觉执行率保留产品运行风险。
 - 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
-- 诊断 Agent 复核结论：确认程序数据流缺陷，新增open；未对任何既有fixed_pending_review作最终验收。
-- 后续处理：进入解决队列；遵循用户本轮先分析范围，不擅自修复。
+- 诊断 Agent 复核结论：原缺陷已复现并实施修复，待独立诊断复核，不标记verified。
+- 后续处理：新建草稿任务使用修复；交诊断Agent独立复核。
 
 
 ## ISSUE-PROP-SIZE-001 普通交互道具执行几何忽略已声明尺寸
 
 - 优先级：P1
-- 状态：open
+- 状态：fixed_pending_review
 - 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
 - 已确认事实：job557 visualFacts.object声明width=.32/height=.24；实际relationTrace bounds约.09255×.09，512图约47×46px；control_prop与mask_prop_refinement仅下部小块，实际书明显超出。
 - 高概率原因：propInteractionGeometry无actionGeometry outline时仅按手腕跨度和shape调用propBodySizePlan，未消费visualFacts.object.width/height；普通inspect无actionPlan，走该分支。
@@ -4005,9 +4005,9 @@
 - 影响范围：单/多人普通人物道具交互，基础/道具/手部局部请求及控制几何。
 - 建议方案：把已声明物体尺寸贯通统一坐标投影、控制轮廓与局部mask，保留人工位置及手腕接触约束，并明确生成像素与计划定位偏差风险。
 - 验收标准：不同尺寸/人物区域/景别的普通read/inspect/hold道具正确消费尺寸并只投影一次；基础轮廓及局部mask同源；无尺寸旧配方保留明确兼容行为。 按程序逻辑验收，不生成测试图。
-- 解决 Agent 修改：本轮仅诊断，尚未修改。
-- 解决 Agent 测试：待解决Agent实施后记录程序验证。
-- 残余风险：模型随机性、真实像素定位和视觉执行率属于运行风险；胸像文本与带髋骨架冲突已在原任务preflight警告记录，现有advisory策略不据此恢复硬门禁；视线身份控制竞争仅为假设。
+- 解决 Agent 修改：新关系冻结prop-size-1规划尺寸与full_pose坐标空间；贯通Pose证据取景、单次投影、worker共享道具几何/轮廓/mask。按相同projection缩放为projected_canvas；明确机制outline优先、接触跨度可扩展物体防止缩进双手，缺尺寸及旧快照沿原算法。尺寸用于控制参考，不作成图大小合格标准。
+- 解决 Agent 测试：不同尺寸纯函数输出随之变化；单/双人、近中全景投影仅一次、正式重放幂等、无尺寸旧配方兼容、明确outline优先及双手跨度保护通过。只读1261规格回放源.32/.24经scale1.6295变为约.52145/.39109，几何与envelope同源；未将该规划值视为实图测量。285/285项目测试（内存DB）、54/54执行层/台账测试、类型检查通过。 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/视线局部pass→质量门/草稿整体确认→正式候选回写。单/多人、左右手、书/地图/控制面板及近/中/全景共用同一代码；输入人数/身份/服装/视线/遮挡/环境未更改，角色关系按ID隔离。模板动作/阶段改变后不重新注入旧动作；提示词和执行配方使用同一新关系快照，旧快照不升级。控制强度和局部pass次序、既有保护mask、草稿一次整体确认、技术失败阻断及正式自动候选事务未修改；不新增尺寸像素门禁、不伪记视觉成功。程序逻辑验收通过，未进行图片生成或视觉效果验收。
+- 残余风险：用户指出job557成图书的大小本身合理，本问题不代表该图书大小错误，也不能证明是动作失败主因。尺寸只是规划估计；没有像素定位时不能保证mask命中生成图中实际物体。本轮消除尺寸数据流缺口，不增加检测器或自动重试。 既有胸像/低位手部构图警告继续如实保留；模型随机性和实际视觉执行率保留产品运行风险。
 - 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
-- 诊断 Agent 复核结论：确认程序数据流缺陷，新增open；未对任何既有fixed_pending_review作最终验收。
-- 后续处理：进入解决队列；遵循用户本轮先分析范围，不擅自修复。
+- 诊断 Agent 复核结论：原缺陷已复现并实施修复，待独立诊断复核，不标记verified。
+- 后续处理：新建草稿任务使用修复；交诊断Agent独立复核。

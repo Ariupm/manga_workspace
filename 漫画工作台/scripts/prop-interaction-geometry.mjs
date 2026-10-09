@@ -29,7 +29,7 @@ export function propInteractionGeometry(interaction, posePeople = [], characterI
   const regionWidth = Math.max(.12, (interaction.region?.xEnd ?? 1) - (interaction.region?.xStart ?? 0));
   const hasPoseContact = contactPassAllowed(interaction) && poseContacts.some((point) => point.source === "pose_wrist" || point.source === "relation_wrist_assignment" || point.source === "authored_action_contact");
   const wristSpan = Math.max(0, maxX - minX);
-  const bodySize = propBodySizePlan({ shape: interaction.shape, orientation: interaction.orientation, contactSpan: wristSpan, hasPoseContact, regionWidth });
+  const bodySize = propBodySizePlan({ shape: interaction.shape, orientation: interaction.orientation, contactSpan: wristSpan, hasPoseContact, regionWidth, propSizeHint:interaction.propSizeHint });
   const declaredBounds=actionOutlineBounds(actionGeometry);
   if(declaredBounds){bodySize.width=2*Math.max(center.x-declaredBounds.x,declaredBounds.x+declaredBounds.width-center.x);bodySize.height=2*Math.max(center.y-declaredBounds.y,declaredBounds.y+declaredBounds.height-center.y);bodySize.envelope={width:bodySize.width,height:bodySize.height};}
   const widthRatio = bodySize.envelope.width;

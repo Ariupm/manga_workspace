@@ -532,11 +532,19 @@ export function propSizePlan({ shape = "", orientation = "", contactSpan = 0, ha
 }
 
 export function propBodySizePlan({ shape = "", orientation = "", ...options } = {}) {
+  const hint=options.propSizeHint;
+  const validHint=hint?.version==='prop-size-1'&&['full_pose','projected_canvas'].includes(hint.coordinateSpace);
+  const hintedWidth=validHint&&Number.isFinite(hint.width)&&hint.width>0?hint.width:null;
+  const hintedHeight=validHint&&Number.isFinite(hint.height)&&hint.height>0?hint.height:null;
   const envelope = propSizePlan({ shape, orientation, ...options });
   const portrait = shape === "portrait_rect" || orientation === "portrait";
   const landscape = shape === "landscape_rect" || orientation === "landscape";
-  const baseWidth = envelope.width * (portrait ? .52 : landscape ? .72 : .64);
-  const baseHeight = envelope.height * (portrait ? .82 : landscape ? .7 : .74);
+  const baseWidth = hintedWidth || envelope.width * (portrait ? .52 : landscape ? .72 : .64);
+  const baseHeight = hintedHeight || envelope.height * (portrait ? .82 : landscape ? .7 : .74);
+  // Authored dimensions are a planning footprint, not a pixel acceptance gate.
+  // Preserve contact reach and explicit mechanism outlines; old snapshots keep
+  // their former shape-based estimates when they have no versioned size hint.
+  if(hintedWidth||hintedHeight){envelope.width=baseWidth;envelope.height=baseHeight;}
   // Pose contacts are already in the caller's coordinate space. A fixed
   // frame-width cap must not shrink a rectangular object inside its two grips.
   // Grow the body and its audit envelope together; projection/viewport checks

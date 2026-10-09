@@ -1,4 +1,5 @@
 export function propBodySizePlan(input?: {
+  propSizeHint?: {version:string;coordinateSpace:string;width?:number;height?:number};
   shape?: string; orientation?: string; contactSpan?: number;
   hasPoseContact?: boolean; regionWidth?: number;
 }): { width: number; height: number; envelope: { width: number; height: number } };

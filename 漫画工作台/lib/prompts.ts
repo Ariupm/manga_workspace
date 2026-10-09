@@ -94,6 +94,8 @@ const explicitlyAllowsCameraGaze=(value:string)=> {
 };
 
 export type InteractionContract = {
+  propSizeHint?: PoseInteractionInput['propSizeHint'];
+  actionDetail?: { version:'action-detail-1'; action:string; contact:string; actionId:string; phase:string; hand:string };
   contactDescription?: string;
   factSource?: 'structured_visual_facts' | 'legacy_text_inference_or_default';
   visualFacts?: InteractionVisualFacts;
@@ -395,7 +397,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     if (resolvedProp) {
       const objectCenter = { x: positionCenter, y: .58 };
       const geometry = interactionGeometry({characterId:characterId||"",propId:resolvedProp,object:resolvedProp,orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
-      return attachStoryActionContract({relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]},relationActionText,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
+      return attachStoryActionContract({contactDescription:relationContactText,relationId:`legacy:${characterId||""}:${resolvedProp}`,required:true,characterId:characterId||"",targetCharacterId:plannedInteraction?.targetCharacterId || undefined,relationType:plannedInteraction?.type || undefined,object:resolvedProp,affordance:"clearly visible and physically connected to the acting hands",region,objectCenter,gaze:planned?.gazeTarget || "head and eyes focused on the interaction target, no eye contact with camera",gazeTarget:gazeTargetForInteraction({kind:"object",objectCenter,objectInstanceId:geometry.objectInstanceId,surfaceNormal:geometry.surfacePlan.normal}),shape:"landscape_rect",handMode:"two",purpose:"inspect",orientation:"contextual",viewerSurface:"contextual",gazeMode:"object",...geometry,positive:[`(required story prop clearly visible: ${resolvedProp}:1.38)`,`(hands physically contact and operate the ${resolvedProp}:1.3)`],negative:[`missing ${resolvedProp}`,`hidden ${resolvedProp}`,"empty hands","folded hands"]},relationActionText,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
     }
     const objectCenter = { x: positionCenter, y: .58 };
     const geometry = interactionGeometry({characterId:characterId||"",propId:"",object:"story-object",orientation:"contextual",viewerSurface:"contextual",handMode:"two",source,contactPoints:relationContactText,positionCenter,positionY:objectCenter.y,ownerBefore:null,ownerAfter:null});
@@ -491,7 +493,10 @@ function attachStoryActionContract(contract:InteractionContract,action:string,ph
       const anchor=contract.contactAnchors.find(a=>a.hand===hand)||contract.contactAnchors[0];
       return {...anchor,hand:hand as 'left'|'right',x:contract.objectCenter.x+(hand==='left'?.025:-.025),role:hand==='right'&&facts.contact.hand==='both'?'support' as const:'active' as const};
     });
-    contract={...contract,visualFacts:facts,object:facts.object.label,expectedCount:facts.object.count,objectInstanceId:facts.object.instanceId,
+    contract={...contract,visualFacts:facts,
+      propSizeHint:facts.object.width||facts.object.height?{version:'prop-size-1',coordinateSpace:'full_pose',width:facts.object.width,height:facts.object.height}:undefined,
+      actionDetail:{version:'action-detail-1',action,contact:contract.contactDescription||'',actionId:facts.actionId,phase:facts.phase,hand:facts.contact.hand},
+      object:facts.object.label,expectedCount:facts.object.count,objectInstanceId:facts.object.instanceId,
       supportLabel:facts.support.label,handMode,activeHand:facts.contact.hand,
       contactAnchors,
       gaze:facts.gaze.kind==='object'?`eyes focused on the ${facts.object.label}${facts.gaze.surface?` ${facts.gaze.surface}`:''}`:facts.gaze.description,gazeMode:facts.gaze.kind==='character'?'target':facts.gaze.kind,
@@ -1522,6 +1527,7 @@ function buildSingleActionPoseSvgLegacy(shot:Shot,interaction:InteractionContrac
 }
 
 const poseInteractionInput = (interaction: InteractionContract): PoseInteractionInput => ({
+  propSizeHint:interaction.propSizeHint,
   actionPlan:interaction.actionPlan,
   expectedCount:interaction.expectedCount,
   shape: interaction.shape,

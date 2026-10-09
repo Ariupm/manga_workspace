@@ -60,6 +60,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     const authored=audit||candidate?.geometrySource==='manual_prop_position'?candidate:undefined;
     const center=authored?.objectCenter||r.objectCenter,contacts=authored?.contactAnchors||r.contactAnchors;
     const result={...r,...(authored?.geometrySource?{geometrySource:authored.geometrySource}:{}),objectCenter:point(center),region:region(r.region),gazeTarget:gaze(authored?.gazeTarget||r.gazeTarget),contactAnchors:anchors(contacts,r.characterId,audit||authored?.geometrySource==='manual_prop_position'),surfacePlan:surface(r.surfacePlan),actionRelationAudit:actionAudit(audit),actionPlan:r.actionPlan&&{...r.actionPlan,actionId:audit?.geometry?.actionId||r.actionPlan.actionId,phase:audit?.phase||r.actionPlan.phase,geometry:actionGeometry(audit?.geometry||authored?.actionPlan?.geometry||r.actionPlan.geometry)}};
+    if(r.propSizeHint?.version==='prop-size-1'&&r.propSizeHint.coordinateSpace==='full_pose')result.propSizeHint={...r.propSizeHint,coordinateSpace:'projected_canvas',width:r.propSizeHint.width==null?undefined:r.propSizeHint.width*scale,height:r.propSizeHint.height==null?undefined:r.propSizeHint.height*scale};
     if(['pick','place'].includes(result.actionPlan?.actionId))result.purpose=result.actionPlan.actionId;
     const state=relationActionState(result);
     if(result.visualFacts&&state&&(state.phase!==result.visualFacts.phase||state.actionId!==result.visualFacts.actionId)){
@@ -110,6 +111,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     if (relation.shape && relation.shape !== "umbrella" && !outlinePoints.length) {
       const contacts = relation.contactAnchors || [];
       const { envelope } = propBodySizePlan({ shape: relation.shape, orientation: relation.orientation,
+        propSizeHint:relation.propSizeHint,
         contactSpan: contacts.length ? Math.max(...contacts.map(p=>p.x))-Math.min(...contacts.map(p=>p.x)) : 0,
         hasPoseContact: contacts.length > 0, regionWidth: relation.region.xEnd-relation.region.xStart });
       const center = relation.objectCenter;
