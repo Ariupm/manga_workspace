@@ -3972,7 +3972,7 @@
 ## ISSUE-PROMPT-016 指向目标的食指动作在结构化局部提示词中退化为泛化接触
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：verified
 - 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
 - 已确认事实：job557/shot1261已确认action=pointing at a chapter title with right index finger、contactDescription=right index finger to book page；实际hand/prop prompt仅inspecting和right hand touching page surface。
 - 高概率原因：relationVisualText的visualFacts分支只使用actionId、contact.hand/part及actionPlan.evidence；当前inspect无actionPlan，contactDescription中的食指细节不消费，人物action又被standing替换。
@@ -3986,9 +3986,9 @@
 - 解决 Agent 修改：新关系冻结action-detail-1，保存具体动作、接触描述及对应actionId/phase/hand；共享编译器在通用查看/触碰分支保留具体动作，基础/道具/手部请求一致。支持物机制/工具工作目标及已有actionPlan仍优先；阶段、动作或手侧改变时不沿用旧细节；未知道具也保存接触描述。
 - 解决 Agent 测试：专项覆盖书、地图、控制面板×左右手×近中全景；普通查看不凭空新增食指，多人关系隔离、阶段与手侧变更不恢复旧动作。当前1261规格只读程序回放的base/hand均包含pointing at a chapter title with right index finger，证据workspace/job557-fix-replay.json。285/285项目测试（内存DB）、54/54执行层/台账测试、类型检查通过。 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/视线局部pass→质量门/草稿整体确认→正式候选回写。单/多人、左右手、书/地图/控制面板及近/中/全景共用同一代码；输入人数/身份/服装/视线/遮挡/环境未更改，角色关系按ID隔离。模板动作/阶段改变后不重新注入旧动作；提示词和执行配方使用同一新关系快照，旧快照不升级。控制强度和局部pass次序、既有保护mask、草稿一次整体确认、技术失败阻断及正式自动候选事务未修改；不新增尺寸像素门禁、不伪记视觉成功。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：实际手指接触及向下视线仍由模型执行，未做视觉验收；OpenPose十八点不能单独强制某根手指。旧job557不自动重写，新建任务消费新快照。 既有胸像/低位手部构图警告继续如实保留；模型随机性和实际视觉执行率保留产品运行风险。
-- 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
-- 诊断 Agent 复核结论：原缺陷已复现并实施修复，待独立诊断复核，不标记verified。
-- 后续处理：新建草稿任务使用修复；交诊断Agent独立复核。
+- 诊断 Agent 复核证据：2026-10-09：job559实际基础请求含pointing at a chapter title with right index finger；共享relationVisualText及compileStagePrompt数据流核对，10项动作/尺寸/道具平移专项测试通过。
+- 诊断 Agent 复核结论：verified：具体动作丢失根因已消除，左右手/阶段/多人关系隔离成立；程序逻辑验收通过，未进行图片生成或视觉效果验收。手部实际未改动由独立ISSUE-MASK-002导致，不能混同提示词数据流。
+- 后续处理：本项程序逻辑已验收；独立接触遮罩缺陷见ISSUE-MASK-002，实际视觉执行率保留运行风险。
 
 
 ## ISSUE-PROP-SIZE-001 普通交互道具执行几何忽略已声明尺寸
@@ -3998,7 +3998,7 @@
 - 续修测试与全链复核：285项目测试（内存数据库）、54执行层/台账测试及类型检查通过。剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload保留尺寸审计与具体食指动作；Regional/ControlNet取景包络和基础/道具/手部mask使用同一宽松估算；单/多人、近中全景、左右手及不同道具通用。固定投影下改变尺寸不移动objectCenter/contactAnchors，人工位置与支持面、机制outline优先级保留。身份/服装/视线局部pass保护与控制强度不变；质量门/草稿整体确认/失败分支/正式候选回写未变，不新增尺寸验收、不伪造视觉成功。程序逻辑验收通过，未进行图片生成或视觉效果验收；模型随机性、像素定位与视觉执行率仍为产品运行风险。状态保持fixed_pending_review，待独立复核。
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：verified
 - 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
 - 已确认事实：job557 visualFacts.object声明width=.32/height=.24；实际relationTrace bounds约.09255×.09，512图约47×46px；control_prop与mask_prop_refinement仅下部小块，实际书明显超出。
 - 高概率原因：propInteractionGeometry无actionGeometry outline时仅按手腕跨度和shape调用propBodySizePlan，未消费visualFacts.object.width/height；普通inspect无actionPlan，走该分支。
@@ -4012,6 +4012,50 @@
 - 解决 Agent 修改：新关系冻结prop-size-1规划尺寸与full_pose坐标空间；贯通Pose证据取景、单次投影、worker共享道具几何/轮廓/mask。按相同projection缩放为projected_canvas；明确机制outline优先、接触跨度可扩展物体防止缩进双手，缺尺寸及旧快照沿原算法。尺寸用于控制参考，不作成图大小合格标准。
 - 解决 Agent 测试：不同尺寸纯函数输出随之变化；单/双人、近中全景投影仅一次、正式重放幂等、无尺寸旧配方兼容、明确outline优先及双手跨度保护通过。只读1261规格回放源.32/.24经scale1.6295变为约.52145/.39109，几何与envelope同源；未将该规划值视为实图测量。285/285项目测试（内存DB）、54/54执行层/台账测试、类型检查通过。 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/视线局部pass→质量门/草稿整体确认→正式候选回写。单/多人、左右手、书/地图/控制面板及近/中/全景共用同一代码；输入人数/身份/服装/视线/遮挡/环境未更改，角色关系按ID隔离。模板动作/阶段改变后不重新注入旧动作；提示词和执行配方使用同一新关系快照，旧快照不升级。控制强度和局部pass次序、既有保护mask、草稿一次整体确认、技术失败阻断及正式自动候选事务未修改；不新增尺寸像素门禁、不伪记视觉成功。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：用户指出job557成图书的大小本身合理，本问题不代表该图书大小错误，也不能证明是动作失败主因。尺寸只是规划估计；没有像素定位时不能保证mask命中生成图中实际物体。本轮消除尺寸数据流缺口，不增加检测器或自动重试。 既有胸像/低位手部构图警告继续如实保留；模型随机性和实际视觉执行率保留产品运行风险。
-- 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
-- 诊断 Agent 复核结论：原缺陷已复现并实施修复，待独立诊断复核，不标记verified。
-- 后续处理：新建草稿任务使用修复；交诊断Agent独立复核。
+- 诊断 Agent 复核证据：2026-10-09：按用户最新宽松尺寸要求复核propBodySizePlan、V3单次投影和共享propInteractionGeometry；专项验证极端声明值受限、中心/接触不移动、双手跨度和明确outline优先、旧无hint兼容与重放幂等。10项专项通过。
+- 诊断 Agent 复核结论：verified：以最新宽松规划标准验收，声明尺寸不再直接覆盖估算，位置控制保留。程序逻辑验收通过，未进行图片生成或视觉效果验收。job559记录仍使用之前的大尺寸策略，不作为本次软尺寸改动的效果证明。
+- 后续处理：本项程序逻辑已验收；独立接触遮罩缺陷见ISSUE-MASK-002，实际视觉执行率保留运行风险。
+
+
+## ISSUE-MASK-002 手部表面接触遮罩被道具核心保护全部擦除仍记为成功
+
+- 优先级：P1
+- 状态：open
+- 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
+- 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待修复后程序逻辑验收，不启动SD。
+- 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
+- 诊断 Agent 复核结论：已通过程序复现确认，登记open。
+- 后续处理：进入解决队列，修复后交诊断复核。
+- 已确认事实：job559 generic_prop和contact_completion_right输出SHA256完全相同。按冻结坐标与当前worker SVG算法重建：保护前2958个非零像素，保护后0；接触点255→0。trace仍requestStatus=succeeded，contactSucceeded=true使CPU草稿手部细修延期。
+- 高概率原因：sd-worker先画白色手/腕桥，再无条件用黑色对象核心矩形覆盖；手指位于书页/面板表面的接触被保护区消掉。发送和合成前均未检查有效mask，HTTP成功被当作接触补全可用。
+- 反证或冲突：尺寸软化可减少覆盖范围，但没有改变遮罩相减算法，也不能保证表面接触点可编辑；这不是中文翻译或具体动作提示词丢失。不得因画面无变化单独判断失败，本条有全黑mask确定证据。
+- 复现步骤：node workspace/diagnose-contact-559.mjs；使用workspace/job559-review.json冻结参数，无SD调用，仅栅格化控制mask。
+- 涉及文件：scripts/sd-worker.mjs:992-1044、scripts/masked-composite.mjs、CPU草稿延期条件。
+- 影响范围：书页/地图/屏幕/面板等表面接触，单/双手；对象核心较大时可全黑，较小时也可能擦掉目标接触。
+- 建议方案：区分边缘持握与表面接触，在保护物体主体的同时为已声明接触留可编辑区域；每手校验有效像素及接触覆盖，空mask记录未应用且不能触发成功延期；保留最近可展示图。
+- 验收标准：按不同道具、左右手、表面/边缘接触及极端尺寸栅格化验证：目标接触有有效mask、非目标对象/另一手受保护；空mask不伪报应用且不触发成功延期；基础/局部/候选状态闭合。
+- 诊断 Agent 复核证据：workspace/diagnose-contact-559.json及同名mjs；job559实际stageOutputs/passTraces；当前源码992-1044。来源关联ISSUE-PROP-SIZE-001、ISSUE-PROMPT-016、ISSUE-PERF-001。
+
+
+## ISSUE-CONTACT-001 准备放置已持物体被统一解释为手物未接触
+
+- 优先级：P1
+- 状态：open
+- 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
+- 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
+- 解决 Agent 修改：待解决 Agent 实施。
+- 解决 Agent 测试：待修复后程序逻辑验收，不启动SD。
+- 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
+- 诊断 Agent 复核结论：已通过程序复现确认，登记open。
+- 后续处理：进入解决队列，修复后交诊断复核。
+- 已确认事实：actionStageState(place,anticipation)返回objectState=held与contactState=approach/contactRequired=false；relationVisualText输出right hand approaching the open book with a visible gap，contactPassAllowed=false。prepareActionRelationsV3还把准备阶段手目标向肩偏移.04。
+- 高概率原因：所有anticipation共用手靠近物体状态，没有区分手-工具/持物接触与物体-支持面/工作目标接触。actionPlan优先覆盖显式visualFacts接触。
+- 反证或冲突：pick准备阶段可合法未接触；place准备时已拿着物体应保留手物接触。此分支不适用于job559 inspect/contact，不能据此解释该图；来源ISSUE-PROMPT-015已记录风险，本轮确认并独立建项。
+- 复现步骤：node workspace/diagnose-contact-559.mjs读取placeAnticipation；静态核对action-relations.ts:48-50阶段偏移和worker接触pass分支。
+- 涉及文件：scripts/action-stage-policy.mjs:3-13、lib/pose-v3/action-relations.ts:48-50、scripts/prompt-compiler.mjs、scripts/sd-worker.mjs。
+- 影响范围：准备放置、已握工具但工作端尚未接触等多接触关系；取物准备不能被统一改成握持。
+- 建议方案：区分手物接触和物体目标接触，按明确支持/持有状态推导阶段；prompt、Pose腕点、接触pass资格使用同一分离后的事实。
+- 验收标准：跨对象和左右手验证pick/place三阶段、已握工具准备与工作端分离；held准备保留手物接触，真正取物准备保留间隙；动作文字、坐标、recipe及局部pass一致。
+- 诊断 Agent 复核证据：workspace/diagnose-contact-559.json placeAnticipation纯函数输出及源码。关联ISSUE-PROMPT-015、ISSUE-POSE-043。
