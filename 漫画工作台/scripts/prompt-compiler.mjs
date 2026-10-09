@@ -1,4 +1,4 @@
-import {gazeInstruction} from "./gaze-expression.mjs";
+import {gazeInstruction,gazeExecutionCues} from "./gaze-expression.mjs";
 import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState, actionStageVerb } from './action-stage-policy.mjs';
 import {PROMPT_CONSISTENCY_VERSION, factSetConsistencyErrors, promptConsistencyErrors, relationSemanticSignature} from './prompt-consistency.mjs';
 import {assertControlPolicyRequest} from './generation-control-policy.mjs';
@@ -358,7 +358,7 @@ export function validatePromptEditorial(plan, { common = '', characters = [], gl
   return errors;
 }
 
-export function compileStagePrompt(plan, { stage, characterId, relationId, details = '', negative = '' } = {}) {
+export function compileStagePrompt(plan, { stage, characterId, relationId, details = '', negative = '', gazeExecution } = {}) {
   if (plan?.version !== PROMPT_COMPILER_VERSION) throw new Error('Unsupported prompt compiler version');
   const person = plan.facts.characters.find(p => p.characterId === characterId);
   const relation = relationId ? plan.facts.relations.find(r => r.relationId === relationId) : null;
@@ -390,9 +390,13 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const personExclusions = promptTerms(person.negative).filter(term => ['identity','gaze'].includes(stage)
     ? !/garment|clothing|coat|skirt|dress|bag|shoe|full body|legs/i.test(term)
     : stage === 'outfit' ? !/eye contact|looking at|gaze|pupils/i.test(term) : false).join(', ');
-  const localNegative = [personExclusions, relation?.negative?.join(', '), relation?.expectedCount>1 ? exclusions.replace('duplicated prop','incorrect prop count') : exclusions, negative].filter(Boolean).join(', ');
+  const gazeCues = stage === 'gaze' && gazeExecution?.version === 'gaze-direction-1'
+    ? gazeExecutionCues(compilePromptFields(person.fields.filter(f=>f.group==='gaze')).prompt, gazeExecution.direction)
+    : {positive:'',negative:''};
+  const localNegative = [personExclusions, relation?.negative?.join(', '), relation?.expectedCount>1 ? exclusions.replace('duplicated prop','incorrect prop count') : exclusions, negative, gazeCues.negative].filter(Boolean).join(', ');
   const relationField={ id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' };
-  const result=compilePromptFields([...(narrative?[relationField,...selected]:[...selected,relationField]), { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
+  const directionField={id:`${stage}.execution_direction`,group:'gaze',text:gazeCues.positive,source:'resolved_gaze_direction'};
+  const result=compilePromptFields([...(gazeCues.positive?[directionField]:[]),...(narrative?[relationField,...selected]:[...selected,relationField]), { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
   if(consistent){
     result.errors.push(...promptConsistencyErrors({prompt:result.prompt,negative:result.negativePrompt,person,relations:plan.facts.relations}));
     if(suppliedDetails!==details)result.audit.push({factId:`${stage}.details`,source:'stage_context',requested:suppliedDetails,applied:details,reason:'effective_facts_own_action_and_gaze'});
@@ -460,7 +464,7 @@ export function prepareGenerationPromptRequest(recipe, payload, context) {
       if(actual&&relationSemanticSignature(actual)!==relationSemanticSignature(r))throw new Error(`Stage semantic drift: ${r.relationId}`);
     }
     const stagedPlan = { ...plan, facts: { ...plan.facts, relations: plan.facts.relations.map(r => executable.find(e => e.relationId === r.relationId && e.characterId === r.characterId) || r) } };
-    compiled = compileStagePrompt(stagedPlan, context);
+    compiled = compileStagePrompt(stagedPlan, {...context,gazeExecution:recipe.gazeRepair?.directionVersion==='gaze-direction-1'?{version:'gaze-direction-1',direction:context.gazeDirection}:undefined});
     if (compiled.errors.length) throw new Error(compiled.errors.join('; '));
   }
   const result = { ...payload, prompt: compiled.prompt, negative_prompt: compiled.negativePrompt };

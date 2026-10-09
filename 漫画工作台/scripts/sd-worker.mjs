@@ -150,7 +150,7 @@ try {
             if(detected.status!==200)throw new Error('Face detector unavailable');return JSON.parse(detected.body);
           },generate:async localRequest=>{
             assertControlPolicyRequest(recipe,localRequest,context);
-            if(trace)Object.assign(trace,{width:localRequest.width,height:localRequest.height,localInpaint:true});
+            if(trace)Object.assign(trace,{width:localRequest.width,height:localRequest.height,localInpaint:true,controlBindings:(localRequest.alwayson_scripts?.ControlNet?.args||[]).map(u=>({module:u.module,model:u.model,weight:u.weight,guidanceStart:u.guidance_start,guidanceEnd:u.guidance_end,regionMaskApplied:Boolean(u.effective_region_mask)}))});
             return postJson(url,localRequest);
           }});
         recipe.localGazeExecution=recipe.localGazeExecution||[];
@@ -1270,7 +1270,7 @@ try {
       const gazePassTrace = { stage: "gaze", executor: "relation_gaze", relationId, characterId: propInteraction.characterId || null, objectInstanceId: propInteraction.objectInstanceId || null, requestStatus: "pending", semanticStatus: "not_reviewed", output: null, targetCenter: structuredGazeTarget, gazeTargetKind: gazeTrace.gazeTargetKind, gazeTargetSource: gazeTrace.gazeTargetSource, direction: canonicalGazeDirection, headDirection: gazeTrace.headDirection, headTargetMatchesStructured, faceMaskBounds: gazeGeometry.faceMaskBounds, contextBounds: gazeGeometry.contextBounds, modelCropBounds:gazeTrace.modelCropBounds,targetBox: gazeGeometry.targetBox, modelSeesTarget:gazeTrace.modelSeesTarget,controlUnits: gazeControlSummary, poseControlApplied: Boolean(gazePoseUnit), identityControlApplied: Boolean(gazeIdentityUnit) };
       recipe.passTraces.push(gazePassTrace);
       try {
-        const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,targetDescription:relationGazeDescription(propInteraction,propInteractions),gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
+        const gazeResult=await sendGeneration({stage:"gaze",characterId:propInteraction.characterId,relationId,gazeDirection:canonicalGazeDirection,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeTrace.gazeTargetKind,object:propInteraction.object,targetDescription:relationGazeDescription(propInteraction,propInteractions),gazeText:propInteraction.gaze,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/,"/img2img"),gazePayload);
         if(gazeResult.localGaze?.status==='skipped'){gazePassTrace.requestStatus='skipped';gazePassTrace.semanticStatus='not_applied';gazeTrace.requestStatus='skipped';updateRelationTrace(relationId,'semantic_pending','optional gaze not applied; retained image');continue;}
         if(gazeResult.status<200||gazeResult.status>=300)throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0,180)}`);
         const gazeResponse=JSON.parse(gazeResult.body);if(!gazeResponse.images?.[0])throw new Error("没有返回图片");
@@ -1585,7 +1585,7 @@ try {
         ...(gazeControlSummary.length ? { alwayson_scripts: { ControlNet: { args: [gazeIdentityUnit, gazePoseUnit].filter(Boolean) } } } : {}),
       };
       try {
-        const gazeResult = await sendGeneration({stage:"gaze",characterId,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeCandidate.gazeTargetKind,targetDescription,gazeText,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), gazePayload);
+        const gazeResult = await sendGeneration({stage:"gaze",characterId,gazeDirection:canonicalGazeDirection,details:gazeRefinementPrompt({direction:canonicalGazeDirection,targetKind:gazeCandidate.gazeTargetKind,targetDescription,gazeText,expression:expressionCue(expression)})},recipe.endpoint.replace(/\/txt2img$/, "/img2img"), gazePayload);
         if(gazeResult.localGaze?.status==='skipped'){gazePassTrace.requestStatus='skipped';gazePassTrace.semanticStatus='not_applied';faceTrace.requestStatus='skipped';continue;}
         if (gazeResult.status < 200 || gazeResult.status >= 300) throw new Error(`服务返回 ${gazeResult.status}：${gazeResult.body.slice(0, 180)}`);
         const gazeResponse = JSON.parse(gazeResult.body);

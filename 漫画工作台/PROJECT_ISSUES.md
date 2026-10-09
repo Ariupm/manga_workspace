@@ -4081,3 +4081,27 @@
 - 诊断 Agent 复核证据：待独立复核；GAZE_RESEARCH_2026-10-09.md包含官方接口及模型资料，程序测试证据如上。
 - 诊断 Agent 复核结论：第一阶段实现完成，待独立复核，不标记verified。
 - 后续处理：用户新建生成任务使用该策略；观察运行日志localGazeExecution的applied/skipped及原因，不将请求成功伪报视觉正确。
+
+
+- 2026-10-09 后续用户授权实际验证：job561检测/裁剪/回贴执行成功但仍看镜头；方向文字在编译中丢失另建ISSUE-GAZE-012并修复。两个后续局部实验也未达到明确看书页效果。详见GAZE_REAL_IMAGE_TEST_2026-10-09.md；不能声称视线视觉效果已解决，不标记verified。
+
+## ISSUE-GAZE-012 局部视线请求丢失结构化方向与本人看镜头排除
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：用户授权实际生图验证ISSUE-GAZE-011；job561局部修复执行后仍看镜头。
+- 已确认事实：job561审计direction=down，但promptRequestTraces.gaze实际prompt仅有书页目标，details中的eyes directed downward被effective_facts_own_action_and_gaze清空；payload内looking at viewer排除也未进入最终局部negative。脸部裁剪不含书，缺少方向表达。
+- 高概率原因：统一编译器正确防止自由文本覆盖有效事实，却没有提供结构化执行方向的受控投影通路。
+- 未验证假设：补全请求后是否改善视觉执行仍需实验，不能由请求成功推定。
+- 反证或冲突：检测及局部回贴实际成功，不是没执行；不能恢复任意worker details覆盖、全局负向广播或视线展示门禁。
+- 复现步骤：读取workspace/job561-gaze-verification.json的faceRefinementPasses与promptRequestTraces并对照compileStagePrompt。
+- 涉及文件：scripts/prompt-compiler.mjs、scripts/gaze-expression.mjs、scripts/sd-worker.mjs、app/api/studio/route.ts。
+- 影响范围：新版本关系视线及独立视线；关联ISSUE-GAZE-011。
+- 建议方案：保留有效目标事实，单独传入白名单方向，按本人看镜头/闭眼/明确方向分支编译；新recipe版本化，旧recipe不变。
+- 验收标准：实际请求包含适用方向和本人排除；不改变看镜头/闭眼、其他人物与旧配方；用户本轮明确授权真实SD测试。
+- 解决 Agent 修改：gaze-direction-1版本化受控投影，关系/独立视线均传入已有canonical方向；本人目标保留，镜头/闭眼/明确反向/非法方向保护，旧配方不升级。局部日志记录实际控制权重。
+- 解决 Agent 测试：287项目+57执行层测试、类型/语法检查通过。全链复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础与身份/服装/道具/手部/视线→展示/草稿整体确认→正式候选。检查不同人物/目标/方向、区域/画幅、开关、闭眼/看镜头、旧快照/成品继承及失败保图；只改本人视线请求，不新增互斥事实，不恢复全局negative与自由details，无新门禁。发现的方向遗漏已修复，无新增代码冲突。真实job561及两个局部实验见GAZE_REAL_IMAGE_TEST_2026-10-09.md：程序执行成功，但视觉目标未通过；不声称视线整体已解决。
+- 残余风险：模型随机性、身份漂移和真实注视准确性不由程序测试保证。
+- 诊断 Agent 复核证据：job561实际运行与trace已复现上述请求遗漏。
+- 诊断 Agent 复核结论：代码修复后待独立复核，不标记verified。
+- 后续处理：交独立诊断Agent复核程序数据流；真实视觉执行不足作为运行风险保留，下一阶段眼部/虹膜控制另行验证，不自动替换候选。

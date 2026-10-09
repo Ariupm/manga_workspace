@@ -18,7 +18,7 @@ export function compilePromptFields(fields:PromptField[],negative?:string):Promp
 export function createPromptPlan(input:{common:PromptField[];characters:PromptCharacterFacts[];relations?:any[];negativeBlocks?:Record<string,string>;style?:string;presentationVersion?:string}):PromptPlan;
 export function rebindPromptPlanRelations(plan:PromptPlan,relations:any[]):PromptPlan;
 export function validatePromptEditorial(plan:PromptPlan,edits?:{common?:string;characters?:string[];global?:string}):string[];
-export function compileStagePrompt(plan:PromptPlan,context:{stage:string;characterId:string;relationId?:string;details?:string;negative?:string}):PromptCompilation;
+export function compileStagePrompt(plan:PromptPlan,context:{stage:string;characterId:string;relationId?:string;details?:string;negative?:string;gazeExecution?:{version:string;direction?:string}}):PromptCompilation;
 export function finalizePromptPlan(plan:PromptPlan,context:{commonPrompt:string;characterPrompts:string[];prompt:string;negativePrompt:string;editorial?:string}):PromptPlan;
-export function prepareGenerationPromptRequest(recipe:any,payload:any,context:{stage:string;characterId?:string;relationId?:string;details?:string;negative?:string}):any;
+export function prepareGenerationPromptRequest(recipe:any,payload:any,context:{stage:string;characterId?:string;relationId?:string;details?:string;negative?:string;gazeDirection?:string}):any;
 export function assertPromptPlanRecipe(recipe:any):void;

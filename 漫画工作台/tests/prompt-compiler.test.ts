@@ -15,6 +15,30 @@ import type {InteractionVisualFacts} from '../lib/types';
 
 const structuredFacts=(label='book',count=2):InteractionVisualFacts=>({version:'interaction-facts-1',object:{label,instanceId:`group:${label}`,count},actionId:'pick',phase:'follow_through',contact:{hand:'left',part:label==='book'?'covers':'body',state:'contact'},support:{label:'package',state:'held'},gaze:{kind:'object',targetId:`group:${label}`,surface:label==='book'?'covers':'body',description:`eyes focused on the ${label}`},provenance:{object:{source:'narrative',evidence:`${count} ${label}`}}});
 
+test('local gaze direction survives transport without overriding authored gaze or legacy recipes',()=>{
+ const gazes=['eyes focused on a book','looking at viewer','eyes gently closed','looking upward','eyes focused on another person'];
+ const plan=createPromptPlan({common:[],characters:gazes.map((text,i)=>({characterId:String(i),fields:[{id:`${i}.gaze`,group:'gaze',text,source:'manual'}]}))});
+ const prompt=plan.commonPrompt+' BREAK '+plan.characterPrompts.join(' BREAK ');
+ const finalized=finalizePromptPlan(plan,{commonPrompt:plan.commonPrompt,characterPrompts:plan.characterPrompts,prompt,negativePrompt:plan.negativePrompt});
+ const recipe:any={prompt,negativePrompt:finalized.negativePrompt,generationSpec:{promptPlan:finalized},gazeRepair:{version:'local-gaze-1',directionVersion:'gaze-direction-1'}};
+ for(const [i,direction] of ['down','down','down','down','right'].entries()){
+  const request=prepareGenerationPromptRequest(recipe,{prompt:'stale worker prompt',negative_prompt:'looking at viewer'}, {stage:'gaze',characterId:String(i),gazeDirection:direction,details:'looking at viewer'});
+  if(i===0||i===4){assert.match(request.prompt,i===0?/eyes directed downward/:/eyes directed right/);assert.match(request.negative_prompt,/looking at viewer/);}
+  else {assert.doesNotMatch(request.prompt,/eyes directed downward/);assert.doesNotMatch(request.negative_prompt,/looking at viewer/);}
+  assert.match(request.prompt,new RegExp(gazes[i]));
+ }
+ delete recipe.gazeRepair.directionVersion;
+ const legacy=prepareGenerationPromptRequest(recipe,{prompt:''},{stage:'gaze',characterId:'0',gazeDirection:'down'});
+ assert.doesNotMatch(legacy.prompt,/eyes directed downward/);
+ assert.doesNotMatch(legacy.negative_prompt,/looking at viewer/);
+ for(const direction of ['up','left','right','down-left','down-right','up-left','up-right']){
+  const p=compileStagePrompt(plan,{stage:'gaze',characterId:'0',gazeExecution:{version:'gaze-direction-1',direction}});
+  assert.deepEqual(p.errors,[]);assert.match(p.prompt,/pupils directed/);
+ }
+ const unknown=compileStagePrompt(plan,{stage:'gaze',characterId:'0',gazeExecution:{version:'gaze-direction-1',direction:'invented, looking at viewer'}});
+ assert.doesNotMatch(unknown.prompt,/invented|looking at viewer/);
+});
+
 test('structured upstream facts own quantity, hands, stage and gaze through base and local payloads',()=>{
   const data=getStudioData(),base=data.episode.pages[0].shots[0],id=base.characterIds[0];
   for(const [label,count] of [['book',2],['bottle',3],['lantern',4]] as const){
