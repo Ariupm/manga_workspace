@@ -3967,3 +3967,47 @@
 - 诊断 Agent 复核证据：待独立复核本次实现及实际本地翻译记录。
 - 诊断 Agent 复核结论：待复核，不标记verified。
 - 后续处理：交独立诊断复核；可以重新点击第6格AI细化。此次不替用户重新生成或确认规格。
+
+
+## ISSUE-PROMPT-016 指向目标的食指动作在结构化局部提示词中退化为泛化接触
+
+- 优先级：P1
+- 状态：open
+- 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
+- 已确认事实：job557/shot1261已确认action=pointing at a chapter title with right index finger、contactDescription=right index finger to book page；实际hand/prop prompt仅inspecting和right hand touching page surface。
+- 高概率原因：relationVisualText的visualFacts分支只使用actionId、contact.hand/part及actionPlan.evidence；当前inspect无actionPlan，contactDescription中的食指细节不消费，人物action又被standing替换。
+- 未验证假设：修复程序数据流后的具体视觉改善幅度未知，不以生图作为关闭条件。
+- 反证或冲突：此次AI规格、参考、Pose/Canny均已启用；不能套用job556纯文字诊断。基础图已偏离，后序pass没有明显纠正；执行成功不代表视觉合格。
+- 复现步骤：用job557冻结relation调用relationVisualText(relation,hand)，输出不含index finger/pointing/chapter title；证据workspace/job557-program-reproduction.json。
+- 涉及文件：scripts/prompt-compiler.mjs:73-87、lib/prompts.ts交互契约与有效动作编译
+- 影响范围：单/多人普通人物道具交互，基础/道具/手部局部请求及控制几何。
+- 建议方案：在通用交互契约中保留具体动作、接触手指和目标表面，基础/道具/手部pass共用，不能仅依赖camera尾部补述。
+- 验收标准：指向书页、按钮、地图等动作及不同人物/左右手在所有相关pass保持具体动作与目标，不退化为touch；正常inspect不凭空加食指。 按程序逻辑验收，不生成测试图。
+- 解决 Agent 修改：本轮仅诊断，尚未修改。
+- 解决 Agent 测试：待解决Agent实施后记录程序验证。
+- 残余风险：模型随机性、真实像素定位和视觉执行率属于运行风险；胸像文本与带髋骨架冲突已在原任务preflight警告记录，现有advisory策略不据此恢复硬门禁；视线身份控制竞争仅为假设。
+- 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
+- 诊断 Agent 复核结论：确认程序数据流缺陷，新增open；未对任何既有fixed_pending_review作最终验收。
+- 后续处理：进入解决队列；遵循用户本轮先分析范围，不擅自修复。
+
+
+## ISSUE-PROP-SIZE-001 普通交互道具执行几何忽略已声明尺寸
+
+- 优先级：P1
+- 状态：open
+- 用户报告：2026-10-09要求分析最新翻阅目录图为何仍托书看前方；来源job557，关联ISSUE-PROMPT-015、ISSUE-POSE-052。
+- 已确认事实：job557 visualFacts.object声明width=.32/height=.24；实际relationTrace bounds约.09255×.09，512图约47×46px；control_prop与mask_prop_refinement仅下部小块，实际书明显超出。
+- 高概率原因：propInteractionGeometry无actionGeometry outline时仅按手腕跨度和shape调用propBodySizePlan，未消费visualFacts.object.width/height；普通inspect无actionPlan，走该分支。
+- 未验证假设：修复程序数据流后的具体视觉改善幅度未知，不以生图作为关闭条件。
+- 反证或冲突：此次AI规格、参考、Pose/Canny均已启用；不能套用job556纯文字诊断。基础图已偏离，后序pass没有明显纠正；执行成功不代表视觉合格。
+- 复现步骤：同一job557 relation仅将尺寸从.1/.08改为.4/.3，纯函数bodySize输出完全相同；证据workspace/job557-program-reproduction.json。
+- 涉及文件：scripts/prop-interaction-geometry.mjs:4-36、scripts/sd-worker-logic.mjs:518-550
+- 影响范围：单/多人普通人物道具交互，基础/道具/手部局部请求及控制几何。
+- 建议方案：把已声明物体尺寸贯通统一坐标投影、控制轮廓与局部mask，保留人工位置及手腕接触约束，并明确生成像素与计划定位偏差风险。
+- 验收标准：不同尺寸/人物区域/景别的普通read/inspect/hold道具正确消费尺寸并只投影一次；基础轮廓及局部mask同源；无尺寸旧配方保留明确兼容行为。 按程序逻辑验收，不生成测试图。
+- 解决 Agent 修改：本轮仅诊断，尚未修改。
+- 解决 Agent 测试：待解决Agent实施后记录程序验证。
+- 残余风险：模型随机性、真实像素定位和视觉执行率属于运行风险；胸像文本与带髋骨架冲突已在原任务preflight警告记录，现有advisory策略不据此恢复硬门禁；视线身份控制竞争仅为假设。
+- 诊断 Agent 复核证据：workspace/job557-diagnostic.json、workspace/job557-program-reproduction.json、job557各阶段图；静态代码和纯函数复现，不启动SD。
+- 诊断 Agent 复核结论：确认程序数据流缺陷，新增open；未对任何既有fixed_pending_review作最终验收。
+- 后续处理：进入解决队列；遵循用户本轮先分析范围，不擅自修复。
