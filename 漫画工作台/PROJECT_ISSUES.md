@@ -136,7 +136,7 @@
 ## ISSUE-QA-010 取消生成结果的自动语义质检拦截
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：partially_fixed
 - 用户报告：生成后应直接看到最终结果，是否采用自己决定，工作台不要设置该质量门，并写入记忆。
 - 已确认事实：job545已保存正式图，CLIP道具caption检查记录prop_smartphone/prop_package缺失，任务failed且未进入候选；SD worker仍有检测、换Seed重试和阻断分支，Codex worker也有视觉判断后拒绝候选。
 - 高概率原因：旧自动语义门禁产品规则与最新用户要求冲突。
@@ -150,9 +150,9 @@
 - 解决 Agent 修改：API不再启用CLIP门禁；SD worker移除interrogate/换Seed/门禁阻断，Codex worker取消视觉评估和据此自动修复/重生，全部已生成文件进入候选且不覆盖既有选择；状态unreviewed。恢复工具按新政策恢复保留结果，job545恢复completed及候选，原门禁证据保留在恢复审计，不重生图片。最新政策写入AGENTS、三份短记忆和PROJECT_MEMORY，旧条款明确失效。
 - 解决 Agent 测试：250/250内存库项目测试及77/77执行层测试通过；SD/Codex/恢复脚本语法通过；语义门禁测试覆盖blocked/unverified/failed/pending/缺结果及不同attempt一律允许。job545恢复时校验原图SHA256、尺寸、路径和已确认草稿链，事务回写成功。TypeScript检查通过；两次生产构建分别在prerender/trace阶段因.next文件缺失失败，未确认构建成功（工作区同时有其他任务修改，未清理或覆盖其产物）。
 - 残余风险：模型随机性和视觉执行率由用户判断；未进行图片生成或视觉效果验收。历史故障审计保留，技术后处理/解码失败仍不伪称成功。
-- 诊断 Agent 复核证据：待独立复核。
-- 诊断 Agent 复核结论：不标记verified。
-- 后续处理：交独立诊断复核；不得按旧自动语义门禁要求重新引入拦截。
+- 诊断 Agent 复核证据：2026-10-09：CLIP/视觉评分重试已移除，但sd-worker.mjs:1663以postprocessWarnings.length阻断正式候选。手部可选检测无轮廓分支产生警告；同一passed pixelQa/manual_required semanticQa输入，draftHasHardFailure=false，正式条件=true。见FULL_FLOW_REVIEW_2026-10-09.md。
+- 诊断 Agent 复核结论：partially_fixed：仍有检测不可用阻断成品的确定程序分支，不满足原验收标准。无真实图片生成；已存在有效图片时不得仅因可选检测无结果拒绝候选，真实请求/解码/合成错误仍需区分。
+- 后续处理：回到解决队列：统一草稿/正式的可选检测不可用政策，保留未应用审计与有效图，不删除全部错误警告；修复后做程序验收。
 - 完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础及身份/服装/道具/手/视线pass均保持原语义和参数，单/多人及不同景别无特例；只移除生成完成后的自动语义判定/重试/拦截，草稿整体确认保留，成品事务进入候选且不伪记通过视觉检查，文件/解码/真实后处理错误仍如实记录并保留已有结果。恢复沿同一政策且保留旧错误证据。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 
 ## ISSUE-PROMPT-013 旧交互阶段及局部手部事实误编译为胸前接触动作
@@ -4020,14 +4020,14 @@
 ## ISSUE-MASK-002 手部表面接触遮罩被道具核心保护全部擦除仍记为成功
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：verified
 - 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
 - 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
 - 解决 Agent 修改：2026-10-09：新增共享contact-mask用于接触补全和后续手部细修，在核心保护后恢复有界声明接触窗口，另一手和关联物体仍优先保护。栅格化后核对有效像素及接触点，失败先于请求/检测，记录未应用、保留原图，不设置contactSucceeded、不触发CPU草稿延期。
 - 解决 Agent 测试：286/286内存数据库项目测试，59/59执行层/遮罩/状态/台账测试，TypeScript及worker语法检查通过。遮罩覆盖大小道具、双手/左右手、两个手部阶段、全黑/画外/关联对象保护；动作覆盖结构化输入、拿放三阶段、held工具、Pose投影执行与重放。证据workspace/contact-fix-tests.log、workspace/contact-fix-worker.log。完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→质量策略/草稿整体确认→正式候选回写已核对。声明尺寸宽松策略和人工位置不变；不同人物/左右手/近中全景共用状态与mask函数，关系仍按实例隔离。身份、服装、视线、环境、遮挡和控制强度未覆盖；无效mask保留最近图片且不得触发成功延期，不新增语义验收门或逐项人工审批。草稿整体确认和正式候选事务未改变。发现准备阶段输入校验及首次Pose缺持有状态冲突，已在本根因内修复。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
-- 诊断 Agent 复核结论：原程序缺陷已实施修复，待独立复核；解决Agent不标记verified。
-- 后续处理：新任务使用修复逻辑，交诊断Agent复核；已生成图片不改写。
+- 诊断 Agent 复核结论：verified：本项根因已消除，程序逻辑验收通过，未进行图片生成或视觉效果验收。成品可选检测不可用仍阻断属于既有独立ISSUE-QA-010，已回队列，不隐瞒。
+- 后续处理：本项程序验收完成；模型随机性和实际视觉执行率保留运行风险。
 - 已确认事实：job559 generic_prop和contact_completion_right输出SHA256完全相同。按冻结坐标与当前worker SVG算法重建：保护前2958个非零像素，保护后0；接触点255→0。trace仍requestStatus=succeeded，contactSucceeded=true使CPU草稿手部细修延期。
 - 高概率原因：sd-worker先画白色手/腕桥，再无条件用黑色对象核心矩形覆盖；手指位于书页/面板表面的接触被保护区消掉。发送和合成前均未检查有效mask，HTTP成功被当作接触补全可用。
 - 反证或冲突：尺寸软化可减少覆盖范围，但没有改变遮罩相减算法，也不能保证表面接触点可编辑；这不是中文翻译或具体动作提示词丢失。不得因画面无变化单独判断失败，本条有全黑mask确定证据。
@@ -4036,20 +4036,20 @@
 - 影响范围：书页/地图/屏幕/面板等表面接触，单/双手；对象核心较大时可全黑，较小时也可能擦掉目标接触。
 - 建议方案：区分边缘持握与表面接触，在保护物体主体的同时为已声明接触留可编辑区域；每手校验有效像素及接触覆盖，空mask记录未应用且不能触发成功延期；保留最近可展示图。
 - 验收标准：按不同道具、左右手、表面/边缘接触及极端尺寸栅格化验证：目标接触有有效mask、非目标对象/另一手受保护；空mask不伪报应用且不触发成功延期；基础/局部/候选状态闭合。
-- 诊断 Agent 复核证据：workspace/diagnose-contact-559.json及同名mjs；job559实际stageOutputs/passTraces；当前源码992-1044。来源关联ISSUE-PROP-SIZE-001、ISSUE-PROMPT-016、ISSUE-PERF-001。
+- 诊断 Agent 复核证据：2026-10-09全链程序复核见FULL_FLOW_REVIEW_2026-10-09.md；286项目+59执行层测试与类型检查通过。静态核对输入校验、共享状态、首次/覆盖Pose、两个手部阶段mask以及延期资格、整体确认和候选分支。
 
 
 ## ISSUE-CONTACT-001 准备放置已持物体被统一解释为手物未接触
 
 - 优先级：P1
-- 状态：fixed_pending_review
+- 状态：verified
 - 用户报告：2026-10-09用户要求继续诊断其他问题；本轮只做诊断，不执行修复或生图。
 - 未验证假设：对实际画面改善幅度未知；不以生图作为代码验收条件。
 - 解决 Agent 修改：2026-10-09：actionStageState区分手物接触与动作目标接触：place准备保持contact，pick准备仍approach，place完成released；held工具准备保持握柄且工作端分离。英文规划指令、normalizeInteractionFacts、视觉校验、storyActionTerms、关系契约、Pose supportState与首次/覆盖规划、worker资格同源。手腕仅在真实approach/released时偏移；旧冻结audit继续按记录重放，不重写历史任务。
 - 解决 Agent 测试：286/286内存数据库项目测试，59/59执行层/遮罩/状态/台账测试，TypeScript及worker语法检查通过。遮罩覆盖大小道具、双手/左右手、两个手部阶段、全黑/画外/关联对象保护；动作覆盖结构化输入、拿放三阶段、held工具、Pose投影执行与重放。证据workspace/contact-fix-tests.log、workspace/contact-fix-worker.log。完整出图业务链冲突复核：剧情/人工选择→视觉规格→提示词与交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→质量策略/草稿整体确认→正式候选回写已核对。声明尺寸宽松策略和人工位置不变；不同人物/左右手/近中全景共用状态与mask函数，关系仍按实例隔离。身份、服装、视线、环境、遮挡和控制强度未覆盖；无效mask保留最近图片且不得触发成功延期，不新增语义验收门或逐项人工审批。草稿整体确认和正式候选事务未改变。发现准备阶段输入校验及首次Pose缺持有状态冲突，已在本根因内修复。程序逻辑验收通过，未进行图片生成或视觉效果验收。
 - 残余风险：模型随机性与实际视觉执行率属于产品运行风险；不得新增逐项人工审批或视觉质量阻断。
-- 诊断 Agent 复核结论：原程序缺陷已实施修复，待独立复核；解决Agent不标记verified。
-- 后续处理：新任务使用修复逻辑，交诊断Agent复核；已生成图片不改写。
+- 诊断 Agent 复核结论：verified：本项根因已消除，程序逻辑验收通过，未进行图片生成或视觉效果验收。成品可选检测不可用仍阻断属于既有独立ISSUE-QA-010，已回队列，不隐瞒。
+- 后续处理：本项程序验收完成；模型随机性和实际视觉执行率保留运行风险。
 - 已确认事实：actionStageState(place,anticipation)返回objectState=held与contactState=approach/contactRequired=false；relationVisualText输出right hand approaching the open book with a visible gap，contactPassAllowed=false。prepareActionRelationsV3还把准备阶段手目标向肩偏移.04。
 - 高概率原因：所有anticipation共用手靠近物体状态，没有区分手-工具/持物接触与物体-支持面/工作目标接触。actionPlan优先覆盖显式visualFacts接触。
 - 反证或冲突：pick准备阶段可合法未接触；place准备时已拿着物体应保留手物接触。此分支不适用于job559 inspect/contact，不能据此解释该图；来源ISSUE-PROMPT-015已记录风险，本轮确认并独立建项。
@@ -4058,4 +4058,4 @@
 - 影响范围：准备放置、已握工具但工作端尚未接触等多接触关系；取物准备不能被统一改成握持。
 - 建议方案：区分手物接触和物体目标接触，按明确支持/持有状态推导阶段；prompt、Pose腕点、接触pass资格使用同一分离后的事实。
 - 验收标准：跨对象和左右手验证pick/place三阶段、已握工具准备与工作端分离；held准备保留手物接触，真正取物准备保留间隙；动作文字、坐标、recipe及局部pass一致。
-- 诊断 Agent 复核证据：workspace/diagnose-contact-559.json placeAnticipation纯函数输出及源码。关联ISSUE-PROMPT-015、ISSUE-POSE-043。
+- 诊断 Agent 复核证据：2026-10-09全链程序复核见FULL_FLOW_REVIEW_2026-10-09.md；286项目+59执行层测试与类型检查通过。静态核对输入校验、共享状态、首次/覆盖Pose、两个手部阶段mask以及延期资格、整体确认和候选分支。
