@@ -55,9 +55,11 @@ test('size hints reach projection and worker once for multiple actors, dimension
       assert.equal(relation.propSizeHint.coordinateSpace,'projected_canvas');
       assert.ok(Math.abs(relation.propSizeHint.width-original.width!*control.scenePlan.projection.scale)<1e-10);
       const geometry=propInteractionGeometry(relation,execution.scenePlan.fullPeople,i,512,512,execution.scenePlan.people);
-      assert.ok(geometry.bodySize.width>=relation.propSizeHint.width-1e-10);
-      assert.ok(geometry.bodySize.height>=relation.propSizeHint.height-1e-10);
-      assert.equal(geometry.bodySize.width,geometry.bodySize.envelope.width);
+      const withoutHint=structuredClone(relation);delete withoutHint.propSizeHint;
+      const estimate=propInteractionGeometry(withoutHint,execution.scenePlan.fullPeople,i,512,512,execution.scenePlan.people);
+      assert.ok(geometry.bodySize.width<=estimate.bodySize.width*1.2+1e-10);
+      assert.deepEqual(geometry.center,estimate.center);
+      assert.deepEqual(geometry.contacts,estimate.contacts);
       const evidence=control.scenePlan.evidence.find((e:any)=>e.relationId===relation.relationId);
       assert.equal(evidence.propFootprint.propSizeHint.width,original.width);
     });
@@ -69,12 +71,15 @@ test('size hints reach projection and worker once for multiple actors, dimension
 
 test('hinted geometry changes with size while old snapshots and authored outlines keep their policy',()=>{
   const r=deriveInteractionContracts(fixture())[0],small=structuredClone(r),large=structuredClone(r);
-  small.propSizeHint!.width=.1;small.propSizeHint!.height=.08;large.propSizeHint!.width=.4;large.propSizeHint!.height=.3;
+  small.propSizeHint!.width=.001;small.propSizeHint!.height=.001;large.propSizeHint!.width=4;large.propSizeHint!.height=3;
   const a=propInteractionGeometry(small),b=propInteractionGeometry(large);
   assert.ok(b.bodySize.width>a.bodySize.width);assert.ok(b.bodySize.height>a.bodySize.height);
   assert.deepEqual(a.center,b.center);assert.deepEqual(a.contacts,b.contacts);
   const legacy=structuredClone(r);delete legacy.propSizeHint;
   const original=propInteractionGeometry(legacy);legacy.visualFacts!.object.width=.1;
+  assert.ok(b.bodySize.width<=original.bodySize.width*1.2+1e-10);
+  assert.ok(b.bodySize.height<=original.bodySize.height*1.2+1e-10);
+  assert.ok(a.bodySize.width>=original.bodySize.width*.8-1e-10);
   assert.deepEqual(propInteractionGeometry(legacy),original,'old snapshots do not silently upgrade');
   const authored:any={...large,actionPlan:{geometry:{objectCenter:{x:.5,y:.5},outline:[{points:[{x:.4,y:.4},{x:.6,y:.6}]}]}}};
   assert.ok(Math.abs(propInteractionGeometry(authored).bodySize.width-.2)<1e-8,'mechanism outline wins over hint');
