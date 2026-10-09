@@ -7,7 +7,7 @@ import {actionOutlineBounds,actionOutlineMarkup,propGroupOutline} from "./action
 import { assertPromptPlanRecipe, prepareGenerationPromptRequest } from "./prompt-compiler.mjs";
 import {contactPassAllowed,actionContactTerms} from "./action-stage-policy.mjs";
 import {poseUnitParameters} from "./pose-conditioning-policy.mjs";
-import { draftHasHardFailure } from "./draft-approval-policy.mjs";
+import { draftHasHardFailure, generationHasHardFailure } from "./draft-approval-policy.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
@@ -1660,7 +1660,7 @@ try {
   fs.writeFileSync(path.join(directory, filename), finalImage);
   payload.finalReviewImagePath = `workspace/generated/${filename}`;
   payload.phase = "final";
-  if (postprocessWarnings.length || pixelQa.status === "blocked" || semanticQa.status === "blocked") {
+  if (generationHasHardFailure(payload.recipe)) {
     db.prepare("UPDATE jobs SET payload=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(JSON.stringify(payload), jobId);
     db.prepare("UPDATE shots SET status=? WHERE id=?").run("draft", row.shot_id);
     update("failed", 100, [...postprocessWarnings,...pixelQa.blockers].join("；"), "正式成品质检失败，未写入候选");

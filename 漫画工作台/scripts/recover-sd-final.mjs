@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import sharp from 'sharp';
+import {generationHasHardFailure} from './draft-approval-policy.mjs';
 
 // Recover a completed, retained final pass without calling SD or inventing approvals.
 const jobId = Number(process.argv[2]);
@@ -14,7 +15,7 @@ const payload = JSON.parse(row.payload), recipe = payload.recipe;
 if (payload.phase !== 'final' || !recipe?.approvedDraftPath || !recipe?.semanticApproval) throw new Error('Missing confirmed final lineage');
 const originalGate = recipe.automaticVisualGateResult;
 if (!['blocked','unverified'].includes(originalGate?.status)) throw new Error('Not a recoverable caption gate failure');
-if (recipe.pixelQa?.status !== 'passed' || recipe.semanticQa?.status === 'blocked' || recipe.postprocessWarnings?.length) throw new Error('Other hard gate failed');
+if (recipe.pixelQa?.status !== 'passed' || generationHasHardFailure(recipe)) throw new Error('Other hard gate failed');
 const stages = recipe.stageOutputs || [];
 const outputStages = new Set(['initial','framing_post_crop','identity_refinement','outfit_refinement_skipped','generic_prop','gaze','structured_gaze','umbrella_handoff','final_framing_post_crop']);
 const images = stages.filter(item => outputStages.has(item.stage) || /^(outfit_|contact_completion_|hand_refinement_)/.test(item.stage));
