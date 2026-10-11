@@ -34,13 +34,13 @@
 - 涉及文件：lib/pose-action-semantics.ts、lib/prompts.ts、tests/object-hand-evidence.test.ts。
 - 影响范围：缺少结构化交互的自由文本回退；场景可见手数不应等于单件道具握持手数。
 - 建议方案：对象局部的接触动词与手侧证据先绑定，再推导手数和接触锚点；其他文字保留。
-- 验收标准：笔/剪刀/画笔左右手、真实双手握物、纯可见性、结构化优先及局部prompt回归；实际效果另做SD对照。
+- 验收标准：笔/剪刀/画笔左右手、真实双手握物、纯可见性、结构化优先及局部prompt回归；实际效果与程序状态分开记录。
 - 解决 Agent 修改：新增objectHandEvidence，按对象局部持握证据推导手数、手侧和接触点；后续attachStoryActionContract同样使用对象证据，防止再次按整句抢占另一只手。明确关系接触及结构化visualFacts仍优先。
-- 解决 Agent 测试：297项项目测试、11项执行层/阶段/审批测试及TypeScript通过。笔/剪刀/画笔×左右手×有无双手可见描述的12组归属及prop/hand提示词回归通过，保留真正双手同物与纯可见性边界。全链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→既有质量策略/草稿整体确认→正式候选。deriveInteractionContract按本人文本和对象取证，结构化事实后覆盖；buildEffectivePromptPlan与API保存同一关系，worker通过prepareGenerationPromptRequest检查语义漂移，各局部pass消费冻结关系。发现attachStoryActionContract后置全局手侧覆盖并一并修复；人数/区域/景别、外观、视线、环境、控制权重、mask及状态机未改。历史快照不重编译，失败不会记为应用，结果展示政策不变。程序逻辑验收通过；本条修复的实际视觉效果对照尚未完成，不能宣称动作视觉问题已解决。日志workspace/object-hand-tests.log、object-hand-types.log、object-hand-execution.log。
+- 解决 Agent 测试：297项项目测试、11项执行层/阶段/审批测试及TypeScript通过。笔/剪刀/画笔×左右手×有无双手可见描述的12组归属及prop/hand提示词回归通过，保留真正双手同物与纯可见性边界。全链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→既有质量策略/草稿整体确认→正式候选。deriveInteractionContract按本人文本和对象取证，结构化事实后覆盖；buildEffectivePromptPlan与API保存同一关系，worker通过prepareGenerationPromptRequest检查语义漂移，各局部pass消费冻结关系。发现attachStoryActionContract后置全局手侧覆盖并一并修复；人数/区域/景别、外观、视线、环境、控制权重、mask及状态机未改。历史快照不重编译，失败不会记为应用，结果展示政策不变。程序逻辑验收通过；本条已完成写字/剪纸×双种子×修前后共8张实际SD配对，全部查看，4组均无可确认动作改善；不能宣称动作视觉问题已解决。日志workspace/object-hand-tests.log、object-hand-types.log、object-hand-execution.log。
 - 残余风险：复杂并列、省略代词及多对象几何仍需结构化事实；不能据此宣称所有自由文本都能无歧义解析。
 - 诊断 Agent 复核证据：修前实际编译文本可复现。
 - 诊断 Agent 复核结论：未复核，不标记verified。
-- 后续处理：程序回归及全链检查，展示同种子对照图，效果与代码状态分开记录。
+- 后续处理：代码交独立复核；实际8张对照显示未改善动作，保留真实视觉执行问题，详见SD15_ACTION_ARCHITECTURE_2026-10-11.md。
 
 ## ISSUE-POSE-058 普通杯饮水没有自动杯沿与口部几何
 
