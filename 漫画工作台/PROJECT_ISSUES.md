@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-POSE-057 场景时间词误改动作阶段和接触关系
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：持续验证动作流程；阶段矩阵检查发现，关联ISSUE-POSE-055/056。
+- 已确认事实：storyActionPhase以无词边界的after/before匹配阶段，picking up a book in the afternoon被推成follow_through；placing a book after lunch被推成follow_through，opening a door before sunrise被推成anticipation。推导几何和contactPassAllowed随错误阶段变化。
+- 高概率原因：将场景时间介词或其子串等同动作状态转换，且显式阶段判断与阶段解析使用两份规则。
+- 未验证假设：未知历史成图是否受此缺陷影响；不以单张图反推根因。
+- 反证或冲突：明确phase必须优先，before contact/pre-contact与完成拿放仍要正确；不删除正常时间文字，不重写历史recipe。
+- 复现步骤：调用storyActionPhase和inferStoryActionContract输入上述三句，比较相同动作去掉时间词的phase/geometry。
+- 涉及文件：lib/action-phase-semantics.ts、lib/story-action-contract.ts、lib/pose-v2.ts、tests/action-prompt-regression.test.ts。
+- 影响范围：无明确结构化阶段的自由动作解析；新动作契约及其几何/接触pass。
+- 建议方案：统一阶段识别，英语标记增加词边界；before/after仅接受独立阶段别名或明确动作/接触短语，不把场景时间当阶段。
+- 验收标准：拿放/开关/写字/剪纸搭配时间描述与无时间基线具有相同阶段/几何/接触条件；准备/接触/完成显式覆盖及既有别名保持。
+- 解决 Agent 修改：统一explicitStoryPhase用于故事解析、明确阶段覆盖判断及Pose派生，限定时间介词匹配范围；原时间文字作为evidence保留。全链检查发现Pose内重复规则同样误判，一并修复，原Pose额外别名保留并加词边界。
+- 解决 Agent 测试：292项目测试、17执行层/阶段/审批测试及TypeScript通过。6动作×4时间×2语序共48组几何/接触等价检查，另5动作×3时间共15组Pose/有效手部prompt检查；阶段别名与明确覆盖通过。完整链复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手部/视线→现有质量策略/草稿整体确认→正式候选。修复故事与Pose两个根因入口，仍由同一阶段驱动物体支持几何/手物间隙及contactPassAllowed；明确阶段优先，时间文本不丢弃。多人/区域/景别及其他动作现有回归通过；控制参数、外观、mask、视线与环境不改写，历史recipe保持冻结，失败不伪报应用，无新增门禁/确认或候选流程变化。除已修复的重复Pose入口外未发现新增链路冲突。程序逻辑验收通过，未进行图片生成或视觉效果验收。日志workspace/action-phase-time-tests.log、action-phase-time-execution.log、action-phase-time-types.log。
+- 残余风险：自然语言多事件先后关系仍需上游明确结构化phase；不宣称任意句法均可解析。模型随机性和实际视觉执行率为运行风险。
+- 诊断 Agent 复核证据：修前直接调用可复现；待独立复核。
+- 诊断 Agent 复核结论：未复核，不标记verified。
+- 后续处理：交独立诊断复核，保留复杂多事件句法和真实视觉执行率风险。
+
 ## ISSUE-POSE-056 头部身体描述抢先命中导致工具动作契约丢失
 
 - 优先级：P1

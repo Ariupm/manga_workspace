@@ -5,8 +5,44 @@ import {storyActionPhase,inferStoryActionContract} from '../lib/story-action-con
 import {contactPassAllowed} from '../scripts/action-stage-policy.mjs';
 import {resolvePropVisualFacts,compileStagePrompt,prepareGenerationPromptRequest,finalizePromptPlan} from '../scripts/prompt-compiler.mjs';
 import {poseUsagePlan,referenceRegionPlan} from '../scripts/generation-control-policy.mjs';
+import {derivePoseScenePlanV2} from '../lib/pose-v2';
 
 const actor:any={id:'actor',name:'Actor',appearanceEn:'adult woman',visualTraits:{},invariantsEn:[],references:[]};
+test('scene time does not change action stage, support geometry or local contact eligibility',()=>{
+ const input={object:'book',purpose:'pick',objectCenter:{x:.5,y:.6},region:{xStart:0,xEnd:1}};
+ for(const action of ['picking up a book','placing a book','opening a door','closing a door','writing with a pen','cutting paper with scissors'])for(const time of ['in the afternoon','after lunch','before sunrise','under the afterglow']){
+  const object=action.includes('door')?'door':action.includes('pen')?'pen':action.includes('scissors')?'scissors':'book';
+  const base=inferStoryActionContract({...input,object},action)!;
+  for(const text of [`${action} ${time}`,`${time}, ${action}`]){
+   const plan=inferStoryActionContract({...input,object},text)!;
+   assert.equal(storyActionPhase(text),'contact',text);assert.equal(plan.phase,base.phase,text);
+   assert.deepEqual(plan.geometry,base.geometry,text);
+   assert.equal(contactPassAllowed({actionPlan:plan}),true,text);
+  }
+  assert.equal(inferStoryActionContract({...input,object},`${action} ${time}`,'anticipation')!.phase,'anticipation');
+  assert.equal(inferStoryActionContract({...input,object},`${action} ${time}`,'follow_through')!.phase,'follow_through');
+ }
+ for(const [text,expected] of [['before contact','anticipation'],['before opening a door','anticipation'],['after placing the book','follow_through'],['after contact','follow_through'],['picked up a book','follow_through'],['preparing to write','anticipation']] as const)assert.equal(storyActionPhase(text),expected);
+ assert.equal(inferStoryActionContract(input,'reaching for the book','after lunch')!.phase,'anticipation');
+ assert.equal(inferStoryActionContract(input,'placing the book','after')!.phase,'follow_through');
+});
+test('Pose planning and effective local prompts use the same phase when scene time is present',()=>{
+ for(const action of ['walking forward','holding a book','picking up a book','placing a book','cutting paper with scissors'])for(const time of ['in the afternoon','after lunch','before sunrise']){
+  const shot=(text:string):any=>({id:9850,pageId:1,order:1,description:text,actionEn:text,sceneEn:'room',camera:'wide shot',cameraEn:'wide shot',characterIds:['actor'],characterLooks:{},visualSpecConfirmed:true,visualSpec:{visibleFacts:[text],camera:{shotSize:'wide shot'},characters:[{characterId:'actor',action:text,expression:'neutral',region:{xStart:0,xEnd:1}}],scene:{location:'room',timeOfDay:'day',lighting:'daylight'},interactions:[],interaction:null}});
+  const base=shot(action),timed=shot(`${action} ${time}`);
+  assert.equal(derivePoseScenePlanV2(timed,[])!.people[0].phase,derivePoseScenePlanV2(base,[])!.people[0].phase);
+  const a=buildRegionalPrompt(base,[],[actor],{posePlannerVersion:'3.0'}),b=buildRegionalPrompt(timed,[],[actor],{posePlannerVersion:'3.0'});
+  assert.deepEqual(b.poseControl!.scenePlan.people.map(p=>p.phase),a.poseControl!.scenePlan.people.map(p=>p.phase));
+  for(const c of [a,b]){
+   const plan=buildEffectivePromptPlan(c,c.poseControl as any);
+   for(const r of plan.facts.relations){
+    const terms=compileStagePrompt(plan,{stage:'hand',characterId:'actor',relationId:r.relationId});
+    assert.deepEqual(terms.errors,[]);
+    assert.doesNotMatch(terms.prompt,/having placed and released|holding after picking up|hand approaching.*visible gap/);
+   }
+  }
+ }
+});
 function scene(camera='medium shot',object='package'):any {
   const action=`reaching for ${object} on the shelf`;
   return {id:9800,pageId:1,order:1,title:'action',description:action,scene:'workshop',sceneEn:'workshop with shelving',timeOfDay:'day',actionEn:action,expressionEn:'neutral',camera,cameraEn:camera,compositionEn:'',lightingEn:'daylight',characterIds:['actor'],characterLooks:{},environment:{},visualSpecConfirmed:true,

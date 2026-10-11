@@ -50,3 +50,18 @@ ISSUE-POSE-055：`reaching up/down/across ...`无法通过原来的动作契约�
 全链复核：上游规格/确认动作→动作契约/提示词→recipe→Regional/ControlNet→基础及身份/服装/道具/手部/视线→现有质量/草稿审批→候选回写。此次只修正查询筛选次序，原始动作证据、目标/工作面、手侧、视线、外观控制与冻结任务保持原数据流；局部提示和几何使用同一操作。失败路径未伪报成功，展示和审批未修改。没有发现本次引入的独立冲突。
 
 ISSUE-POSE-056状态fixed_pending_review。程序逻辑验收通过，未进行图片生成或视觉效果验收；不能由此证明历史看镜头图全部由该缺陷造成，也不能声称全部动作视觉问题解决。
+
+## 续验：场景时间误改阶段（ISSUE-POSE-057）
+
+旧规则把`afternoon`中的after识别为完成阶段；`placing a book after lunch`会提前释放手，`opening a door before sunrise`会变为尚未接触。实际调用storyActionPhase/inferStoryActionContract可复现。继续检查发现Pose派生也有相同的宽泛before/after规则，因此只改故事契约不足以闭合流程。
+
+新增共享阶段解析，故事契约、明确phase判断与Pose派生共同使用。英语采用词边界；before/after只有独立阶段别名或明确动作/接触短语才表示阶段转换。时间描述保留为原始证据，结构化phase优先。原Pose额外阶段别名保留并限制词边界。
+
+- 6动作（拿、放、开、关、写字、剪切）×4时间×2语序，共48组：阶段、几何和接触pass与无时间基线一致。
+- 5动作（行走、持书、拿、放、剪切）×3时间，共15组：Pose和有效手部prompt不被错误改成接近、释放或拿起完成。
+- 明确准备/完成覆盖及pre-contact、before contact、after placing等动作阶段表达保留。
+- 最终292项目测试、17执行层/阶段/审批测试及TypeScript通过。日志workspace/action-phase-time-tests.log、action-phase-time-execution.log、action-phase-time-types.log。
+
+全链复核覆盖剧情/人工选择→视觉规格→契约/提示词→recipe/payload→Regional/ControlNet→基础及各局部pass→现有质量/草稿确认→候选。发现并修复重复的Pose误判；阶段到支持几何、接触条件和手部提示保持同源。外观、视线、mask算法与控制参数未修改；旧任务不重写，失败/展示/候选逻辑不改变，无新增冲突。复杂多事件先后仍依赖上游明确phase，未宣称任意自然语言均已支持。
+
+ISSUE-POSE-057为fixed_pending_review。程序逻辑验收通过，未进行图片生成或视觉效果验收。

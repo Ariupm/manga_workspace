@@ -1,4 +1,5 @@
 import {poseConditioningPolicy} from "../scripts/pose-conditioning-policy.mjs";
+import {explicitStoryPhase} from './action-phase-semantics';
 import type { Shot } from "./types";
 import type { PoseControlV3 } from "./pose-v3/schema";
 import { isNarrativeActionInstruction } from "./action-description";
@@ -397,8 +398,9 @@ const interactionFromTemplate = (templateId: string): PoseInteractionKindV2 | nu
 };
 
 const derivePhase = (text: string): PosePhase => {
-  if (/after|finished|release|released|result|follow.?through|已经|完成|松开/i.test(text)) return "follow_through";
-  if (/before|about to|prepar|begin|beginning|start|approach|伸向|准备|即将/i.test(text)) return "anticipation";
+  const explicit=explicitStoryPhase(text);if(explicit)return explicit;
+  if (/\b(?:release|result)\b/i.test(text)) return "follow_through";
+  if (/\b(?:begin|beginning|start|approach|approaching)\b|伸向|即将/i.test(text)) return "anticipation";
   return "contact";
 };
 
