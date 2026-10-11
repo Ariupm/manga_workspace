@@ -119,7 +119,7 @@ import {deriveInteractionContract} from '../lib/prompts';
 import {inferStoryActionContract} from '../lib/story-action-contract';
 
 test('reaching uses one canonical approach contract through prompt pose and worker preparation',()=>{
- for(const action of ['Reaching for a package on the shelf','伸手去拿货架上的包裹','Reaching for a book on the shelf with the left hand','Reaching for a phone on the shelf with both hands']){
+ for(const action of ['Reaching for a package on the shelf','伸手去拿货架上的包裹','Reaching for a book on the shelf with the left hand','Reaching for a phone on the shelf with both hands','Reaching up to a cup on the shelf with the right hand','Reaching down toward a book with the left hand','Reaching out toward a package with both hands']){
  const s=shot(action);s.visualSpecConfirmed=false;s.visualSpec=null;
  const c=deriveInteractionContract(s,'actor');assert.equal(c.purpose,'pick',action);assert.equal(c.actionPlan?.phase,'anticipation');assert.doesNotMatch(c.positive.join(' '),/physically contact|interaction purpose inspect/);assert.doesNotMatch(c.negative.join(' '),/empty hands/);
  if(/both hands/.test(action))assert.equal(c.handMode,'two');else assert.equal(c.handMode,'one');

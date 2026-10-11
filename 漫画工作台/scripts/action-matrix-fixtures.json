@@ -1,0 +1,45 @@
+{
+  "version": "sd15-action-matrix-1",
+  "purpose": "Explicit SD action capability experiment; never a production quality gate.",
+  "seeds": [710101, 710102],
+  "settings": {"width": 512, "height": 512, "steps": 12, "cfg_scale": 5.5, "sampler_name": "DPM++ 2M", "scheduler": "Karras"},
+  "negative": "low quality, blurry, malformed hands, extra fingers, extra limbs, text, watermark",
+  "cases": [
+    {
+      "id": "write",
+      "prompt": "anime illustration, side view of an adult woman with pink hair seated at a desk, writing on a sheet of paper with a pen, her right hand gripping the pen, pen tip touching the paper, her left hand resting on the paper, her head bent down toward her writing, both hands and the paper visible, daylight",
+      "criteria": ["pen held in hand", "pen tip contacts paper", "other hand supports paper", "head oriented toward the writing"],
+      "failureExample": "Holding a pen near paper without visible tip contact is partial, not a completed writing action."
+    },
+    {
+      "id": "drink",
+      "prompt": "anime illustration, side view of an adult woman with pink hair drinking from a ceramic cup, one hand gripping the cup, the cup raised and tilted, the rim touching her lips, head and entire cup visible, daylight",
+      "criteria": ["hand grips cup", "cup rim contacts lips", "cup orientation supports drinking"],
+      "failureExample": "A cup held at chest height is not drinking."
+    },
+    {
+      "id": "pour",
+      "prompt": "anime illustration, side view of an adult woman with pink hair pouring water from a pitcher into a glass on a table, her right hand holding and tilting the pitcher, a visible stream of water flowing from the spout into the glass, her left hand steadying the glass, her head bent down watching the stream, both hands and both vessels visible, daylight",
+      "criteria": ["pitcher grasped and tilted", "stream connects spout to receiving glass", "receiving glass supported", "target relations are unambiguous"],
+      "failureExample": "Two vessels or water drawn away from the receiving glass are insufficient."
+    },
+    {
+      "id": "cut-paper",
+      "prompt": "anime illustration, side view of an adult woman with pink hair seated at a table cutting a sheet of paper with scissors, her right hand holding the scissors by the finger loops, her left hand holding the paper, the paper edge between the open blades, her head bent down watching the cut, both hands and the scissors visible, daylight",
+      "criteria": ["recognizable scissors with finger loops and blades", "tool grasp matches handle", "paper edge lies between blades", "other hand supports paper"],
+      "failureExample": "A knife or pen is a wrong tool even if a hand touches paper."
+    },
+    {
+      "id": "cut-tape",
+      "prompt": "anime illustration, side view of an adult woman with pink hair seated at a table cutting the sealing tape on a closed cardboard box with scissors, her right hand holding the scissors by the finger loops, the blades contacting the tape on top of the box, her left hand steadying the box, her head bent down watching the cut, both hands and the scissors visible, daylight",
+      "criteria": ["recognizable scissors held by handle", "blade contacts sealing tape", "box remains closed at this action phase", "other hand stabilizes box"],
+      "failureExample": "Holding an already open box or writing on it is not cutting the sealing tape."
+    },
+    {
+      "id": "reach-cup",
+      "prompt": "anime illustration, side view of an adult woman with pink hair standing beside a shelf, reaching up with her right arm to grasp a cup on a shelf above her head, her right hand touching the cup handle, her head tilted up looking at the cup, the raised arm and shelf visible, daylight",
+      "criteria": ["shelf and target above head", "arm extended upward toward cup", "hand reaches cup handle", "head and gaze oriented upward"],
+      "failureExample": "A cup beside the face, a lowered arm or a shelf below the head does not satisfy upward reaching."
+    }
+  ]
+}

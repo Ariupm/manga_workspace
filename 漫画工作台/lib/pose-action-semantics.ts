@@ -1,4 +1,7 @@
 import {positivePoseText} from './pose-basic-semantics';
+// Shared by action contracts and the V3 template catalog. Directional reaching
+// does not require an immediately adjacent target preposition.
+export const reachActionPattern = /\breach(?:ing)?\s+(?:for|towards?|to|out|up(?:wards?)?|down(?:wards?)?|across|forward|backward)\b/i;
 export function positiveActionText(text:string){
  const s=positivePoseText(text).toLowerCase().replace(/\b(?:not|never|without)\s+(?:(?:currently|actually)\s+)?(?:reaching|reach|placing|putting|picking\s+up|taking|lifting|opening|closing|pressing|turning|rotating|pushing|pulling)\b[^,;.]*/g,' ').replace(/(?:不|不要|没有)(?:伸手去拿|伸手拿|伸手取|放下|放置|拿起|取出|打开|关闭|推动|拉动|按按钮|转动旋钮)/g,'');
  return s;
@@ -6,7 +9,7 @@ export function positiveActionText(text:string){
 export function actionIntent(text:string){
  const s=positiveActionText(text);
  if(/\b(?:plac(?:e|ing|ed)|put(?:ting)?|set(?:ting)? down)\b|放下|放置|摆放/.test(s))return 'place';
- if(/\breach(?:ing)?\s+(?:for|towards?|to)\b|伸手(?:去|准备|想要)?(?:拿|取|够)|伸手.*(?:拿取|取件)/.test(s))return 'reach';
+ if(reachActionPattern.test(s)||/伸手(?:去|准备|想要)?(?:拿|取|够)|伸手.*(?:拿取|取件)/.test(s))return 'reach';
  if(/\b(?:pick(?:ing|ed)? up|tak(?:e|ing|en)|lift(?:ing)?)\b|拿起|取出|拿到|取到/.test(s))return 'pick';
  if(/\b(?:opening|unfolding)\b|^\s*(?:open|unfold)\s+|打开|掀开/.test(s))return 'open';
  if(/\b(?:closing|shutting)\b|^\s*(?:close|shut)\s+|关闭|关门|关窗|合上/.test(s))return 'close';

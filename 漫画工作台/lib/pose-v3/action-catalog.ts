@@ -1,10 +1,11 @@
 import type {PoseActionFamilyV2} from '../pose-v2';
+import {reachActionPattern} from '../pose-action-semantics';
 /** Explicit template semantics shared by registry, recognition and manual overrides. */
 export const extraActionsV3:Record<string,{label:string;family:PoseActionFamilyV2;pattern:RegExp;prompt:string}>={
  turn:{label:'转身',family:'turn',pattern:/\bturn(?:ing)? (?:around|back|the body)|转身|回身/i,prompt:'turning the torso'},
  bend:{label:'弯腰',family:'bend',pattern:/\bbend(?:ing)? (?:down|forward)|弯腰|俯身/i,prompt:'bending forward at the hips'},
  point:{label:'指向',family:'point',pattern:/\bpoint(?:ing)?(?: at| toward| to)|指向|指着/i,prompt:'pointing toward the target'},
- reach:{label:'伸手',family:'reach',pattern:/\breach(?:ing)?(?: for| toward| out)|伸手|探手/i,prompt:'reaching toward the target'},
+ reach:{label:'伸手',family:'reach',pattern:new RegExp(`${reachActionPattern.source}|伸手|探手`,'i'),prompt:'reaching toward the target'},
  self_touch:{label:'触碰头部',family:'self_touch',pattern:/touch(?:ing)? (?:the |her |his )?(?:head|face)|摸头|摸脸|扶额/i,prompt:'touching the side of the head'},
  nod:{label:'低头／点头姿态',family:'head_gesture',pattern:/\bnod(?:ding|s)?\b|lower(?:ing)? (?:the |her |his )?head|点头|低头/i,prompt:'head inclined downward'},
  look_up:{label:'抬头',family:'head_gesture',pattern:/look(?:ing)? up|rais(?:e|ing) (?:the |her |his )?head|抬头|仰头/i,prompt:'head tilted upward'},
