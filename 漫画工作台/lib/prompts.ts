@@ -1,7 +1,7 @@
 import {gazeInstruction,viewCompatibleVisibility} from "../scripts/gaze-expression.mjs";
 import {bindWorkInteractions} from './coupled-interactions';
 import {inferStoryActionContract,storyActionTerms,type StoryActionContract} from "./story-action-contract";
-import { ART_STYLE, ACTION_PRESENTATION_VERSION, composeGenerationPrompt, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
+import { ART_STYLE, ACTION_PRESENTATION_VERSION, LOCAL_CAMERA_CONTEXT_VERSION, composeGenerationPrompt, compilePromptFields, createPromptPlan, rebindPromptPlanRelations, relationVisualText, resolvePropVisualFacts, transferSupportLabel, visibleClothingText, uniquePrompt, promptTerms, type PromptPlan, type PromptCharacterFacts, type PromptField } from "../scripts/prompt-compiler.mjs";
 import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
 import {synchronizeBasicPosePromptV3} from "./pose-v3/prompt-consistency";
 import type {PoseControlV3} from "./pose-v3/schema";
@@ -1784,7 +1784,7 @@ export function buildRegionalPrompt(
   negativeBlocks.identity = [negativeBlocks.identity, outfitNegatives].filter(Boolean).join(", ");
   // Outfit exclusions are scoped to their owner, not broadcast to other people.
   negativeBlocks.identity = negativeBlocks.identity.replace(outfitNegatives, "");
-  const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks,presentationVersion:ACTION_PRESENTATION_VERSION});
+  const promptPlan = createPromptPlan({common:commonFields,characters:characterFacts,relations:allInteractionContracts,negativeBlocks,presentationVersion:ACTION_PRESENTATION_VERSION,localCameraContextVersion:LOCAL_CAMERA_CONTEXT_VERSION});
   const negativePrompt = promptPlan.negativePrompt;
   characterRegions.forEach((region,index)=>{region.prompt=promptPlan.characterPrompts[index];});
   const regionPrompts = promptPlan.characterPrompts;

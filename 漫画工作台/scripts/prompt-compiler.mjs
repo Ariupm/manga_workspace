@@ -6,6 +6,7 @@ import {assertControlPolicyRequest} from './generation-control-policy.mjs';
 
 export const PROMPT_COMPILER_VERSION = 'comic-facts-1';
 export const ACTION_PRESENTATION_VERSION = 'action-presentation-1';
+export const LOCAL_CAMERA_CONTEXT_VERSION = 'local-camera-context-1';
 export const ART_STYLE = 'anime illustration, clean line art, soft cel shading';
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 // Browser/API/worker share this deterministic audit fingerprint (not security).
@@ -262,7 +263,7 @@ export function compilePromptFields(fields = [], negative = '') {
   return { prompt: accepted.join(', '), negativePrompt: uniquePrompt(negatives.filter(Boolean).join(', ')), audit, errors, statistics: { characters: accepted.join(', ').length, terms: accepted.length } };
 }
 
-export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE, presentationVersion }) {
+export function createPromptPlan({ common, characters, relations = [], negativeBlocks = {}, style = ART_STYLE, presentationVersion, localCameraContextVersion }) {
   const narrative = presentationVersion === ACTION_PRESENTATION_VERSION;
   const priority=narrative ? ['position','pose','action','interaction','hands','gaze','occlusion','identity','clothing','body','expression','condition'] : ['position','identity','pose','action','interaction','hands','clothing','body','expression','gaze','occlusion','condition'];
   characters=characters.map(person=>{
@@ -280,7 +281,7 @@ export function createPromptPlan({ common, characters, relations = [], negativeB
   const people = characters.map(person => ({ ...person, compiled: compilePromptFields(person.fields, person.negative || '') }));
   const commonNegatives = people.length === 1 ? people[0].compiled.negativePrompt : promptTerms(people[0]?.compiled.negativePrompt).filter(term => people.every(p => promptTerms(p.compiled.negativePrompt).includes(term))).join(', ');
   const negative = uniquePrompt([...Object.values(negativeBlocks), shared.negativePrompt, commonNegatives].filter(Boolean).join(', '));
-  const snapshot = { consistencyVersion:PROMPT_CONSISTENCY_VERSION, ...(presentationVersion ? {presentationVersion} : {}), common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
+  const snapshot = { consistencyVersion:PROMPT_CONSISTENCY_VERSION, ...(presentationVersion ? {presentationVersion} : {}), ...(localCameraContextVersion ? {localCameraContextVersion} : {}), common, characters: people.map(({compiled, ...person}) => ({...person, negative:compiled.negativePrompt})), relations, style, negativeBlocks };
   const relationErrors=relations.filter(r=>!Number.isInteger(r.expectedCount??1)||(r.expectedCount??1)<1||(r.expectedCount??1)>16).map(r=>`${r.relationId}: prop count must be an integer from 1 to 16`);
   const consistencyErrors=[...factSetConsistencyErrors(snapshot),...people.flatMap(p=>promptConsistencyErrors({prompt:p.compiled.prompt,negative:[negative,p.compiled.negativePrompt].join(', '),person:p,relations})),...promptConsistencyErrors({prompt:shared.prompt,negative})];
   return { version: PROMPT_COMPILER_VERSION, factsHash: hash(snapshot), facts: snapshot, commonPrompt: shared.prompt, characterPrompts: people.map(p => p.compiled.prompt), negativePrompt: negative, characterNegatives: people.map(p => ({ characterId: p.characterId, prompt: p.compiled.negativePrompt })), audit: [...shared.audit, ...people.flatMap(p => p.compiled.audit),...(narrative?eventPresentationWarnings(relations):[])], errors: [...new Set([...shared.errors, ...people.flatMap(p => p.compiled.errors),...relationErrors,...consistencyErrors])] };
@@ -360,6 +361,25 @@ export function validatePromptEditorial(plan, { common = '', characters = [], gl
   return errors;
 }
 
+// Camera targets describe the whole shot, not an object to repaint in every
+// local mask. Project only bounded gaze clauses; never remove nouns globally
+// (a garment may intentionally have a book print). Actor gaze stays in its
+// owned field, and all original camera text remains in the base facts.
+function localCameraField(field) {
+  const audit = [];
+  const text = promptTerms(field.text).map(term => {
+    const match = term.match(/\b(?:looking|gazing)\s+(?:(?:directly|down|up|downward|upward|left|right)\s+){0,2}(?:at|towards?)\s+.+$/i);
+    if (!match) return term;
+    const prefix = term.slice(0, match.index).replace(/\s*\band\s*$/i, '').trim();
+    // An actor sentence or ambiguous prose in this field needs upstream
+    // clarification; do not guess an actor binding or silently erase it.
+    if (prefix && !/^(?:(?:slightly|high|low|eye[- ]level|front|rear|back|side|three[- ]quarter|over[- ]the[- ]shoulder|bird'?s[- ]eye|worm'?s[- ]eye|top[- ]down|overhead|angled|from|the|at|a|an|right|left|front[- ]right|front[- ]left|rear[- ]right|rear[- ]left|angle|view|camera|perspective)\s*)+$/i.test(prefix)) return term;
+    audit.push({factId:field.id,source:field.source,requested:term,applied:prefix,reason:'local_camera_excludes_shot_gaze_target'});
+    return prefix;
+  }).filter(Boolean).join(', ');
+  return {field:{...field,text},audit};
+}
+
 export function compileStagePrompt(plan, { stage, characterId, relationId, details = '', negative = '', gazeExecution } = {}) {
   if (plan?.version !== PROMPT_COMPILER_VERSION) throw new Error('Unsupported prompt compiler version');
   const person = plan.facts.characters.find(p => p.characterId === characterId);
@@ -387,7 +407,11 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   if(consistent&&['prop','hand','outfit','handoff'].includes(stage))selected.push(...person.fields.filter(f=>['pose','occlusion'].includes(f.group)&&!selected.includes(f)));
   const linked=consistent&&relation ? plan.facts.relations.filter(r=>r.characterId===characterId&&r.required&&r.relationId!==relationId&&(r.objectInstanceId===relation.visualFacts?.workTarget?.instanceId||r.visualFacts?.workTarget?.instanceId===relation.objectInstanceId)) : [];
   const relationText = relation && stage !== 'gaze' ? uniquePrompt([relation,...linked].map(r=>narrative?relationEventText(r,stage):relationVisualText(r,stage,consistent)).join(', ')) : '';
-  const scene = plan.facts.common.filter(f => (consistent?['lighting','style','cameraAngle']:['lighting', 'style']).includes(f.group));
+  const sceneAudit = [];
+  const scene = plan.facts.common.filter(f => (consistent?['lighting','style','cameraAngle']:['lighting', 'style']).includes(f.group)).map(f => {
+    if(f.group!=='cameraAngle'||plan.facts.localCameraContextVersion!==LOCAL_CAMERA_CONTEXT_VERSION)return f;
+    const projected=localCameraField(f);sceneAudit.push(...projected.audit);return projected.field;
+  });
   const exclusions = { identity: 'blurry face, malformed eyes, wrong identity', outfit: 'wrong garment category, wrong garment color, missing clothing layer', prop: 'duplicated prop, unrelated object, malformed hands', hand: 'extra hand, fused fingers, broken wrist, detached hand', gaze: 'crossed eyes, mismatched pupils', handoff: 'fused hands, disconnected umbrella handle' }[stage];
   const personExclusions = promptTerms(person.negative).filter(term => ['identity','gaze'].includes(stage)
     ? !/garment|clothing|coat|skirt|dress|bag|shoe|full body|legs/i.test(term)
@@ -399,6 +423,7 @@ export function compileStagePrompt(plan, { stage, characterId, relationId, detai
   const relationField={ id: `${stage}.relation`, group: 'relation', text: relationText, source: 'interaction_contract' };
   const directionField={id:`${stage}.execution_direction`,group:'gaze',text:gazeCues.positive,source:'resolved_gaze_direction'};
   const result=compilePromptFields([...(gazeCues.positive?[directionField]:[]),...(narrative?[relationField,...selected]:[...selected,relationField]), { id: `${stage}.details`, group: 'details', text: details, source: 'stage_context' }, ...scene], localNegative);
+  result.audit.push(...sceneAudit);
   if(consistent){
     result.errors.push(...promptConsistencyErrors({prompt:result.prompt,negative:result.negativePrompt,person,relations:plan.facts.relations}));
     if(suppliedDetails!==details)result.audit.push({factId:`${stage}.details`,source:'stage_context',requested:suppliedDetails,applied:details,reason:'effective_facts_own_action_and_gaze'});
