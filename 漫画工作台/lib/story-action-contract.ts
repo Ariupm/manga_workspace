@@ -1,4 +1,4 @@
-import {actionIntent,positiveActionText} from './pose-action-semantics';
+import {actionIntent,positiveActionText,objectHandEvidence} from './pose-action-semantics';
 import {explicitStoryPhase} from './action-phase-semantics';
 import {extraTemplateFromText} from './pose-v3/action-catalog';
 import {resolveActionMechanism,mechanismPromptTerms} from '../scripts/action-mechanism.mjs';
@@ -10,14 +10,18 @@ export type StoryActionContract={version:'story-action-1';actionId:string;phase:
 const objectActionIds=['open','close','operate_environment','write','tool','push','pull','pick','place','drink'];
 export function storyActionPhase(text:string):PosePhase{return explicitStoryPhase(text)||'contact';}
 /** Enrich the existing prop contract; do not re-generate identity, clothing or camera decisions. */
-export function inferStoryActionContract(input:{object:string;expectedCount?:number;purpose:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
+export function inferStoryActionContract(input:{object:string;expectedCount?:number;purpose:string;contactDescription?:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
  const positive=positiveActionText(action);
  const intent=forcedActionId||actionIntent(positive)||extraTemplateFromText(positive,[...objectActionIds,'reach'])||(input.purpose==='operate'&&/using|hammering|tighten|screwing|painting|用|敲|拧紧|绘画/i.test(positive)?'tool':null);
  const id=intent==='reach'?'pick':intent;
  if(!id||!objectActionIds.includes(id))return null;
- const explicitPhase=explicitStoryPhase(phaseText);
+ const explicitPhase=explicitStoryPhase(phaseText)||explicitStoryPhase(action);
  const finishingTouch=id==='pick' && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(action);
- const phase=explicitPhase|| (intent==='reach'?'anticipation':finishingTouch?'follow_through':storyActionPhase(action+' '+phaseText)),object=input.object.toLowerCase();
+ // Reaching describes the limb direction, but an explicit current hand/target
+ // contact describes the visible instant. "To grasp" alone is still intent.
+ const contactEvidence=objectHandEvidence(positive,input.object)||input.contactDescription||'';
+ const reachedContact=intent==='reach'&&!/\b(?:not|never|without)\b/i.test(contactEvidence)&&/\b(?:holding|held|gripping|grasping|steadying|supporting|touching|pressing)\b/i.test(contactEvidence);
+ const phase=explicitPhase|| (intent==='reach'&&!reachedContact?'anticipation':finishingTouch?'follow_through':storyActionPhase(action+' '+phaseText)),object=input.object.toLowerCase();
  const dir=/toward(?:s)? (?:the )?left|to (?:the )?left|向左|左侧/i.test(action)?-1:1;
  const geometry:ActionGeometryInput={actionId:id,phase,objectCount:input.expectedCount||1,source:confirmed?'confirmed_interaction':'story',assumptions:['representative parametric staging, not measured object dimensions',...(finishingTouch&&!explicitPhase?['final visible action clause follows retrieval']:[])],baseCenter:{...input.objectCenter},axis:{x:dir,y:0}};
  if(id==='drink'){

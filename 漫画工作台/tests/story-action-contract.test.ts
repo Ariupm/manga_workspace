@@ -11,6 +11,28 @@ import {compileStagePrompt} from '../scripts/prompt-compiler.mjs';
 const actor:any={id:'actor',name:'Actor',appearanceEn:'adult person',visualTraits:{},invariantsEn:[],references:[]};
 const shot=(action:string,region={xStart:0,xEnd:1},camera='wide shot'):any=>({id:9401,pageId:1,order:1,title:'action',description:action,scene:'workshop',sceneEn:'workshop with a table',timeOfDay:'day',actionEn:action,expressionEn:'neutral',camera,cameraEn:camera,compositionEn:'',lightingEn:'daylight',characterIds:['actor'],characterLooks:{},environment:{},visualSpecConfirmed:true,visualSpec:{camera:{shotSize:camera},characters:[{characterId:'actor',action,expression:'neutral',region,appearanceState:{hair:'',bag:'',accessories:[],glasses:'',outerwearState:'',condition:[]}}],scene:{location:'workshop',timeOfDay:'day',weather:'clear',lighting:'daylight',sceneId:'workshop'},visibleFacts:[action],interactions:[],interaction:null}});
 const examples=[['opening a door','open','hinge'],['closing a door','close','hinge'],['opening a drawer','open','slide'],['pressing a button','operate_environment','press'],['turning a knob','operate_environment','rotate'],['writing with a pen on paper','write','work'],['cutting paper with scissors','tool','work'],['typing on a keyboard','tool','work'],['pushing a box','push','force'],['pulling a box','pull','force']] as const;
+test('reaching with current target contact does not compile a contradictory hand gap',()=>{
+ for(const object of ['cup','book','box'])for(const hand of ['left','right']){
+  const input={object,purpose:'pick',objectCenter:{x:.5,y:.5},region:{xStart:0,xEnd:1}};
+  const reach=`reaching up with her ${hand} hand to grasp the ${object}`;
+  assert.equal(inferStoryActionContract(input,reach)?.phase,'anticipation');
+  assert.equal(inferStoryActionContract(input,`${reach}, her ${hand} hand not touching the ${object}`)?.phase,'anticipation');
+  assert.equal(inferStoryActionContract(input,`${reach}, her ${hand} hand touching the table`)?.phase,'anticipation');
+  const contact=`${reach}, her ${hand} hand touching the ${object}`;
+  assert.equal(inferStoryActionContract(input,contact)?.phase,'contact');
+  assert.equal(inferStoryActionContract(input,contact,'anticipation')?.phase,'anticipation','explicit phase wins');
+  assert.equal(inferStoryActionContract(input,`${reach}, contact phase`)?.phase,'contact');
+  for(const region of [{xStart:0,xEnd:1},{xStart:.55,xEnd:.95}]){
+   const c=buildRegionalPrompt(shot(contact,region,'medium shot'),[],[actor],{posePlannerVersion:'3.0'});
+   const r=c.repairPasses.propInteractions[0];assert.equal(r.actionPlan?.phase,'contact',JSON.stringify({object,relationObject:r.object,action:r.actionPlan?.evidence}));
+   for(const p of [buildEffectivePromptPlan(c,c.poseControl as any,{useGeometry:false}),buildEffectivePromptPlan(c,c.poseControl as any)]){
+    assert.deepEqual(p.errors,[]);
+    const stage=compileStagePrompt(p,{stage:'hand',characterId:'actor',relationId:r.relationId});
+    assert.deepEqual(stage.errors,[]);assert.doesNotMatch(stage.prompt,/approaching.*visible gap/);
+   }
+  }
+ }
+});
 test('head and body gestures cannot swallow tool contracts or select the wrong member of an action family',()=>{
  const actions=[['cutting paper with scissors','tool','scissors'],['writing with a pen on paper','write','pen'],['typing on a keyboard','tool','keyboard'],['using a hammer','tool','hammer']] as const;
  for(const [operation,id,object] of actions)for(const gesture of ['lowering her head','looking up','turning the head','bending forward','turning around'])for(const first of [true,false]){

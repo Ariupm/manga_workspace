@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-PROMPT-018 伸手动作的明确接触事实丢失并被准备阶段覆盖
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：实际动作生图对照中向上取杯输入在工作台编译失败，关联ISSUE-PROMPT-017。
+- 已确认事实：普通输入reaching up…her right hand touching the cup handle经编译报contact conflicts with approach。deriveInteractionContract仅传首个动作子句，丢弃后面的手物接触；inferStoryActionContract又将reach无条件设为anticipation。直接action中的明确contact phase同样被reach默认值覆盖。
+- 高概率原因：将动作方向当成固定动作阶段，局部动作裁剪未保留同一对象的接触证据。
+- 未验证假设：修复编译冲突是否改善真实取杯图未验证，基线多余手臂不能归因于此程序问题。
+- 反证或冲突：to grasp只表示目的，不能误作已经握住；否定接触、其他对象的接触及明确phase不能被覆盖；box/package目录别名也须保持证据。
+- 复现步骤：使用scripts/action-matrix-fixtures.json运行prepare-action-prompt-comparison.ts；修前reach-cup被拒绝。独立调用inferStoryActionContract比较伸手与明确接触组合。
+- 涉及文件：lib/pose-action-semantics.ts、lib/story-action-contract.ts、lib/prompts.ts、tests/story-action-contract.test.ts。
+- 影响范围：无完整结构化交互的伸手取物回退，阶段、接触间隙和局部提示词。
+- 建议方案：明确阶段优先，保留对象局部接触证据；当前接触与未来意图区分，复用现有道具目录别名。
+- 验收标准：杯/书/箱子、左右手、区域、明确phase/当前接触/未接触/接触其他对象的阶段与提示词一致，准备阶段不消失，结构化事实及历史快照保持。
+- 解决 Agent 修改：已保留同对象接触子句，明确phase/当前接触优先于reach默认准备阶段；复用目录别名绑定box/package，否定句不作接触证据。
+- 解决 Agent 测试：298项目测试、11执行层/阶段/审批测试、TypeScript通过；追加几何开/关后10项专项通过。杯/书/箱子×左右手×两区域的当前接触编译一致；to grasp意图、否定接触、另一对象接触保留准备，明确phase优先。六动作双seed离线协议现12请求全部可编译；写字/剪纸4份after请求与017预定对照完全一致。完整链复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手部/视线→既有质量策略/整体草稿确认→候选。修复首子句丢接触及阶段默认覆盖两处入口；相同关系阶段供几何和局部prompt消费，其他人物由characterId隔离，结构化phase仍优先，区域/景别与外观数据不改；新接触不再编译visible gap，未接触保持间隙。历史recipe、控制权重、mask和失败/候选状态机不改，不绕过真实冲突检查，不把未应用记作应用。程序逻辑验收通过，未进行本条修复的图片生成或视觉效果验收；当前基线图片为直接文本请求，不能代替本条修复效果。日志workspace/reach-contact-tests.log、reach-contact-types.log、reach-contact-targeted.log、reach-contact-execution.log。
+- 残余风险：自由文本解析有界；不同物体实例的复杂省略或未来语态仍需结构化事实，不推定真实模型效果。
+- 诊断 Agent 复核证据：修前编译拒绝记录保存在workspace/sd15-action-compiled-before-2026-10-11/compiler-audit.json。
+- 诊断 Agent 复核结论：待独立复核，不标记verified。
+- 后续处理：完成全链复核后交诊断，实际效果另做图像对照。
+
 ## ISSUE-PROMPT-017 自由动作的手部归属被全局双手可见描述覆盖
 
 - 优先级：P1

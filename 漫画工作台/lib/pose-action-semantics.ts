@@ -26,11 +26,10 @@ export function explicitHandMode(text:string):'one'|'two'|null {
 }
 
 /** Bind hand evidence to this object, excluding visibility-only scene clauses. */
-export function objectHandEvidence(text:string,object:string):string|undefined {
- const noun=object.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
- const pattern=new RegExp('\\b'+noun+'\\b','i');
+export function objectHandEvidence(text:string,object:string|RegExp):string|undefined {
+ const pattern=object instanceof RegExp?object:new RegExp('\\b'+object.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b','i');
  const clauses=text.split(/[,;.]|\b(?:while|and)\b|(?=\b(?:her|his|their)\s+(?:left|right)\s+hand\b)/i)
-  .filter(c=>pattern.test(c)&&/\b(?:hold\w*|held|grip\w*|grasp\w*|steady\w*|stabiliz\w*|touch\w*|carry\w*|support\w*|press\w*)\b/i.test(c)&&explicitHandMode(c));
+  .filter(c=>pattern.test(c)&&!/\b(?:not|never|without)\b/i.test(c)&&/\b(?:hold\w*|held|grip\w*|grasp\w*|steady\w*|stabiliz\w*|touch\w*|carry\w*|support\w*|press\w*)\b/i.test(c)&&explicitHandMode(c));
  if(!clauses.length)return undefined;
  const evidence=clauses.join('; ');
  return /\bleft hand\b/i.test(evidence)&&/\bright hand\b/i.test(evidence)?`both hands: ${evidence}`:evidence;

@@ -438,7 +438,8 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   else if(/plac(?:e|ing)|put|set down|放/i.test(relationActionText)){purpose="place";orientation="contextual";viewerSurface="contextual";gazeMode="object";}
   else if(/book|document/.test(match.object)){purpose="read";orientation="landscape";viewerSurface="contextual";gazeMode="object";}
   const meaningfulContactText=relationContactText.replace(/both visible hands follow the described action|both visible hands following the described action/gi,"");
-  const scopedHandText=objectHandEvidence(relationActionText,storyObject);
+  const scopedHandText=objectHandEvidence(relationActionText,storyObject)
+    ||(storyObject===match.object?objectHandEvidence(relationActionText,match.pattern):undefined);
   const effectiveContactText=meaningfulContactText||scopedHandText||relationContactText;
   const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(scopedHandText||relationActionText);
   if(declaredMode)handMode=declaredMode;
@@ -480,8 +481,9 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
     ],
     negative:[`missing ${storyObject}`,`hidden ${storyObject}`,visualObject.expectedCount===1?`duplicate ${storyObject}`:`incorrect ${storyObject} count`,`extra ${storyObject} outside the story instance`,"empty hands","folded hands","clasped hands","hands resting together in lap","hands unrelated to the story prop",orientation==="portrait"?"landscape orientation":orientation==="landscape"?"portrait orientation":"",viewerSurface==="back"?"front or screen surface facing viewer":""].filter(Boolean),
   };
-  const stagedAction = intent === "pick" && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(relationActionText) ? relationActionText : localActionClause;
-  return attachStoryActionContract(contract,stagedAction,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
+  const stagedAction = intent === "pick" && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(relationActionText) ? relationActionText
+    : intent === "reach" ? unique([localActionClause,scopedHandText||""]).join('; ') : localActionClause;
+  return attachStoryActionContract({...contract,contactDescription:effectiveContactText},stagedAction,plannedInteraction?.phase||"",Boolean(plannedInteraction),structuredFacts,shot);
 }
 
 function attachStoryActionContract(contract:InteractionContract,action:string,phaseText:string,confirmed:boolean,facts?:InteractionVisualFacts,shot?:Shot):InteractionContract {
