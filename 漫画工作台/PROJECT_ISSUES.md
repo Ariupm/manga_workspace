@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-PROMPT-017 自由动作的手部归属被全局双手可见描述覆盖
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：要求实际生图对照并修正提示词架构；本轮普通动作实验编译输入复现。
+- 已确认事实：右手握笔/剪刀、左手扶纸、双手可见的文本，经无结构化交互的编译路径追加both hands contacting the pen/scissors；倒水文本把左右手持不同容器变成双手接触glass。
+- 高概率原因：explicitHandMode扫描全局动作文本，未按对象绑定手部证据；几何手侧也会先命中无关left hand。
+- 未验证假设：修正文字是否改善实际画面仍需同种子图像对照，不能仅凭编译输出认定效果改善。
+- 反证或冲突：结构化visualFacts和明确关系contactPoints仍应优先；确实双手握同一物体必须保留。此次不伪造第二件物体的完整几何。
+- 复现步骤：运行prepare-action-prompt-comparison.ts使用action-matrix-fixtures.json，检查write/cut-paper/pour编译文本；修前文本保存在workspace/sd15-action-compiled-before-2026-10-11。
+- 涉及文件：lib/pose-action-semantics.ts、lib/prompts.ts、tests/object-hand-evidence.test.ts。
+- 影响范围：缺少结构化交互的自由文本回退；场景可见手数不应等于单件道具握持手数。
+- 建议方案：对象局部的接触动词与手侧证据先绑定，再推导手数和接触锚点；其他文字保留。
+- 验收标准：笔/剪刀/画笔左右手、真实双手握物、纯可见性、结构化优先及局部prompt回归；实际效果另做SD对照。
+- 解决 Agent 修改：新增objectHandEvidence，按对象局部持握证据推导手数、手侧和接触点；后续attachStoryActionContract同样使用对象证据，防止再次按整句抢占另一只手。明确关系接触及结构化visualFacts仍优先。
+- 解决 Agent 测试：297项项目测试、11项执行层/阶段/审批测试及TypeScript通过。笔/剪刀/画笔×左右手×有无双手可见描述的12组归属及prop/hand提示词回归通过，保留真正双手同物与纯可见性边界。全链冲突复核：剧情/人工选择→视觉规格→提示词/交互契约→recipe/payload→Regional/ControlNet→基础生成→身份/服装/道具/手部/视线局部pass→既有质量策略/草稿整体确认→正式候选。deriveInteractionContract按本人文本和对象取证，结构化事实后覆盖；buildEffectivePromptPlan与API保存同一关系，worker通过prepareGenerationPromptRequest检查语义漂移，各局部pass消费冻结关系。发现attachStoryActionContract后置全局手侧覆盖并一并修复；人数/区域/景别、外观、视线、环境、控制权重、mask及状态机未改。历史快照不重编译，失败不会记为应用，结果展示政策不变。程序逻辑验收通过；本条修复的实际视觉效果对照尚未完成，不能宣称动作视觉问题已解决。日志workspace/object-hand-tests.log、object-hand-types.log、object-hand-execution.log。
+- 残余风险：复杂并列、省略代词及多对象几何仍需结构化事实；不能据此宣称所有自由文本都能无歧义解析。
+- 诊断 Agent 复核证据：修前实际编译文本可复现。
+- 诊断 Agent 复核结论：未复核，不标记verified。
+- 后续处理：程序回归及全链检查，展示同种子对照图，效果与代码状态分开记录。
+
 ## ISSUE-POSE-058 普通杯饮水没有自动杯沿与口部几何
 
 - 优先级：P1

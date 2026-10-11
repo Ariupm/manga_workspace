@@ -5,7 +5,7 @@ import { ART_STYLE, ACTION_PRESENTATION_VERSION, composeGenerationPrompt, compil
 import {compilePoseExecutionV3} from "../scripts/pose-execution-v3.mjs";
 import {synchronizeBasicPosePromptV3} from "./pose-v3/prompt-consistency";
 import type {PoseControlV3} from "./pose-v3/schema";
-import {actionIntent,explicitHandMode} from "./pose-action-semantics";
+import {actionIntent,explicitHandMode,objectHandEvidence} from "./pose-action-semantics";
 import {extraTemplateFromText} from "./pose-v3/action-catalog";
 import { englishTime } from "./story-time";
 import { isGenericLocation, resolveStoryLocation } from "./story-location";
@@ -438,7 +438,9 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   else if(/plac(?:e|ing)|put|set down|放/i.test(relationActionText)){purpose="place";orientation="contextual";viewerSurface="contextual";gazeMode="object";}
   else if(/book|document/.test(match.object)){purpose="read";orientation="landscape";viewerSurface="contextual";gazeMode="object";}
   const meaningfulContactText=relationContactText.replace(/both visible hands follow the described action|both visible hands following the described action/gi,"");
-  const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(relationActionText);
+  const scopedHandText=objectHandEvidence(relationActionText,storyObject);
+  const effectiveContactText=meaningfulContactText||scopedHandText||relationContactText;
+  const declaredMode=explicitHandMode(meaningfulContactText)||explicitHandMode(scopedHandText||relationActionText);
   if(declaredMode)handMode=declaredMode;
   const rawSavedGaze=gazeInstruction(englishVisual(look?.gazeEn||planned?.gazeTarget||storyGazeFallback(shot, characterId)));
   const savedGaze=rawSavedGaze === "eyes focused on the book or document, pupils directed toward the page, no eye contact with camera" && !planned?.gazeTarget ? inferGazeFromAction(relationActionText) : rawSavedGaze;
@@ -456,7 +458,7 @@ export function deriveInteractionContract(shot: Shot, characterId?: string): Int
   const relationId=`prop:${characterId||""}:${storyObject}:${purpose}`;
   const geometrySource = `${source}; ${relationContactText}`;
   const objectCenter = { x: Math.max(.15, Math.min(.85, positionCenter)), y };
-  const geometry = interactionGeometry({characterId:characterId||"",propId:storyObject,object:storyObject,orientation,viewerSurface,handMode,source: geometrySource,contactPoints: relationContactText,positionCenter,positionY:y,ownerBefore:plannedInteraction && "ownershipBefore" in plannedInteraction ? plannedInteraction.ownershipBefore || null : null,ownerAfter:plannedInteraction && "ownershipAfter" in plannedInteraction ? plannedInteraction.ownershipAfter || null : null,executor:/umbrella/i.test(match.object) && plannedInteraction?.type === "object_transfer" ? "umbrella_handoff" : "generic_prop"});
+  const geometry = interactionGeometry({characterId:characterId||"",propId:storyObject,object:storyObject,orientation,viewerSurface,handMode,source: geometrySource,contactPoints: effectiveContactText,positionCenter,positionY:y,ownerBefore:plannedInteraction && "ownershipBefore" in plannedInteraction ? plannedInteraction.ownershipBefore || null : null,ownerAfter:plannedInteraction && "ownershipAfter" in plannedInteraction ? plannedInteraction.ownershipAfter || null : null,executor:/umbrella/i.test(match.object) && plannedInteraction?.type === "object_transfer" ? "umbrella_handoff" : "generic_prop"});
   const targetCharacterId = plannedInteraction?.targetCharacterId || undefined;
   const targetCharacterPlan = targetCharacterId ? shot.visualSpec?.characters.find((item) => item.characterId === targetCharacterId) : undefined;
   const targetCharacterIndex = targetCharacterId ? shot.characterIds.indexOf(targetCharacterId) : -1;
@@ -512,9 +514,10 @@ function attachStoryActionContract(contract:InteractionContract,action:string,ph
     if(['on_support','held'].includes(state.objectState)&&facts.support.state!=='unspecified'&&state.objectState!==facts.support.state)throw new Error('结构化支持状态与动作阶段冲突');
   }
   contract={...contract,purpose:actionPlan.actionId==='pick'?'pick':actionPlan.actionId==='place'?'place':contract.purpose};
-  const explicitMode=facts?null:explicitHandMode(action);
+  const handEvidence=contract.contactDescription?.replace(/both visible hands follow(?:ing)? the described action/gi,"").trim()||objectHandEvidence(action,contract.object)||action;
+  const explicitMode=facts?null:explicitHandMode(handEvidence);
   if(explicitMode==='one'){
-    const hand=/left hand|左手/i.test(action)?'left':/right hand|右手/i.test(action)?'right':contract.activeHand==='left'?'left':'right';
+    const hand=/left hand|左手/i.test(handEvidence)?'left':/right hand|右手/i.test(handEvidence)?'right':contract.activeHand==='left'?'left':'right';
     contract={...contract,handMode:'one',activeHand:hand,contactAnchors:contract.contactAnchors.filter(a=>a.hand===hand)};
   }
   if(actionPlan.actionId==='pick'&&!confirmed&&!explicitHandMode(action)){
