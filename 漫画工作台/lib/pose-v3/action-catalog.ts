@@ -19,9 +19,9 @@ export const extraActionsV3:Record<string,{label:string;family:PoseActionFamilyV
  drink:{label:'饮水',family:'drink_eat',pattern:/\bdrink(?:ing|s)?\b|喝水|饮水|喝茶/i,prompt:'bringing the drink to the mouth'},
  eat:{label:'进食',family:'drink_eat',pattern:/\beat(?:ing|s)?\b|吃饭|进食|吃东西/i,prompt:'bringing food toward the mouth'},
 };
-export function extraTemplateFromText(text:string){
+export function extraTemplateFromText(text:string,eligibleIds?:readonly string[]){
  const positive=text.replace(/\b(?:not|never|without)\s+\w+(?:ing)?\b/gi,'').replace(/(?:不|不要|没有)(?:点头|低头|抬头|转头|回头|歪头|伸手|弯腰|喝水|吃饭)/g,'');
- return Object.entries(extraActionsV3).find(([,a])=>a.pattern.test(positive))?.[0];
+ return Object.entries(extraActionsV3).find(([id,a])=>(!eligibleIds||eligibleIds.includes(id))&&a.pattern.test(positive))?.[0];
 }
 export function pairTemplateV3(kind:string|null,text:string){
  if(kind==='handshake_highfive')return /high.?five|击掌/i.test(text)?'highfive':'handshake';

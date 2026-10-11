@@ -1,13 +1,54 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {deriveInteractionContract,buildRegionalPrompt,buildGenerationPrompt} from '../lib/prompts';
+import {deriveInteractionContract,buildRegionalPrompt,buildGenerationPrompt,buildEffectivePromptPlan} from '../lib/prompts';
 import {applyPoseControlOverrideV3,buildPoseControlV3} from '../lib/pose-v3';
 import {compilePoseExecutionV3,preparePoseExecutionV3} from '../scripts/pose-execution-v3.mjs';
 import {actionOutlineMarkup,mechanismGeometryFailures} from '../scripts/action-mechanism.mjs';
 import {synchronizeBasicPosePromptV3} from '../lib/pose-v3/prompt-consistency';
+import {templateForV3} from '../lib/pose-v3/templates';
+import {inferStoryActionContract} from '../lib/story-action-contract';
+import {compileStagePrompt} from '../scripts/prompt-compiler.mjs';
 const actor:any={id:'actor',name:'Actor',appearanceEn:'adult person',visualTraits:{},invariantsEn:[],references:[]};
 const shot=(action:string,region={xStart:0,xEnd:1},camera='wide shot'):any=>({id:9401,pageId:1,order:1,title:'action',description:action,scene:'workshop',sceneEn:'workshop with a table',timeOfDay:'day',actionEn:action,expressionEn:'neutral',camera,cameraEn:camera,compositionEn:'',lightingEn:'daylight',characterIds:['actor'],characterLooks:{},environment:{},visualSpecConfirmed:true,visualSpec:{camera:{shotSize:camera},characters:[{characterId:'actor',action,expression:'neutral',region,appearanceState:{hair:'',bag:'',accessories:[],glasses:'',outerwearState:'',condition:[]}}],scene:{location:'workshop',timeOfDay:'day',weather:'clear',lighting:'daylight',sceneId:'workshop'},visibleFacts:[action],interactions:[],interaction:null}});
 const examples=[['opening a door','open','hinge'],['closing a door','close','hinge'],['opening a drawer','open','slide'],['pressing a button','operate_environment','press'],['turning a knob','operate_environment','rotate'],['writing with a pen on paper','write','work'],['cutting paper with scissors','tool','work'],['typing on a keyboard','tool','work'],['pushing a box','push','force'],['pulling a box','pull','force']] as const;
+test('head and body gestures cannot swallow tool contracts or select the wrong member of an action family',()=>{
+ const actions=[['cutting paper with scissors','tool','scissors'],['writing with a pen on paper','write','pen'],['typing on a keyboard','tool','keyboard'],['using a hammer','tool','hammer']] as const;
+ for(const [operation,id,object] of actions)for(const gesture of ['lowering her head','looking up','turning the head','bending forward','turning around'])for(const first of [true,false]){
+  const action=first?`${operation} while ${gesture}`:`${gesture} while ${operation}`;
+  const c=inferStoryActionContract({object,purpose:'operate',objectCenter:{x:.5,y:.6},region:{xStart:0,xEnd:1}},action)!;
+  assert.equal(c?.actionId,id,action);assert.equal(c.geometry.controlShape,object,action);
+  assert.equal(c.evidence,action);
+  // Generic 'using a hammer' is classified through the existing tool fallback,
+  // whereas explicit cutting/typing is a catalog match within write_tool.
+  if(object!=='hammer')assert.equal(templateForV3('write_tool',action)?.id,id,action);
+ }
+ for(const camera of ['medium close-up','medium shot','wide shot'])for(const region of [{xStart:0,xEnd:1},{xStart:.05,xEnd:.45},{xStart:.55,xEnd:.95}]){
+  const action='cutting paper with scissors while lowering her head';
+  const c=buildRegionalPrompt(shot(action,region,camera),[],[actor],{posePlannerVersion:'3.0'});
+  const p=c.poseControl!;assert.ok(p.posePlanVersion==='3.0');assert.equal(p.scenePlan.people[0].templateId,'tool');
+  const baseline=buildRegionalPrompt(shot('cutting paper with scissors',region,camera),[],[actor],{posePlannerVersion:'3.0'}).poseControl!;
+  assert.equal(p.safety.valid,baseline.safety.valid,JSON.stringify(p.safety));
+  if(!p.safety.valid){
+   assert.deepEqual(p.safety.errors,baseline.safety.errors);
+   assert.throws(()=>compilePoseExecutionV3(p,c.repairPasses));
+   continue;
+  }
+  const ex=compilePoseExecutionV3(p,c.repairPasses)!;
+  const r=ex.repairPasses.propInteractions[0];
+  assert.equal(r.actionPlan?.actionId,'tool');assert.equal(r.actionRelationAudit?.geometry?.controlShape,'scissors');
+  assert.deepEqual(r.actionRelationAudit?.geometry?.toolEnd,r.actionRelationAudit?.geometry?.workPoint);
+  for(const plan of [c.promptPlan,buildEffectivePromptPlan(c,p),buildEffectivePromptPlan(c,p,{useGeometry:false})])for(const stage of ['prop','hand']){
+   const compiled=compileStagePrompt(plan,{stage,characterId:'actor',relationId:r.relationId});
+   assert.deepEqual(compiled.errors,[]);assert.match(compiled.prompt,/scissors/);
+   assert.doesNotMatch(compiled.prompt,/writing with/);
+  }
+ }
+ const input={object:'scissors',purpose:'operate',objectCenter:{x:.5,y:.6},region:{xStart:0,xEnd:1}};
+ assert.equal(inferStoryActionContract(input,'lowering her head'),null);
+ assert.equal(inferStoryActionContract(input,'cutting paper while lowering her head','contact',true,'hold'),null);
+ assert.equal(templateForV3('head_gesture','cutting paper while looking up')?.id,'look_up');
+ assert.equal(templateForV3('head_gesture','writing while lowering her head')?.id,'nod');
+});
 test('story contracts drive prompt, source pose and repair relation without asking for coordinates',()=>{
  for(const [action,id,mechanism] of examples){
  const s=shot(action),contract=deriveInteractionContract(s,'actor');assert.equal(contract.actionPlan?.actionId,id,action);assert.equal(contract.actionPlan?.geometry.mechanism,mechanism,action);

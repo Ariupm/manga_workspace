@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-POSE-056 头部身体描述抢先命中导致工具动作契约丢失
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：持续验证并解决更多动作；由多动作程序检查发现，关联ISSUE-POSE-055。
+- 已确认事实：旧inferStoryActionContract对cutting paper with scissors返回tool，加while lowering her head后返回null；writing with a pen while looking up、using a hammer while bending forward同样丢契约。templateForV3(write_tool, cutting paper while lowering her head)会退回write而非tool。
+- 高概率原因：目录先返回任何类别的第一个匹配，调用者再过滤类别，未继续搜索符合当前用途的匹配。
+- 未验证假设：此缺陷可能影响复杂动作描述的实际画面；本轮不生成图片，不能证明具体历史成图由它单独造成。
+- 反证或冲突：结构化forcedActionId仍应优先；头部/身体模板本身必须保留，不能全局删除姿态词或强制工具模板。
+- 复现步骤：对inferStoryActionContract传入scissors/operate和上述两组文本；调用templateForV3(write_tool, cutting paper while lowering her head)比较结果。
+- 涉及文件：lib/pose-v3/action-catalog.ts、lib/pose-v3/templates.ts、lib/story-action-contract.ts、tests/story-action-contract.test.ts。
+- 影响范围：自由文本推导道具动作及按动作族选择V3模板；历史recipe不重写。
+- 建议方案：目录查询在匹配前按调用者允许的动作ID筛选；对象契约只查可执行对象动作，模板只查所需动作族。
+- 验收标准：剪切/书写/打字/锤击与低头/抬头/转头/弯腰/转身的前后组合，确认动作优先，纯姿态不生成工具契约；区域/景别及recipe执行回归，无生图。
+- 解决 Agent 修改：已加入可选eligibleIds，两个消费入口先限制匹配范围；保留原始动作证据、结构化覆盖和目录默认行为。
+- 解决 Agent 测试：290项目、17执行层/阶段/审批测试通过；最后补充局部prompt断言后9项专项及TypeScript通过。40组动作×姿态×顺序、9组区域/景别、确认动作优先和纯姿态反例通过。完整出图链复核：剧情/人工选择→视觉规格→prompt/交互契约→recipe/payload→Regional/ControlNet→基础→身份/服装/道具/手部/视线→质量策略/草稿整体确认→候选回写。仅修正两个查询入口的候选过滤顺序，不改人数/区域/景别/外观/手侧/视线数据；有效Pose和几何关闭的prop/hand prompt均保留剪刀且不误写writing，工作端与工作面一致。确认动作仍优先，局部pass消费同一契约，旧recipe不改写；控制权重、mask算法、降级/失败、草稿确认、候选及展示策略未变。近景构图失败与不带姿态的基线一致，仍如实报错；未发现新增独立链路冲突。程序逻辑验收通过，未进行图片生成或视觉效果验收。详见ACTION_PROGRAM_VALIDATION_2026-10-11.md续验。
+- 残余风险：同一人多个独立工具动作的选择仍需结构化关系；紧景别若装不下手部操作仍保留原构图冲突，不以本修复绕过。实际视觉执行率和随机性为运行风险。
+- 诊断 Agent 复核证据：修前脚本复现契约为空；修后专项检查通过，待独立复核。
+- 诊断 Agent 复核结论：未复核，不标记verified。
+- 后续处理：交独立诊断复核；继续保留真实动作视觉执行率和未实现动作机制的边界。
+
 ## ISSUE-POSE-055 带方向的英文伸手动作漏识别
 
 - 优先级：P1

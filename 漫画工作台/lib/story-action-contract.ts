@@ -6,6 +6,7 @@ import type {PosePhase} from './pose-v2';
 import {actionStageState,actionStageVerb,actionStageObjectTerms} from '../scripts/action-stage-policy.mjs';
 
 export type StoryActionContract={version:'story-action-1';actionId:string;phase:PosePhase;geometry:ActionGeometryInput;source:'story'|'confirmed_interaction';evidence:string;assumptions:string[]};
+const objectActionIds=['open','close','operate_environment','write','tool','push','pull','pick','place'];
 export function storyActionPhase(text:string):PosePhase{
  if(/anticipation|prepar|about to|before|\bpre[-_ ]contact\b|准备|将要|尚未|接近/i.test(text))return 'anticipation';
  if(/follow.?through|finished|completed|after|released|\bpicked up\b|已经|完成|松开|放好|关好|打开后|拿到|取到/i.test(text))return 'follow_through';
@@ -14,9 +15,9 @@ export function storyActionPhase(text:string):PosePhase{
 /** Enrich the existing prop contract; do not re-generate identity, clothing or camera decisions. */
 export function inferStoryActionContract(input:{object:string;expectedCount?:number;purpose:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
  const positive=positiveActionText(action);
- const intent=forcedActionId||actionIntent(positive)||extraTemplateFromText(positive)||(input.purpose==='operate'&&/using|hammering|tighten|screwing|painting|用|敲|拧紧|绘画/i.test(positive)?'tool':null);
+ const intent=forcedActionId||actionIntent(positive)||extraTemplateFromText(positive,[...objectActionIds,'reach'])||(input.purpose==='operate'&&/using|hammering|tighten|screwing|painting|用|敲|拧紧|绘画/i.test(positive)?'tool':null);
  const id=intent==='reach'?'pick':intent;
- if(!id||!['open','close','operate_environment','write','tool','push','pull','pick','place'].includes(id))return null;
+ if(!id||!objectActionIds.includes(id))return null;
  const explicitPhase=/anticipation|prepar|before|about to|follow.?through|finished|completed|after|released|\bcontact\b|准备|尚未|接近|完成|松开|接触|抓住/i.test(phaseText);
  const finishingTouch=id==='pick' && /\b(?:and|then)\s+(?:gently\s+)?(?:touch(?:ing)?|strok(?:e|ing)|inspect(?:ing)?)\b/i.test(action);
  const phase=explicitPhase?storyActionPhase(phaseText):intent==='reach'?'anticipation':finishingTouch?'follow_through':storyActionPhase(action+' '+phaseText),object=input.object.toLowerCase();
