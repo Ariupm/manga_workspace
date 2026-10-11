@@ -523,7 +523,7 @@ function attachStoryActionContract(contract:InteractionContract,action:string,ph
   }
 
   const target=actionPlan.geometry.objectCenter||contract.objectCenter,grip=actionPlan.geometry.gripPoint;
-  return {...contract,actionPlan,objectCenter:target,gazeTarget:contract.gazeTarget.kind==='independent'?contract.gazeTarget:{...contract.gazeTarget,point:actionPlan.geometry.workPoint||target},
+  return {...contract,actionPlan,...(actionPlan.geometry.mechanism==='mouth'?{orientation:'contextual' as const}:{}),objectCenter:target,gazeTarget:contract.gazeTarget.kind==='independent'?contract.gazeTarget:{...contract.gazeTarget,point:actionPlan.geometry.workPoint||target},
     contactAnchors:grip?contract.contactAnchors.map(a=>({...a,x:grip.x+(contract.handMode==='two'?(a.hand==='left'?.025:-.025):0),y:grip.y})):contract.contactAnchors,
     positive:[...contract.positive.filter(t=>!/hand.*(?:contact|wrist)|interaction purpose/i.test(t)),...storyActionTerms(actionPlan,facts?.support.state)],
     negative:actionPlan.phase==='anticipation'||(actionPlan.actionId==='place'&&actionPlan.phase==='follow_through')?contract.negative.filter(t=>!/empty hands|hands unrelated|folded hands/.test(t)):contract.negative};

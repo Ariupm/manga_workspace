@@ -16,7 +16,7 @@ export const extraActionsV3:Record<string,{label:string;family:PoseActionFamilyV
  operate_environment:{label:'操作环境物体',family:'operate_environment',pattern:/press(?:ing)? (?:a |the )?(?:button|switch)|turn(?:ing)? (?:a |the )?(?:knob|handle)|按按钮|按开关|转动把手/i,prompt:'operating the declared environmental object'},
  write:{label:'书写',family:'write_tool',pattern:/\bwrit(?:e|ing)|\bcopying\b|书写|写字|抄写/i,prompt:'writing at the work surface'},
  tool:{label:'使用工具',family:'write_tool',pattern:/\b(?:cutting|slicing|typing|drawing|using a tool)\b|剪切|切菜|打字|绘画|使用工具/i,prompt:'using the declared tool at the work point'},
- drink:{label:'饮水',family:'drink_eat',pattern:/\bdrink(?:ing|s)?\b|喝水|饮水|喝茶/i,prompt:'bringing the drink to the mouth'},
+ drink:{label:'饮水',family:'drink_eat',pattern:/\b(?:drink(?:ing|s)?|sip(?:ping|s)?)\b|喝水|饮水|喝茶/i,prompt:'bringing the drink to the mouth'},
  eat:{label:'进食',family:'drink_eat',pattern:/\beat(?:ing|s)?\b|吃饭|进食|吃东西/i,prompt:'bringing food toward the mouth'},
 };
 export function extraTemplateFromText(text:string,eligibleIds?:readonly string[]){

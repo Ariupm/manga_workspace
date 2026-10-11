@@ -50,7 +50,7 @@ export function compilePoseExecutionV3(control, repairPasses = {}, options = {})
     return p;
   };
   const anchors = (items, characterId, audit) => items?.map(a => ({ ...a, ...(audit ? point(a) : wrist(characterId,a.hand)) }));
-  const actionGeometry = g=>g&&{...g,...Object.fromEntries(['baseCenter','pivot','gripPoint','objectCenter','workPoint','toolEnd','mouthContact'].map(key=>[key,point(g[key])])),extent:g.extent&&{width:g.extent.width*scale,height:g.extent.height*scale},travel:g.travel==null?undefined:g.travel*scale,outline:g.outline?.map(p=>({...p,points:p.points.map(point)})),supportY:g.supportY==null?undefined:point({x:.5,y:g.supportY}).y,axis:g.axis&&{x:g.axis.x*scale,y:g.axis.y*scale}};
+  const actionGeometry = g=>g&&{...g,...Object.fromEntries(['baseCenter','pivot','gripPoint','objectCenter','workPoint','toolEnd','mouthContact','mouthTarget'].map(key=>[key,point(g[key])])),extent:g.extent&&{width:g.extent.width*scale,height:g.extent.height*scale},travel:g.travel==null?undefined:g.travel*scale,outline:g.outline?.map(p=>({...p,points:p.points.map(point)})),supportY:g.supportY==null?undefined:point({x:.5,y:g.supportY}).y,axis:g.axis&&{x:g.axis.x*scale,y:g.axis.y*scale}};
   const actionAudit = a=>a&&({...a,handTargets:a.handTargets.map(point),geometry:actionGeometry(a.geometry)});
   const surface = (s) => s && ({ ...s, exclusionRegions: s.exclusionRegions?.map(region) });
   const contract = r => {

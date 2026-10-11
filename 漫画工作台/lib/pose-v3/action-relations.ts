@@ -13,6 +13,13 @@ export function prepareActionRelationsV3(people:PosePoint[][],plans:PosePersonSe
   if(!dynamic.has(person.templateId)&&!canonicalId)continue;
   if(!canonicalId&&!['pick','place','drink','eat'].includes(person.templateId)&&person.relationTargets.every(r=>!['operate'].includes(r.purpose)))continue;
   const id=dynamic.has(person.templateId)?person.templateId:canonicalId!;let g=person.actionGeometryInput;
+  if(g?.modelVersion==='action-mechanism-1'&&g.mechanism==='mouth'&&g.autoMouthTarget&&g.source!=='manual_prop_position'){
+   const nose=people[i][0],hand=person.activeHand==='left'?5:2;
+   const side=Math.sign(people[i][hand].x-nose.x)||(person.activeHand==='left'?1:-1);
+   const mouth={x:nose.x,y:nose.y+.035};
+   const rim={x:mouth.x,y:mouth.y+(person.phase==='contact'?0:.06)};
+   g={...g,mouthTarget:mouth,mouthContact:rim,axis:{x:side*.6,y:.8},baseCenter:{x:rim.x+side*.6*(g.extent?.height||.09)/2,y:rim.y+.8*(g.extent?.height||.09)/2}};
+  }
   if(g?.modelVersion==='action-mechanism-1')g=resolveActionMechanism({...g,actionId:id},person.phase);
   const actionTargets=person.relationTargets.filter(r=>r.actionPlan?.actionId===id||(!r.actionPlan&&r.purpose==='operate')||(['pick','place','drink','eat'].includes(id)&&person.relationTargets.length===1));
   if(!actionTargets.length)continue;

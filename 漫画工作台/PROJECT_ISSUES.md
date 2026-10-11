@@ -1,5 +1,26 @@
 # 漫画工作台问题台账
 
+## ISSUE-POSE-058 普通杯饮水没有自动杯沿与口部几何
+
+- 优先级：P1
+- 状态：fixed_pending_review
+- 用户报告：持续解决并扩大动作验证；上一轮饮食保护检查确认自动规划缺口，关联ISSUE-POSE-045。
+- 已确认事实：已存在饮水分类和缺失mouthContact保护，但普通cup/mug/glass饮水文本无法自动建立杯沿作用端，必须人工给点；旧提示仍强调upright/approaching而非contact阶段贴唇。
+- 高概率原因：饮水不在story-action对象契约自动机制内，杯身轮廓与人物口部之间缺少数据绑定。
+- 未验证假设：参数杯几何能否提高真实SD饮水执行率未验，不能由程序通过推定。
+- 反证或冲突：不得改写人工固定道具位置；瓶口、吸管、碗/勺和倒水不能伪装成同一杯模型；旧任务不得自动升级。
+- 复现步骤：buildRegionalPrompt处理drinking from a cup，检查旧版人物actionRelationAudit缺mouthContact并pending；对比显式点输入已能执行。
+- 涉及文件：lib/story-action-contract.ts、interaction-facts.ts、prompts.ts、pose-v3/action-relations.ts、planner.ts、prop-edit.ts；scripts/action-mechanism.mjs及类型、action-stage-policy.mjs、pose-execution-v3.mjs、prompt-compiler.mjs；tests/mouth-action-chain.test.ts。
+- 影响范围：新生成普通cup/mug/glass饮水契约，人物局部几何、道具和手部请求。
+- 建议方案：复用既有动作机构，杯沿为作用端，自动绑定当前人物口部，杯身/握点/轮廓共源；准备和完成保持握杯但杯沿离口，人工位置优先。
+- 验收标准：自动文本与结构化事实、单/多人、左右手、区域、景别、镜像、阶段、投影及局部请求一致；手改位置保留并报告真实冲突；无生图验收。
+- 解决 Agent 修改：已实现mouth/cup参数机构、自动口部绑定及杯身轮廓，杯沿/握点/目标与投影贯通；姿态手改位置保留，瓶/吸管/碗勺排除。
+- 解决 Agent 测试：295项目测试、17执行层测试及TypeScript通过；补充sip与瓶/吸管排除后4项饮水专项通过。18组杯类/手侧/区域自动规划、原24组显式作用端、单/双人及中远景镜像、准备/完成、手动移位均验证；紧景别构图不适配仍按原规则报告。全链复核：剧情/人工选择→视觉规格→交互契约/提示词→recipe/payload→Regional/ControlNet→基础及身份/服装/道具/手部/视线→现有质量策略/草稿整体确认→候选。杯身/杯沿/握点同源投影，准备/完成不放开杯子，局部提示去除upright/approaching矛盾，人工位置不自动重贴嘴部；身份/服装/视线目标不改，旧冻结任务不升级，缺失/错误点仍如实失败。未改变展示/候选状态机，无新增门禁。程序逻辑验收通过，未进行图片生成或视觉效果验收；日志workspace/auto-drink-tests.log、auto-drink-types.log、auto-drink-execution.log。
+- 残余风险：口部以身体鼻点下方代表位置近似，杯尺寸/倾角是规划假设，非像素检测；瓶/吸管/碗勺/倒水自动机制未实现。紧景别冲突保留原失败，不放宽构图规则。真实视觉执行率未验。
+- 诊断 Agent 复核证据：待独立复核；旧饮食显式点24配置保护测试保留。
+- 诊断 Agent 复核结论：未复核，不标记verified。
+- 后续处理：完成全链复核并交独立诊断；实际生图需遵守最新用户授权。
+
 ## ISSUE-POSE-057 场景时间词误改动作阶段和接触关系
 
 - 优先级：P1

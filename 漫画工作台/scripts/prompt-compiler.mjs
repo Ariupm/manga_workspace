@@ -1,4 +1,5 @@
 import {gazeInstruction,gazeExecutionCues} from "./gaze-expression.mjs";
+import {mechanismPromptTerms} from './action-mechanism.mjs';
 import { actionContactTerms, contactPassAllowed, synchronizedActionTerms, relationActionState, actionStageVerb } from './action-stage-policy.mjs';
 import {PROMPT_CONSISTENCY_VERSION, factSetConsistencyErrors, promptConsistencyErrors, relationSemanticSignature} from './prompt-consistency.mjs';
 import {assertControlPolicyRequest} from './generation-control-policy.mjs';
@@ -89,7 +90,8 @@ export function relationVisualText(relation, stage = 'prop', explicitPhase = fal
       state?.phase==='contact'&&relation.actionPlan?.geometry?.mechanism!=='support'?relation.actionPlan?.evidence||specificAction||`${({hold:'holding',inspect:'inspecting',drink:'drinking from',carry:'carrying',touch:'touching',read:'reading'})[f.actionId]||actionStageVerb(state?.actionId,state?.phase)} the ${actionObject}`:
       state&&relation.actionPlan?.geometry?.mechanism!=='support'?`${actionStageVerb(state.actionId,state.phase)} the ${actionObject}`:'';
     const support=stage!=='hand'&&f.support.state==='on_support'?`${object} resting on the ${f.support.label}`:'';
-    return uniquePrompt([stage==='hand'?'':label,operation,contact,!relation.actionPlan? specificContact:'',support].filter(Boolean).join(', '));
+    const mouthGeometry=relation.actionRelationAudit?.geometry||relation.actionPlan?.geometry;
+    return uniquePrompt([stage==='hand'?'':label,operation,contact,!relation.actionPlan? specificContact:'',support,...(mouthGeometry?.mechanism==='mouth'?mechanismPromptTerms(mouthGeometry):[])].filter(Boolean).join(', '));
   }
 
   const label = propVisualLabel(relation), object = (relation.expectedCount||1)>1 ? label.replace(/^\S+\s+/,'') : relation.object;
@@ -103,7 +105,7 @@ export function relationVisualText(relation, stage = 'prop', explicitPhase = fal
   const support=relation.supportLabel ? `the ${relation.supportLabel}` : 'a support surface';
   const supportState = state?.objectState === 'action_specific' ? relation.visualFacts?.support.state : state?.objectState;
   const supported = supportState === 'on_support' ? `${object} resting on ${support}` : supportState === 'held' ? relation.supportLabel?`${object} held above the ${relation.supportLabel}`:`${object} held in ${hands}` : '';
-  const affordance = relation.visualFacts || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
+  const affordance = relation.visualFacts || geometry?.mechanism==='mouth' || state && ['pick','place'].includes(state.actionId) ? '' : relation.affordance;
   const coverContact = state?.contactState === 'contact' && /touch(?:ing)?[^.;]*covers?/i.test(relation.actionPlan?.evidence || '') ? `fingertips touching the ${relation.object} covers` : '';
   return [stage === 'hand' && (relation.expectedCount||1)===1 ? '' : label, state && state.contactState !== 'contact' ? '' : affordance,
     explicitPhase && state && ['pick','place'].includes(state.actionId) ? `${actionStageVerb(state.actionId,state.phase)} the ${object}` : '',

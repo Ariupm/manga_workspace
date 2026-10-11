@@ -1,10 +1,10 @@
 import {mechanismPromptTerms} from "./action-mechanism.mjs";
 /** Shared state machine consumed by prompt compilation, geometry and local passes. */
 export function actionStageState(actionId, phase='contact', supportState) {
- const heldPreparation=actionId==='place'||supportState==='held'&&['tool','write','drink','eat','carry','hold'].includes(actionId);
+ const heldPreparation=['place','drink'].includes(actionId)||supportState==='held'&&['tool','write','eat','carry','hold'].includes(actionId);
  const contactState=phase==='anticipation'&&!heldPreparation?'approach':phase==='follow_through'&&actionId==='place'?'released':'contact';
  return {actionId,phase,contactState,contactRequired:contactState==='contact',
-  objectState:actionId==='pick'?(phase==='follow_through'?'held':'on_support'):actionId==='place'?(phase==='anticipation'?'held':'on_support'):'action_specific'};
+  objectState:actionId==='drink'?'held':actionId==='pick'?(phase==='follow_through'?'held':'on_support'):actionId==='place'?(phase==='anticipation'?'held':'on_support'):'action_specific'};
 }
 export function relationActionState(relation) {
  const plan=relation?.actionPlan,audit=relation?.actionRelationAudit;
@@ -14,10 +14,11 @@ export function relationActionState(relation) {
  return facts?{actionId:facts.actionId,phase:facts.phase,contactState:facts.contact.state,contactRequired:facts.contact.state==='contact',objectState:facts.support.state}:null;
 }
 export function actionStageVerb(actionId,phase='contact') {
- const verb={open:'opening',close:'closing',operate_environment:'operating',write:'writing with',tool:'using',push:'pushing',pull:'pulling',pick:'picking up',place:'placing'}[actionId]||actionId;
+ const verb={drink:'drinking from',open:'opening',close:'closing',operate_environment:'operating',write:'writing with',tool:'using',push:'pushing',pull:'pulling',pick:'picking up',place:'placing'}[actionId]||actionId;
  if(phase==='anticipation')return actionId==='pick'?'reaching toward':'preparing for '+verb;
  if(phase==='follow_through'&&actionId==='pick')return 'holding after picking up';
  if(phase==='follow_through'&&actionId==='place')return 'having placed and released';
+ if(phase==='follow_through'&&actionId==='drink')return 'holding after drinking from';
  return verb;
 }
 export function actionStageObjectTerms(actionId,phase='contact') {

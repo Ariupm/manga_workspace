@@ -25,7 +25,7 @@ export function movePoseProps(plan: PoseScenePlanV3, positions: PropPosition[]):
     if (!g) return g;
     const next = structuredClone(g);
     if (own) {
-      for (const key of ['baseCenter', 'pivot', 'gripPoint', 'objectCenter', 'toolEnd'] as const) if (next[key]) next[key] = shift(next[key]!, own);
+      for (const key of ['baseCenter', 'pivot', 'gripPoint', 'objectCenter', 'toolEnd', 'mouthContact'] as const) if (next[key]) next[key] = shift(next[key]!, own);
       next.outline = next.outline?.map(o => ({ ...o, points: o.points.map(p => shift(p, own)) }));
     }
     // A bound work surface and mouth/support planes belong to other objects/the body.

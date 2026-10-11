@@ -12,7 +12,13 @@ export function resolveActionMechanism(input,phase='contact'){
  const amount=g.actionId==='close'?1-t:t;
  const w=g.extent?.width||.12,h=g.extent?.height||.12;
  let center={...c},grip={...c},outline=[];
- if(g.mechanism==='support'){
+ if(g.mechanism==='mouth'){
+  // The rim is the functional endpoint; the body and grip follow its axis.
+  const rim=g.mouthContact||add(c,axis,-h/2),normal={x:-axis.y,y:axis.x};
+  const bottom=add(rim,axis,h);center=add(rim,axis,h/2);grip={...center};
+  outline=[path([add(rim,normal,-w/2),add(rim,normal,w/2),add(bottom,normal,w*.38),add(bottom,normal,-w*.38)]),path([add(rim,normal,-w/2),add(rim,normal,w/2)],'working_edge',false)];
+  g.mouthContact=rim;
+ }else if(g.mechanism==='support'){
   const top=c.y-h/2,bottom=c.y+h/2,left=c.x-w/2,right=c.x+w/2;
   g.objectCenter={...c};g.outline=[path(rect(c,w,h))];
   if(g.supportY!=null)g.outline.push(path([{x:left-w*.15,y:g.supportY},{x:right+w*.15,y:g.supportY}],'work_surface',false));
@@ -98,7 +104,7 @@ export function relocateActionGeometry(g,target){
  if(g?.modelVersion!=='action-mechanism-1'||!g.objectCenter)return {...g,objectCenter:target};
  const dx=target.x-g.objectCenter.x,dy=target.y-g.objectCenter.y;
  const result=structuredClone(g);
- for(const key of ['baseCenter','pivot','gripPoint','objectCenter','workPoint','toolEnd'])if(result[key])result[key]={x:result[key].x+dx,y:result[key].y+dy};
+ for(const key of ['baseCenter','pivot','gripPoint','objectCenter','workPoint','toolEnd','mouthContact'])if(result[key])result[key]={x:result[key].x+dx,y:result[key].y+dy};
  result.outline=result.outline?.map(p=>({...p,points:p.points.map(q=>({x:q.x+dx,y:q.y+dy}))}));
  if(result.supportY!=null)result.supportY+=dy;
  return result;
@@ -118,7 +124,7 @@ export function mechanismGeometryFailures(g){
  if(g.extent&&(!Number.isFinite(g.extent.width)||!Number.isFinite(g.extent.height)||g.extent.width<=0||g.extent.height<=0))errors.push('物体机构尺寸无效');
  if(g.angle!=null&&(!Number.isFinite(g.angle)||Math.abs(g.angle)>Math.PI))errors.push('机构转角超出支持范围');
  if(g.mechanism==='work'&&g.phase!=='anticipation'&&g.workPoint&&g.toolEnd&&Math.hypot(g.workPoint.x-g.toolEnd.x,g.workPoint.y-g.toolEnd.y)>.025)errors.push('工具作用端未接触工作面');
- const compatible={hinge:['panel'],slide:['panel'],press:['button'],rotate:['knob'],work:['pen','pencil','brush','scissors','knife','keyboard','hammer','wrench','screwdriver','pliers'],force:['box','panel'],transfer:['box'],support:['box']};
+ const compatible={mouth:['cup'],hinge:['panel'],slide:['panel'],press:['button'],rotate:['knob'],work:['pen','pencil','brush','scissors','knife','keyboard','hammer','wrench','screwdriver','pliers'],force:['box','panel'],transfer:['box'],support:['box']};
  if(!compatible[g.mechanism]?.includes(g.controlShape))errors.push('动作机构与执行轮廓类型不一致');
  if(!errors.length){
   const expected=resolveActionMechanism(g,g.phase);
@@ -128,6 +134,7 @@ export function mechanismGeometryFailures(g){
 }
 export function mechanismPromptTerms(g){
  if(g?.modelVersion!=='action-mechanism-1')return [];
+ if(g.mechanism==='mouth')return [g.phase==='contact'?'cup tilted with its rim touching the lips':'cup held clear of the mouth, rim separated from the lips'];
  const staged=g.phase==='anticipation'?'before contact':g.phase==='follow_through'?'completed action':'action in progress';
  const terms={hinge:'panel opening or closing around its fixed vertical hinge; preserve the pivot edge',slide:'panel sliding along its track',press:'acting fingertip pressing the fixed button',rotate:'hand turning the knob around its fixed center',work:g.phase==='anticipation'?'tool working end approaching the work surface without contact':'tool working end contacting the work surface',force:'hand force aligned with a stable planted-foot stance',transfer:g.actionId==='place'&&g.phase==='follow_through'?'object on support, hands released':'object position consistent with its support and transfer stage'};
  const approach={hinge:'panel at its initial hinge angle, handle not yet contacted',slide:'panel at the start of its track, handle not yet contacted',press:'button remains unpressed before fingertip contact',rotate:'knob remains at its initial angle before finger contact',force:'object at rest, feet planted before force is applied'};

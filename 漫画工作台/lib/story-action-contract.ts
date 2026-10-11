@@ -7,7 +7,7 @@ import type {PosePhase} from './pose-v2';
 import {actionStageState,actionStageVerb,actionStageObjectTerms} from '../scripts/action-stage-policy.mjs';
 
 export type StoryActionContract={version:'story-action-1';actionId:string;phase:PosePhase;geometry:ActionGeometryInput;source:'story'|'confirmed_interaction';evidence:string;assumptions:string[]};
-const objectActionIds=['open','close','operate_environment','write','tool','push','pull','pick','place'];
+const objectActionIds=['open','close','operate_environment','write','tool','push','pull','pick','place','drink'];
 export function storyActionPhase(text:string):PosePhase{return explicitStoryPhase(text)||'contact';}
 /** Enrich the existing prop contract; do not re-generate identity, clothing or camera decisions. */
 export function inferStoryActionContract(input:{object:string;expectedCount?:number;purpose:string;objectCenter:{x:number;y:number};region:{xStart:number;xEnd:number}},action:string,phaseText='',confirmed=false,forcedActionId?:string):StoryActionContract|null{
@@ -20,7 +20,10 @@ export function inferStoryActionContract(input:{object:string;expectedCount?:num
  const phase=explicitPhase|| (intent==='reach'?'anticipation':finishingTouch?'follow_through':storyActionPhase(action+' '+phaseText)),object=input.object.toLowerCase();
  const dir=/toward(?:s)? (?:the )?left|to (?:the )?left|向左|左侧/i.test(action)?-1:1;
  const geometry:ActionGeometryInput={actionId:id,phase,objectCount:input.expectedCount||1,source:confirmed?'confirmed_interaction':'story',assumptions:['representative parametric staging, not measured object dimensions',...(finishingTouch&&!explicitPhase?['final visible action clause follows retrieval']:[])],baseCenter:{...input.objectCenter},axis:{x:dir,y:0}};
- if(['open','close'].includes(id)){
+ if(id==='drink'){
+  if(!/\b(?:cup|mug|glass)\b/i.test(object)||/\b(?:bottle|straw|bowl|spoon)\b/i.test(object+' '+action))return null;
+  Object.assign(geometry,{mechanism:'mouth',controlShape:'cup',autoMouthTarget:true,extent:{width:.07,height:.09},axis:{x:.6,y:.8},stateBefore:'cup_away_from_mouth',stateAfter:'cup_lowered_after_drinking'});
+ }else if(['open','close'].includes(id)){
   if(/drawer|sliding|slide|抽屉|推拉门|滑动/.test(object+' '+action))Object.assign(geometry,{mechanism:'slide',controlShape:'panel',travel:.055,extent:{width:.12,height:.09}});
   else if(/door|window|hinged|门|窗|铰链/.test(object+' '+action))Object.assign(geometry,{mechanism:'hinge',controlShape:'panel',angle:1,hingeSide:/right.?hinge|hinge.*right|右.*铰链/i.test(action)?'right':'left',extent:{width:.13,height:.20}});
   else return {version:'story-action-1',actionId:id,phase,geometry,source:confirmed?'confirmed_interaction':'story',evidence:action,assumptions:['object opening mechanism is ambiguous']};
